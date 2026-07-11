@@ -1,0 +1,107 @@
+# =============================================================================
+# 가설 사전등록 (보완안 §1 — 사후 임계값의 사전등록화)
+# =============================================================================
+# 각 가설은 확증적(confirmatory) 1차 지표를 **하나만** 갖는다. 1차 지표들의
+# p 벡터에는 Holm 보정(가족오류율)을, 그 외 모든 탐색(exploratory) 지표에는
+# BH-FDR(q=0.05)을 적용한다. 판정 문장은 p 가 아니라 효과크기+CI 중심으로
+# 보고한다. 스크립트는 이 파일을 읽어 판정만 수행한다.
+#
+# rationale 필드는 기준 선택의 근거를 코드 밖에 문서화한다 (사후 조정 방지).
+# =============================================================================
+
+alpha_family: 0.05          # 1차 지표 가족오류율 (Holm)
+fdr_q: 0.05                 # 탐색 지표 FDR
+
+hypotheses:
+  H1:
+    primary: exploitability
+    test: paired_perm            # 공통 상대 시드 → 짝지은 부호뒤집기
+    direction: adaptive_less     # 착취가능성: adaptive < fixed
+    rationale: >
+      자기보호의 조작적 정의. λ_final 두표본 검정은 고정군이 상수라 퇴화 —
+      폐기하고 adaptive 군 λ_final < λ_base 단일표본 순열검정을 탐색으로 보고.
+  H2:
+    primary: lam_final_recovery
+    test: paired_perm
+    direction: noisy_tft_greater  # λ_final(noisy_tft) > λ_final(exploiter)
+    rationale: >
+      의도/맥락 구분의 행동적 결과. 기제 귀속(β-귀인 vs 강화)은 beta_clamp ·
+      intent_only 절제 대조(탐색)로 분리 검증.
+  H3:
+    primary: beta_discrimination
+    test: paired_perm
+    direction: exploiter_greater  # E[β](exploiter) > E[β](noisy_tft)
+    rationale: >
+      판별(discrimination) 검정. 복원(recovery: 편향·RMSE·커버리지)은
+      scripts/validate_tom_recovery.py 의 별도 연구로 정량화한다.
+  H4:
+    primary: cc_rate
+    test: paired_perm
+    direction: adaptive_ge_fixed
+    margin: 0.95                 # adaptive CC ≥ 0.95 × fixed CC
+    floor: 0.30                  # 절대 바닥 (협력이 형성됐다고 볼 최소 CC)
+    rationale: >
+      margin 0.95: 조절 비용으로 인한 근소 손실 허용(비열등성). floor 0.30:
+      상호배신 고착(CC≈0)과 구분되는 최소 협력 수준. 두 상수 모두 데이터
+      확인 이전에 등록됨.
+  H5:
+    primary: joint_defense_and_payoff    # 결합가설: (i) AND (ii)
+    test: paired_perm
+    direction: imm_more_defense_and_less_payoff
+    rationale: >
+      즉각형(vmPFC)의 정의적 예측 2개의 결합. 요인 분해(2x2x2: sophisticated x
+      attribution x dd_charge)는 탐색으로 보고, DD-충전 규칙 경로는 조작 확인
+      (manipulation check)임을 문서에 명시한다.
+  H6:
+    primary: noise_rank_reversal
+    test: paired_perm
+    direction: gtft_or_wsls_beats_tft_under_noise
+    rationale: >
+      Axelrod 계열의 재현 확인용 정합성 검사(sanity check) 성격.
+  H7:
+    primary: aggregate_payoff_vs_gtft
+    test: paired_perm
+    direction: adaptive_greater
+    rationale: >
+      전 case 합산 라운드당 보수. 60라운드 지평에서 미지지가 예상되며(v0.1.1
+      관찰), 이는 H7H 지평 스윕의 [확증] 대상 기제 예측과 함께 해석한다.
+      λ 반응성은 무작위 정렬 순열 영가설 대비 z (탐색)로 보고 — 임계값 0.02 폐기.
+  H7H:
+    primary: horizon_slope_family_a
+    test: slope_boot
+    direction: positive          # 전환수 고정 족에서 dΔ/dT > 0 (CI 가 0 배제)
+    rationale: >
+      지평 의존성의 기제 분해: Δ(T) ≈ b·T − c·k. 전환수 고정 족(a)은 T 에
+      선형 개선, 주기 고정 족(b)은 근사적 T-불변을 예측 — 두 족이 다른
+      함수형을 예측한다는 점이 검정력의 원천. forgiveness 조작의 방향성
+      예측(forgiveness↑ → T*↓)은 탐색으로 병기.
+  H8:
+    primary: conditional_frac_slope_lam04
+    test: ols_cluster_boot
+    direction: positive          # λ=0.4 조건부 frac 기울기 CI 가 0 배제
+    rationale: >
+      상호작용 모형 CC ~ frac*λ + frac*ratio 의 λ=0.4 조건부 기울기.
+      가법 모형은 관측된 부호전환(λ≈0.24)과 모순되어 폐기. 고정전략
+      대조(filler×frac 상호작용)와 ALLC 착취 이전 회계는 탐색.
+  H8E:
+    primary: invasion_growth_adaptive
+    test: boot_ci
+    direction: positive          # 기준 혼합 상주집단에 대한 침입 성장률 > 0
+    rationale: >
+      '집단 역학' 의 재정식화: 침입 가능성과 협력 유역. Moran 은 평균장
+      교차검증(탐색).
+  H9:
+    primary: capricious_payoff_all_vs_alpha_only
+    test: paired_perm
+    direction: all_greater
+    rationale: 귀인 범위 절제의 1차 예측 (의도 변동 추적 실패).
+  H10:
+    primary: static_cc_all_vs_lambda_only
+    test: paired_perm
+    direction: all_greater
+    rationale: 귀인 범위 절제의 1차 예측 (모호 배신의 기질 오귀인).
+  GS:
+    primary: none                # 확증 지표 없음 — 전면 탐색(강건성 지도화)
+    rationale: >
+      게임구조 일반화(협력지수 CI 스윕)는 결론의 강건성 영역을 지도화하는
+      민감도 분석이며 확증 가설이 아니다.

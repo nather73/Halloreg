@@ -200,6 +200,9 @@ class AdaptiveAgent(ToMEmpathicAgent):
                  kappa: float = 0.9, sophisticated: bool = True,
                  attribution_target: str = "all", regulate_lambda: bool = True,
                  forgiveness: float = 0.05, prior_reliability: Optional[dict] = None,
+                 dd_charges_grievance: Optional[bool] = None,
+                 grievance_decay: Optional[float] = None,
+                 beta_clamp: bool = False,
                  name: str = "Adaptive", **kwargs):
         super().__init__(lam_base=lam_base, name=name, **kwargs)
         self.regulate_lambda = regulate_lambda
@@ -212,9 +215,15 @@ class AdaptiveAgent(ToMEmpathicAgent):
         self.inversion.set_reliability(self.core.reliability_weights(), reinit=True)
 
         # λ 조절기 (vmPFC/rmPFC/dmPFC 통합)
-        self.regulator = LambdaRegulator(
-            lam_base=lam_base, lam_max=lam_max, sophisticated=sophisticated,
-            kappa=kappa, forgiveness=forgiveness)
+        reg_kw = dict(lam_base=lam_base, lam_max=lam_max,
+                      sophisticated=sophisticated, kappa=kappa,
+                      forgiveness=forgiveness,
+                      dd_charges=dd_charges_grievance)
+        if grievance_decay is not None:      # H7H 히스테리시스 조작용
+            reg_kw["decay"] = float(grievance_decay)
+        self.regulator = LambdaRegulator(**reg_kw)
+        if beta_clamp:                       # H2 절제 대조: β 축 동결
+            self.inversion.clamp_beta()
         self.lam = lam_base
 
     def _current_lambda(self) -> float:

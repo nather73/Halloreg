@@ -19,3 +19,7 @@ __all__ = [
     "run_dyad", "run_many", "run_population", "run_population_spec",
     "run_populations", "build_from_spec",
 ]
+
+from .baselines import (  # noqa: F401
+    QLearnerAgent, BayesBestResponse, FictitiousPlayAgent, make_baseline,
+)

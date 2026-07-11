@@ -49,6 +49,31 @@ PD_PAYOFFS = {
 }
 
 
+DEFAULT_COOP_INDEX = round((R - P) / (T - S), 6)   # 현행 게임의 협력지수 = 0.4
+
+
+def set_coop_index(ci: float | None):
+    """
+    보수행렬을 협력지수 CI=(R−P)/(T−S) 로 매개화해 재설정한다 (게임구조 일반화).
+
+    T=5, S=0, P=1 고정, R = P + CI·(T−S). 유효 IPD 조건(T>R>P>S, 2R>T+S)을
+    만족하려면 CI ∈ (0.2, 0.8] 이며 CI>0.5 에서 2R>T+S 가 성립, CI=0.4(현행)는
+    2R=6>5 로 성립. numpy 배열/딕셔너리를 **제자리(in-place)** 갱신하므로
+    이미 import 된 참조들(에이전트 생성 이전이라면)에도 반영된다.
+    spawn 워커는 태스크마다 이 함수를 호출해 게임을 재설정한다(멱등).
+    """
+    global R, P
+    ci = DEFAULT_COOP_INDEX if ci is None else float(ci)
+    R_new = 1.0 + ci * (T - S)
+    if not (T > R_new > P > S):
+        raise ValueError(f"유효하지 않은 협력지수 {ci}")
+    R = R_new
+    PAYOFF_SELF[:] = [R, S, T, P]
+    PAYOFF_OTHER[:] = [R, T, S, P]
+    PD_PAYOFFS.update({(COOP, COOP): (R, R), (COOP, DEFECT): (S, T),
+                       (DEFECT, COOP): (T, S), (DEFECT, DEFECT): (P, P)})
+
+
 def joint_index(my_act: int, opp_act: int) -> int:
     """(내 행동, 상대 행동) -> joint-outcome 상태 인덱스."""
     return int(my_act) * 2 + int(opp_act)

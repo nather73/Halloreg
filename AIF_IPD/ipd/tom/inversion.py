@@ -100,7 +100,15 @@ class OpponentInversion:
             self.w_theta.update(reliability_weights)
 
         self.my_cooperation_rate = 0.5
+        # H2 기제 절제용: β 축 동결 (사전 평균에 클램프 → β 로 설명 불가)
+        self._beta_clamp_val = None
         self._init_particles()
+
+    def clamp_beta(self, value=None):
+        """입자필터의 β 축을 상수에 동결한다 (H2 절제 대조: β-귀인 경로 차단)."""
+        self._beta_clamp_val = float(value) if value is not None \
+            else float(self._PRIOR["beta"][0])
+        self.beta[:] = self._beta_clamp_val
 
     # ------------------------------------------------------------ 초기화
     def set_reliability(self, weights: dict, reinit: bool = False):
@@ -127,6 +135,8 @@ class OpponentInversion:
         self.beta = np.clip(draw("beta"), 0.05, 12.0)
         self.lambda_j = np.clip(draw("lambda_j"), 0.0, 1.0)
         self.weights = np.ones(self.N) / self.N
+        if getattr(self, "_beta_clamp_val", None) is not None:
+            self.beta[:] = self._beta_clamp_val
 
     # ------------------------------------------------------------ 우도
     def _empathy_shift(self) -> np.ndarray:
@@ -175,7 +185,10 @@ class OpponentInversion:
 
         self.alpha = jit(self.alpha, "alpha")
         self.rho = jit(self.rho, "rho")
-        self.beta = jit(self.beta, "beta", 0.05, 12.0)
+        if self._beta_clamp_val is not None:
+            self.beta[:] = self._beta_clamp_val
+        else:
+            self.beta = jit(self.beta, "beta", 0.05, 12.0)
         self.lambda_j = jit(self.lambda_j, "lambda_j", 0.0, 1.0)
         self.weights = np.ones(self.N) / self.N
 

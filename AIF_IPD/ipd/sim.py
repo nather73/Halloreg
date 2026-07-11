@@ -45,18 +45,35 @@ def _is_aif(agent) -> bool:
 
 
 def run_dyad(agent, opponent, n_rounds: int = 100,
-             verbose: bool = False) -> Dict[str, np.ndarray]:
+             verbose: bool = False,
+             env_err_a: float = 0.0, env_err_b: float = 0.0,
+             noise_seed: Optional[int] = None) -> Dict[str, np.ndarray]:
     """
     focal `agent` vs `opponent` 동시행동 IPD.
 
     agent    : AIF 에이전트(step) 또는 StrategyAgent(act/observe).
     opponent : 위와 동일. AIF vs AIF, AIF vs Strategy, Strategy vs Strategy 모두 지원.
     반환      : per-round 배열 dict.
+
+    환경 계층 실행오류 (보완안 §2 잡음 대칭화 + §1 공통난수)
+    ----------------------------------------------------------
+    env_err_a / env_err_b : 각 측의 행동 방출 후 환경이 확률적으로 뒤집는
+        실행오류율. 에이전트 클래스와 무관하게 부과되므로 AIF/전략 에이전트에
+        **대칭적으로** 적용할 수 있다 (기존 StrategyAgent 내부 error 와 별개).
+    noise_seed : 뒤집힘 수열을 **사전 생성**하는 전용 RNG 시드. 같은 시드를
+        조건 간 공유하면 잡음 실현이 완전히 동일해져(공통난수, CRN) 짝지은
+        비교의 분산이 줄어든다. 뒤집힘 실현은 상호작용 경로와 독립이다.
     """
     hist = {"my_act": [], "opp_act": [], "state": [],
             "my_payoff": [], "opp_payoff": []}
     prev_state = None
     prev_state_mirror = None
+    if env_err_a > 0 or env_err_b > 0:
+        nrng = np.random.default_rng(0 if noise_seed is None else int(noise_seed))
+        flips_a = nrng.random(n_rounds) < env_err_a
+        flips_b = nrng.random(n_rounds) < env_err_b
+    else:
+        flips_a = flips_b = None
 
     for t in range(n_rounds):
         # focal 행동
@@ -71,7 +88,13 @@ def run_dyad(agent, opponent, n_rounds: int = 100,
         else:
             opp_a = opponent.act()
 
-        # 관측 상호 통지 (StrategyAgent)
+        # 환경 계층 실행오류 (의도와 무관하게 행동이 뒤집힘; 양측 대칭 가능)
+        if flips_a is not None and flips_a[t]:
+            my_a = 1 - my_a
+        if flips_b is not None and flips_b[t]:
+            opp_a = 1 - opp_a
+
+        # 관측 상호 통지 (StrategyAgent 계열 — 실제 방출된 행동을 관측)
         if not _is_aif(agent):
             agent.observe(opp_a)
         if not _is_aif(opponent):
@@ -106,8 +129,13 @@ def _worker(task):
     반환 = (idx, result_dict).
     """
     idx, spec, n_rounds = task
+    from AIF_IPD.core.constants import set_coop_index
+    set_coop_index(spec.get("game_ci"))     # 게임구조 일반화 (멱등; 기본 복원)
     agent, opponent = build_from_spec(spec)
-    hist = run_dyad(agent, opponent, n_rounds)
+    hist = run_dyad(agent, opponent, n_rounds,
+                    env_err_a=float(spec.get("env_err_agent", 0.0)),
+                    env_err_b=float(spec.get("env_err_opponent", 0.0)),
+                    noise_seed=spec.get("noise_seed"))
     result = {"hist": hist}
     if _is_aif(agent):
         result["agent_log"] = {k: np.asarray(v) for k, v in agent.log.items()}
@@ -138,6 +166,9 @@ def _build_one(cfg: dict):
         from .env import make_opponent
         kind = cfg.pop("kind")
         return make_opponent(kind, **cfg)
+    if typ in ("qlearner", "bayes_br", "fictitious"):
+        from .baselines import make_baseline
+        return make_baseline(typ, **cfg)
     raise ValueError(f"알 수 없는 에이전트 type: {typ}")
 
 
@@ -282,10 +313,12 @@ def run_population_spec(spec: dict) -> Dict:
 
     n = len(members)
     rng = np.random.default_rng(seed)
+    match_resamples = int(spec.get("match_resamples", 1))
     if ppa is None:
-        pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]
+        matchings = [[(i, j) for i in range(n) for j in range(i + 1, n)]]
     else:
-        pairs = _sample_pairs(n, int(ppa), rng)
+        matchings = [_sample_pairs(n, int(ppa), rng)
+                     for _ in range(max(match_resamples, 1))]
 
     def build(idx: int, dyad_id: int):
         cfg = dict(members[idx])
@@ -298,23 +331,61 @@ def run_population_spec(spec: dict) -> Dict:
     payoff_sum = np.zeros(n_rounds)       # 라운드별 (양측 합) 보수 누적
     group_payoff = 0.0
     pair_cc: Dict[tuple, list] = {}
+    label_pay: Dict[str, float] = {}      # 라벨별 (보수 합, 라운드 수)
+    label_rounds: Dict[str, int] = {}
+    exploit_flow: Dict[tuple, float] = {} # (착취자 라벨, 피착취자 라벨) → T 보수 합
+    cc_by_matching = []                   # 매칭 재표집별 CC (분산 분해용)
+    n_pairs_total = 0
+    dyad_id = 0
 
-    for d, (i, j) in enumerate(pairs):
-        a = build(i, d)
-        b = build(j, d)
-        h = run_dyad(a, b, n_rounds)
-        total_cc += int(np.sum(h["state"] == CC))
-        total_rounds += n_rounds
-        payoff_sum += (h["my_payoff"] + h["opp_payoff"]) / 2.0
-        group_payoff += float(np.sum(h["my_payoff"]) + np.sum(h["opp_payoff"]))
-        key = tuple(sorted((labels[i], labels[j])))
-        pair_cc.setdefault(key, []).append(float(np.mean(h["state"] == CC)))
+    for m_idx, pairs in enumerate(matchings):
+        m_cc = 0
+        m_rounds = 0
+        for (i, j) in pairs:
+            a = build(i, dyad_id)
+            b = build(j, dyad_id)
+            dyad_id += 1
+            h = run_dyad(a, b, n_rounds)
+            cc_cnt = int(np.sum(h["state"] == CC))
+            total_cc += cc_cnt; m_cc += cc_cnt
+            total_rounds += n_rounds; m_rounds += n_rounds
+            payoff_sum += (h["my_payoff"] + h["opp_payoff"]) / 2.0
+            group_payoff += float(np.sum(h["my_payoff"]) + np.sum(h["opp_payoff"]))
+            key = tuple(sorted((labels[i], labels[j])))
+            pair_cc.setdefault(key, []).append(float(np.mean(h["state"] == CC)))
+            # ---- 라벨별 후생 회계 ----
+            li, lj = labels[i], labels[j]
+            label_pay[li] = label_pay.get(li, 0.0) + float(np.sum(h["my_payoff"]))
+            label_pay[lj] = label_pay.get(lj, 0.0) + float(np.sum(h["opp_payoff"]))
+            label_rounds[li] = label_rounds.get(li, 0) + n_rounds
+            label_rounds[lj] = label_rounds.get(lj, 0) + n_rounds
+            # ---- 착취 흐름 회계 (ALLC 착시 정량화, 보완안 §4) ----
+            # DC: focal(i) 이 배신, 상대(j) 협력 → i 가 T 획득. CD 는 반대.
+            dc = int(np.sum(h["state"] == 2)); cd = int(np.sum(h["state"] == 1))
+            if dc:
+                k2 = (li, lj)
+                exploit_flow[k2] = exploit_flow.get(k2, 0.0) + dc * float(h["my_payoff"][h["state"] == 2][0])
+            if cd:
+                k2 = (lj, li)
+                exploit_flow[k2] = exploit_flow.get(k2, 0.0) + cd * float(h["opp_payoff"][h["state"] == 1][0])
+        n_pairs_total += len(pairs)
+        cc_by_matching.append(float(m_cc / max(m_rounds, 1)))
 
-    n_pairs = max(len(pairs), 1)
+    n_pairs = max(n_pairs_total, 1)
     payoff_trace = payoff_sum / n_pairs
     third = max(n_rounds // 3, 1)
     early = float(payoff_trace[:third].mean())
     late = float(payoff_trace[-third:].mean())
+    by_label_payoff = {k: label_pay[k] / max(label_rounds[k], 1) for k in label_pay}
+    # 강건 협력 지표: 착취 전략(ALLD) 제외 부분집단의 평균 보수
+    non_expl = [k for k in label_pay if not k.startswith("alld")]
+    ne_pay = sum(label_pay[k] for k in non_expl)
+    ne_rounds = sum(label_rounds[k] for k in non_expl)
+    # ALLD 가 착취(일방 배신)로 획득한 총보수와 그 원천 라벨 분해
+    alld_gain = {}
+    for (dst, src), v in exploit_flow.items():
+        if dst.startswith("alld"):
+            alld_gain[src] = alld_gain.get(src, 0.0) + v
     return {
         "cc_rate": float(total_cc / max(total_rounds, 1)),
         "mean_payoff": float(payoff_trace.mean()),
@@ -325,8 +396,13 @@ def run_population_spec(spec: dict) -> Dict:
         "payoff_growth": float((late - early) / max(early, 1e-9)),
         "by_label_cc": {" | ".join(k): float(np.mean(v))
                         for k, v in pair_cc.items()},
+        "by_label_payoff": by_label_payoff,
+        "nonexploiter_mean_payoff": float(ne_pay / max(ne_rounds, 1)),
+        "alld_exploit_gain": alld_gain,
+        "alld_exploit_gain_total": float(sum(alld_gain.values())),
+        "cc_by_matching": cc_by_matching,
         "n_agents": n,
-        "n_pairs": len(pairs),
+        "n_pairs": n_pairs_total,
         "labels": labels,
     }
 
@@ -334,6 +410,8 @@ def run_population_spec(spec: dict) -> Dict:
 def _pop_worker(task):
     """집단 시뮬레이션 병렬 워커 (spawn pickle 가능 top-level)."""
     idx, spec = task
+    from AIF_IPD.core.constants import set_coop_index
+    set_coop_index(spec.get("game_ci"))
     return idx, run_population_spec(spec)
 
 

@@ -264,6 +264,9 @@ class LambdaRegulator:
     lam_max: float = 0.8
     sophisticated: bool = True
     kappa: float = 0.9
+    # DD(상호배신)도 grievance 를 충전하는가. None 이면 (not sophisticated) 을 따름
+    # (기존 동작 보존). H5 요인 분해를 위해 sophisticated 와 독립 조작 가능.
+    dd_charges: object = None
     protective_gain: float = 0.9     # g⁻ 충전 이득 (실현된 배신)
     anticipatory_gain: float = 0.25  # g⁻ 예기적 충전 이득 (allostasis: 예측된 배신)
     tonic_weight: float = 0.55       # 실현 배신 구동 중 '지속(tonic)' 성분
@@ -345,7 +348,9 @@ class LambdaRegulator:
         # 즉각형(vmPFC, sophisticated=False)은 '지금 상대가 배신했다'는 신호 자체에
         # 반응한다. 자신이 방어 중(DD)인지 여부(맥락)를 구분하지 못하므로, 상대의
         # 모든 배신(CD ∪ DD)이 grievance 를 충전한다 (타인의 내재된 의도에만 귀인).
-        defect_signal = betrayal if self.sophisticated else (betrayal or opp_defected)
+        dd_charges = (not self.sophisticated) if self.dd_charges is None \
+            else bool(self.dd_charges)
+        defect_signal = betrayal or (dd_charges and opp_defected)
         betrayal_drive = (self.tonic_weight
                           + self.acute_weight * float(pred_coop_prev)) if defect_signal else 0.0
         # κ: 개인의 dispositional 귀인 성향
