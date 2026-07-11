@@ -21,7 +21,7 @@ core.pymdp_backend
 설정한다(Windows/AMD 환경 포함 CPU 전용 동작; 사용자 지정값은 존중).
 
 사용:
-    from HalloReg.core.pymdp_backend import PymdpEFE
+    from AIF_IPD.core.pymdp_backend import PymdpEFE
     efe = PymdpEFE()
     g_self  = efe.G_self(pc=0.7)     # shape (2,) = [G_C, G_D]
     g_other = efe.G_other(pc=0.7)

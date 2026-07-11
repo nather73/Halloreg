@@ -286,7 +286,7 @@ class LambdaRegulator:
     def step(self, betrayal: bool, opp_cooperated: bool,
              inferred: dict, pred_coop_prev: float,
              core: CoreAllostaticBeliefState,
-             regulate: bool = True) -> dict:
+             regulate: bool = True, opp_defected: bool = False) -> dict:
         """
         한 라운드 λ 조절.
 
@@ -296,6 +296,15 @@ class LambdaRegulator:
         pred_coop_prev : 직전 예측한 상대 협력확률(배신 강도 = 놀람 정도).
         core : CoreAllostaticBeliefState (귀인 성향 제공).
         regulate : False 면 λ 고정(원 Albarracin 재현).
+        opp_defected : 상호배신(DD) — 상대가 배신했으나 나도 방어 중.
+            **정교형(rmPFC)** 은 자신이 이미 방어 중인 DD 를 '항상성 불균형이 작은'
+            약한 증거로 취급하여 grievance 를 충전하지 않는다(대신 예기적 구동 사용).
+            **즉각형(vmPFC)** 은 맥락(내 행동, 상대 β)과 무관하게 상대의 배신 자체를
+            기질 증거로 귀인하므로 DD 에서도 grievance 를 계속 충전한다.
+            → 착취자(ALLD) 상대에서 즉각형은 grievance 가 포화 상태로 유지되어
+              조기·지속적 배신(강한 자원 방어)을 보이고, 잡음 TFT 상대에서는
+              보복 나선(DD)의 배신까지 기질로 오귀인하여 협력을 복구하지 못한다
+              (H5 의 조작화).
         """
         E_alpha = inferred.get("alpha", 0.0)
         E_beta = inferred.get("beta", 1.0)
@@ -332,8 +341,13 @@ class LambdaRegulator:
         # 순수 반응적(homeostatic) 설계라면 구동 ∝ 놀람(pred_coop_prev)뿐이며,
         # 상대의 배신이 '예측 가능'해지는 순간 구동이 0으로 꺼져 자기보호가 붕괴한다.
         # 항상성 조절(allostasis)은 예기적이어야 하므로 tonic 성분을 남긴다.
+        #
+        # 즉각형(vmPFC, sophisticated=False)은 '지금 상대가 배신했다'는 신호 자체에
+        # 반응한다. 자신이 방어 중(DD)인지 여부(맥락)를 구분하지 못하므로, 상대의
+        # 모든 배신(CD ∪ DD)이 grievance 를 충전한다 (타인의 내재된 의도에만 귀인).
+        defect_signal = betrayal if self.sophisticated else (betrayal or opp_defected)
         betrayal_drive = (self.tonic_weight
-                          + self.acute_weight * float(pred_coop_prev)) if betrayal else 0.0
+                          + self.acute_weight * float(pred_coop_prev)) if defect_signal else 0.0
         # κ: 개인의 dispositional 귀인 성향
         attributed_disp = self.kappa * disposition * disp_credence * betrayal_drive
 

@@ -34,7 +34,7 @@ from typing import Optional, List, Dict
 
 import numpy as np
 
-from HalloReg.core.constants import COOP, DEFECT
+from AIF_IPD.core.constants import COOP, DEFECT
 
 _EPS = 1e-10
 

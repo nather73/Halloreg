@@ -21,8 +21,8 @@ from typing import Tuple, Dict
 
 import numpy as np
 
-from HalloReg.core.constants import COOP, DEFECT, PD_PAYOFFS
-from HalloReg.core.generative import softmax
+from AIF_IPD.core.constants import COOP, DEFECT, PD_PAYOFFS
+from AIF_IPD.core.generative import softmax
 from .opponent_simulator import OpponentSimulator
 
 

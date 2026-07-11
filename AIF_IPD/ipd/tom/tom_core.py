@@ -26,10 +26,10 @@ from typing import Optional, Dict, Tuple
 
 import numpy as np
 
-from HalloReg.core.constants import (
+from AIF_IPD.core.constants import (
     COOP, DEFECT, PD_PAYOFFS, PAYOFF_SELF, PAYOFF_OTHER,
 )
-from HalloReg.core.generative import efe_terms, softmax
+from AIF_IPD.core.generative import efe_terms, softmax
 from .inversion import OpponentInversion, ObservationContext
 
 

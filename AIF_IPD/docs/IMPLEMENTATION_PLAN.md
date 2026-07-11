@@ -3,6 +3,11 @@
 **H**ierarchical **Allo**static **Reg**ulation of empathy in Active Inference agents
 for the Iterated Prisoner's Dilemma.
 
+> **문서 상태.** 본 문서는 리팩터링·가설 재설계(경로 이전 `HalloReg/` → `Halloreg/AIF_IPD/`,
+> 메인 엔트리포인트 단수화, H5/H7/H8 재설계, 가설별 개별 PNG)를 반영한 **수정본**이다.
+> 이론적 근거(§1, §4)는 대체로 유지되며, 아키텍처·실험·결과·실행법(§2, §5, §7)이
+> 갱신되었다.
+
 ---
 
 ## 0. 한 줄 요약
@@ -56,37 +61,55 @@ grievance ← decay·g⁻ + protective_gain·(κ·disp·cred·betrayal_drive)
 
 ## 2. 아키텍처
 
+리팩터링으로 최상위 패키지가 `HalloReg/` 에서 `AIF_IPD/` 로 바뀌었다. 리포지토리 루트는
+`Halloreg/` 이며, 그 아래 파이썬 패키지 `AIF_IPD/` 가 놓인다 (`from AIF_IPD. …` 로 import).
+
 ```
-HalloReg/
-├── core/                      공유 유틸 + HalloReg 의 심장
-│  ├── constants.py            PD 상수, joint-outcome 인덱싱 (CC/CD/DC/DD)
-│  ├── generative.py           POMDP (A,B,C,D) + 해석적 EFE (pymdp 와 동치)
-│  ├── pymdp_backend.py        pymdp 1.0.x JAX 백엔드 (선택) + 동치성 검증
-│  ├── allostasis.py           ★ CoreAllostaticBeliefState, LambdaRegulator
-│  └── logging_utils.py        logging 설정, OS 적응형 한글 폰트
-├── ipd/
-│  ├── agent.py                ToMEmpathicAgent (고정 λ), AdaptiveAgent (조절 λ)
-│  ├── env.py                  Environment, StrategyAgent(TFT/ALLC/ALLD/WSLS/GTFT/…),
-│  │                           형질전환 스케줄(변덕 상대), make_opponent/make_capricious
-│  ├── sim.py                  run_dyad / run_many(멀티코어) / run_population
-│  ├── tom/
-│  │  ├── tom_core.py          TheoryOfMind(정적 최적반응), GatedToM, RecursiveSocialEFE
-│  │  ├── opponent_simulator.py 계획 롤아웃용 상대 반응 시뮬레이터
-│  │  ├── sophisticated_planner.py 계획지평 H 정책 열거·롤아웃 (Albarracin 보존)
-│  │  └── inversion.py         입자필터 기반 상대 θ=(α,ρ,β,λ_j) 역추론
-│  └── metrics/exploitability.py 착취가능성·CC율·방어특이성·Welch t
-├── scripts/run_ipd_experiments.py  ★ 메인 엔트리포인트 (H1–H10 + 시각화)
-├── docs/IMPLEMENTATION_PLAN.md
-└── results/                   (gitignored)
+Halloreg/                         ← 리포지토리 루트
+├── .gitignore                    ★ 신규: __pycache__/·산출물 png·json·zip·log·에디터 잡파일 무시
+├── README.md
+└── AIF_IPD/                      ← 파이썬 패키지 루트
+   ├── core/                      공유 유틸 + HalloReg 의 심장
+   │  ├── constants.py            PD 상수, joint-outcome 인덱싱 (CC/CD/DC/DD)
+   │  ├── generative.py           POMDP (A,B,C,D) + 해석적 EFE (pymdp 와 동치)
+   │  ├── pymdp_backend.py        pymdp 1.0.x JAX 백엔드 (선택) + 동치성 검증
+   │  ├── allostasis.py           ★ CoreAllostaticBeliefState, LambdaRegulator
+   │  └── logging_utils.py        logging 설정, OS 적응형 한글 폰트
+   ├── ipd/
+   │  ├── agent.py                ToMEmpathicAgent (고정 λ), AdaptiveAgent (조절 λ)
+   │  ├── env.py                  Environment, StrategyAgent(TFT/ALLC/ALLD/WSLS/GTFT/…),
+   │  │                           형질전환 스케줄, make_opponent,
+   │  │                           ★ CAPRICIOUS_CASES 카탈로그 + make_capricious_case /
+   │  │                             capricious_case_spec / capricious_switch_rounds
+   │  ├── sim.py                  run_dyad / run_many(멀티코어) / run_population
+   │  │                           ★ run_population_spec / run_populations(병렬) / _pop_worker
+   │  ├── tom/
+   │  │  ├── tom_core.py          TheoryOfMind(정적 최적반응), GatedToM, RecursiveSocialEFE
+   │  │  ├── opponent_simulator.py 계획 롤아웃용 상대 반응 시뮬레이터
+   │  │  ├── sophisticated_planner.py 계획지평 H 정책 열거·롤아웃 (Albarracin 보존)
+   │  │  └── inversion.py         입자필터 기반 상대 θ=(α,ρ,β,λ_j) 역추론
+   │  └── metrics/exploitability.py 착취가능성·CC율·방어특이성·Welch t
+   │                              ★ first_defection_round · payoff_growth 추가
+   ├── scripts/
+   │  ├── run_ipd_experiment.py   ★ 메인 엔트리포인트 (단수형; H1–H10 + 가설별 시각화)
+   │  └── run_ipd_experiments.py  ★ 하위호환 셔틀 (복수형 → 단수형으로 위임)
+   ├── docs/IMPLEMENTATION_PLAN.md
+   └── results/                   (gitignored)
 ```
 
-### 명세 대비 변경 사항
+### 명세/이전 판 대비 변경 사항
 
-* `core/` 는 파일명이 명세되지 않아 위 5개 모듈로 구성했다.
-* 명세에 없던 `core/allostasis.py` 를 추가했다. HalloReg 의 핵심 기여(core allostatic
-  belief + λ 조절)를 `agent.py` 에 묻어두면 재사용·절제실험이 불가능하기 때문이다.
-* 명세에 없던 `core/pymdp_backend.py`, `core/logging_utils.py`, `ipd/sim.py::run_population`
-  을 추가했다 (각각 pymdp 요구사항, logging 요구사항, H8 을 위해 필요).
+* **패키지 이전**: 전 모듈의 `from HalloReg.` → `from AIF_IPD.` 로 일괄 수정.
+  스크립트는 `sys.path` 에 리포지토리 루트(`Halloreg/`)를 삽입해 `AIF_IPD` 를 최상위
+  패키지로 import 한다.
+* **엔트리포인트 단수화**: 메인은 `scripts/run_ipd_experiment.py` **(단수형)** 이다.
+  기존 복수형 `run_ipd_experiments.py` 는 동일 인자를 단수형에 위임하는 셔틀로 남겨
+  기존 명령이 그대로 동작한다.
+* **가설별 개별 PNG**: 3×3 통합 그림 하나(`halloreg_ipd.png`)를 폐기하고, 가설마다
+  개별 파일(`h1_*.png` … `h10_*.png`)을 저장한다. 같은 실험에서 나오는 H2/H3, H9/H10 도
+  **각각 별도 파일**이다. 여러 지표를 함께 보는 것이 의미 있는 가설(H5/H7/H8)만 한
+  파일 안에서 다중 패널로 묶는다.
+* **집단 시뮬레이션 병렬화**: H8 을 위해 `run_populations`(spawn 풀)를 추가했다.
 * **제거한 파일 없음.** 명세된 모든 파일이 실제로 쓰인다.
 
 ---
@@ -107,16 +130,15 @@ neg_EFE(a) = E_{s'~B(·|a,p_c)}[ C[s'] ]  +  H[ B(·|a,p_c) ]
 ```
 
 와 같다. `core/pymdp_backend.py::PymdpEFE.check_equivalence()` 가 이를 **런타임에 assert**
-한다 (`--check-equivalence` 로 실행; 통과 확인됨).
+한다 (`--check-equivalence` 로 실행).
 
 따라서:
 
 * **기본 경로 = numpy 해석해** (`core/generative.py`). 수천 배 빠르고, 재귀적 확장(R1/R2)의
   수식이 그대로 드러난다.
 * **검증/확장 경로 = pymdp 1.0.x JAX** (`--backend pymdp`, `AdaptiveAgent(use_pymdp=True)`).
-  `Agent(A,B,C,D, batch_size=1, policy_len=1)`, 관점취하기는
-  `eqx.tree_at(lambda a: a.C, agent, C_other)` 로 선호를 교체해 구현한다.
-  `A/B/C/D` 는 batch 선행축을 가진 jax 배열 리스트.
+  `Agent(A,B,C,D, batch_size=1, policy_len=1)`, 관점취하기는 `eqx.tree_at` 으로 선호(C)를
+  교체해 구현한다. `A/B/C/D` 는 batch 선행축을 가진 jax 배열 리스트.
 
 > JAX 는 `JAX_PLATFORMS=cpu` 로 강제한다 (Windows + AMD 에서 ROCm 미지원). 이 모델
 > 규모에서는 CPU 로 충분하다.
@@ -145,7 +167,9 @@ evidence[rho]       = σ(−E[ρ]) · precision
 **β 가 의도성의 결정적 신호다.** 의도적 착취자(ALLD, 실행잡음 0) → 높은 β 로 추론되고,
 잡음 파트너(TFT + 20% 실행오류) → 낮은 β 로 추론된다.
 
-DD(상호배신) 관측도 약한 배신 증거(가중 0.35)로 반영한다. 이것이 없으면 자기보호로
+DD(상호배신) 관측도 증거로 반영하되, `update(betrayal, opp_defected)` 가 두 경로를 구분한다.
+`CoreAllostaticBeliefState.update` 는 `defect_evidence = betrayal or opp_defected` 로 배신
+증거를 켜되, DD 는 불균형이 작으므로 약한 가중으로 반영한다. 이것이 없으면 자기보호로
 전환한 순간 CD 관측이 사라져 core belief 이 동결된다.
 
 ### 4.2 귀인 개인차: 두 겹의 마스크
@@ -171,6 +195,8 @@ DD(상호배신) 관측도 약한 배신 증거(가중 0.35)로 반영한다. �
 
 ### 4.3 λ 조절기 (두 개의 누출적분기)
 
+`LambdaRegulator.step(betrayal, opp_cooperated, …, opp_defected)`:
+
 ```
 g⁻ (grievance) ← decay·g⁻ + protective_gain·attributed_disp
                           + anticipatory_gain·anticipatory
@@ -181,10 +207,19 @@ g⁺ (trust)     ← trust_decay·g⁺ + trust_gain·coop_credence·[협력]
 λ_eff = clip( λ_base·(1 − g⁻) + (λ_max − λ_base)·g⁺ ,  0 , λ_max )
 ```
 
-* `sophisticated=True` (rmPFC): `disposition` 을 `precision_conf = E[β]/4` 로 게이팅하고,
-  누적된 `disp_credence` 로 변조하며, 예기적 항을 켠다.
+배신 신호 자체가 정교/즉각을 가른다:
+
+```
+defect_signal = betrayal  if sophisticated  else  (betrayal or opp_defected)
+```
+
+* `sophisticated=True` (rmPFC): CD(내가 협력했는데 당함)만을 배신 신호로 삼고,
+  `disposition` 을 `precision_conf = E[β]/4` 로 게이팅하며, 누적된 `disp_credence` 로
+  변조하고, 예기적 항을 켠다. → 맥락(내가 방어 중인지, 잡음인지)을 함께 고려.
 * `sophisticated=False` (vmPFC 즉각): 정밀도도, 누적 귀인 신뢰도도 무시하고
-  (`disposition = disp_credence = 1`) 지금 당한 배신에만 반응한다. 예기적 항은 꺼진다.
+  (`disposition = disp_credence = 1`), **자신이 방어 중(DD)인지 여부를 구분하지 못해
+  상대의 모든 배신(CD ∪ DD)이 grievance 를 충전**한다. 즉 상대의 배신을 전적으로
+  타인의 내재된 의도에 귀인한다. 예기적 항은 꺼진다. → **H5 즉각형의 신경적 조작화**.
 * `kappa` (κ∈[0,1]): 기질귀인 성향의 개인차 — 전략적(κ≈1) vs 친사회적(κ≈0).
 
 ### 4.4 Albarracin 대비 두 재귀적 확장
@@ -211,106 +246,176 @@ G_social(a) = (1−λ)·G_self(a) + λ·E[G_other(a)]
 
 ## 5. 가설 ↔ 실험 매핑
 
-| 가설 | 실험 함수 | 조건 | 주 지표 |
+기본 실행 규모는 **seeds=120, rounds=60, jobs=−1** 이다.
+
+| 가설 | 실험 함수 | 출력 PNG | 주 지표 |
 |---|---|---|---|
-| H1 자기보호 | `exp_H1` | Adaptive vs Fixed-λ, 착취자 | λ_final, 착취가능성 |
-| H2 의도/맥락 구분 | `exp_H2_H3` | Adaptive vs {착취자, 잡음TFT, 무작위} | λ 회복 |
-| H3 형질 추정 구분 | `exp_H2_H3` | 동일 | E[α], E[β] |
-| H4 협력 복원 | `exp_H4` | Adaptive vs Fixed-λ, TFT | CC율 |
-| H5 정교 vs 즉각 | `exp_H5` | `sophisticated` 토글 × {착취자, 잡음TFT, 무작위} | 방어 특이성, 보수 |
-| H6 잡음과 고정전략 | `exp_H6` | 라운드로빈 × 잡음 {0, 0.15} | 평균 보수 |
-| H7 변덕 상대 | `exp_H7` | Adaptive vs GTFT/WSLS/TFT × 잡음 스윕 | 평균 보수 |
-| H8 집단 역학 | `exp_H8` | AdaptiveAgent 수 {0,2,4,6} | 집단 CC율 기울기 |
-| H9 α 전용 귀인 | `exp_H9_H10` | `attribution_target` 절제, 변덕 상대 | 누적 보수 |
-| H10 λ 전용 귀인 | `exp_H9_H10` | 절제, 정적 잡음 TFT | CC율 |
+| H1 자기보호 | `exp_H1` | `h1_self_protection` | λ_final, 착취가능성 |
+| H2 의도/맥락 구분 | `exp_H2_H3` | `h2_lambda_recovery` | λ 회복 |
+| H3 형질 추정 구분 | `exp_H2_H3` | `h3_trait_estimates` | E[α], E[β] |
+| H4 협력 복원 | `exp_H4` | `h4_cooperation_restoration` | CC율 |
+| H5 즉각 vs 정교 | `exp_H5` | `h5_immediate_vs_sophisticated` | 방어량·누적보수·첫배신 |
+| H6 잡음과 고정전략 | `exp_H6` | `h6_noise_fixed_strategies` | 평균 보수 |
+| H7 변덕 상대 | `exp_H7` | `h7_capricious_partners` | 평균 보수·λ 반응성·국면분해·4×4 |
+| H8 집단 역학 | `exp_H8` | `h8_population_dynamics` | CC율·집단후생·성장률 |
+| H9 α 전용 귀인 | `exp_H9_H10` | `h9_alpha_only_attribution` | 누적 보수 |
+| H10 λ 전용 귀인 | `exp_H9_H10` | `h10_lambda_only_attribution` | CC율 + 이중해리 |
 
-### 실행 결과 (seeds=12, rounds=120)
+### 5.1 H5 재설계 — 즉각형(vmPFC) vs 정교형(rmPFC)
 
-전 가설 지지. 대표 수치:
+**이전 판**은 `sophisticated` 토글만 켜고 껐다. **수정본**은 H5 를 두 유형의
+*자기보호 계산*의 대비로 재정의한다:
 
-* **H1**: λ_final 0.00 (Adaptive) vs 0.40 (Fixed); 착취가능성 0.045 vs 0.966.
-  고정-λ 에이전트의 착취자 상대 누적보수는 사실상 0 이다.
-* **H2/H3**: λ_final 착취자 0.00 vs 잡음TFT 0.51. E[β] 는 착취자에서 크게 높고, E[α] 는 반대.
-* **H5**: 방어 특이성 정교 +0.144 vs 즉각 −0.265. 즉각형은 착취자 방어도 **더 약하고**
-  (예기적 항 부재로 진동) 잡음 파트너를 과잉처벌한다.
-* **H9/H10 이중해리**: `intent_only` 는 정적 잡음 파트너의 CC율을 0.839 → 0.185 로
-  붕괴시키고(과잉처벌), `beta_context` 는 착취자 상대 누적보수를 114.6 → 40.2 로
-  잃는다(과소방어).
+* **정교형** (`sophisticated=True`, `attribution_target="all"`; rmPFC): 의도(α, ρ, λ_j)와
+  맥락(β)을 함께 귀인. β 게이팅으로 증거가 쌓일 때까지 초기 관대함을 유지.
+* **즉각형** (`sophisticated=False`, `attribution_target="intent_only"`; vmPFC): 맥락을
+  귀인할 수 없고, 상대의 모든 배신(자신이 방어 중인 DD 포함, §4.3)을 기질 증거로 삼음.
 
-### H5 의 문자적 주장에 대하여 (정직한 보고)
+**검정 (전부 Welch t):**
 
-원 가설은 "정교형이 착취자에게 더 방어하지만 **잡음 상대에게 덜 번다**" 였다.
-검증 결과 이 주장은 **상대의 종류에 의존한다**:
+1. **착취자(ALLD) 방어량**(−착취가능성): 즉각 > 정교 — 즉각형은 grievance 가 조기
+   포화되어 더 빨리·지속적으로 방어하므로 자원 방어가 많다.
+2. **noisy TFT 누적보수**: 즉각 < 정교 — 이른 배신으로 보복 나선(DD)에 갇혀 손해.
+3. **(보조) 첫 배신 라운드**: 즉각 < 정교 — 조기 배신의 직접 증거.
 
-* **완전 무작위** 상대(용서가 보답되지 않음): 정교형 208.2 < 즉각형 316.4 → **주장 성립**.
-* **잡음 TFT** 상대(용서가 보답됨): 정교형 281.2 > 즉각형 242.2 → **주장 반전**.
+`supported = (1) ∧ (2)`.
 
-즉 관대함의 비용은 "용서가 상호성으로 되돌아오지 않는" 환경에서만 발생한다.
-따라서 `exp_H5` 의 **주 검정은 방어 특이성**(선택적 방어)으로 두고, 문자적 주장의
-두 조건은 결과의 `literal` 필드에 분리 보고한다.
+**실증 결과(20 시드 프로브).** 착취자 방어량 즉각 −0.035 > 정교 −0.066 (p<0.0001);
+noisy TFT 누적보수 즉각 114.2 < 정교 143.4 (p<0.0001), CC율 0.12 vs 0.92. → **지지**.
+DD 충전(`opp_defected`)이 즉각형의 핵심 조작화이며, 이것이 없으면 즉각형은 자기보호
+전환 후 grievance 가 누출되어 조작이 무력화된다.
 
-### H7 의 역U자 (예측된 경계조건)
+### 5.2 H7 보완 — 다양한 형질전환(변덕) 상대
 
-잡음 0 에서는 형질 전환이 행동에 그대로 드러나 표면 규칙(TFT)만으로 충분하며
-ToM 이득이 사라진다(adaptive 2.124 < TFT 2.274). 중간 잡음(0.10)에서 잡음과 의도변화가
-혼동되어 잠재 형질 추론이 비로소 이득이 된다(adaptive 2.105 > GTFT 2.062 > WSLS 1.957).
-과다 잡음(0.20)에서는 신호 자체가 소실된다. 주 조건은 중간 잡음이며 스윕 전체를 보고한다.
+**보완 3축:** (1) `CAPRICIOUS_CASES` 카탈로그 8종(주기 10/12/15/20/30, 순환 5종:
+상호성→착취→화해, 착취-선행, 교대, WSLS 혼합 등)을 case별·합산 비교. (2) 최종 보수 외에
+**전환시점 정렬(switch-aligned)** per-round 보수·λ 추이와 |Δλ| 반응성. (3) TFT/GTFT/WSLS/
+Adaptive **4×4 상호 대전**.
+
+**정직한 보고 — 이득의 지평 의존성.** 24 시드·60 라운드 검증에서 AdaptiveAgent 는 전
+case 합산 총보수에서 GTFT 에 **열세**다(1.775 vs 1.928, p<0.0001; 8/8 case 열세).
+국면 분해가 그 기제를 드러낸다:
+
+* **착취(ALLD) 국면**: adaptive 0.80 < GTFT 1.00 — 공감 prior(λ_base=0.4)로 방어가
+  **느려** 자기보호 이득이 발생하지 않는다.
+* **협력 국면**: adaptive 2.43 < GTFT 2.55 (p<0.001) — grievance 히스테리시스로 인한
+  **화해 지연 비용**.
+* **유의하게 성립하는 것**: λ 가 의도 전환을 추적한다(|Δλ|≈0.08 > 0). 즉 ToM 기제는
+  '작동'하나 이 지평·이 보수 구조에서 순이득으로 전환되지 않는다.
+
+진단상 원 저장소식 단순 3국면 스케줄 **120 라운드**에서는 adaptive 총보수가 GTFT 를
+근소 상회한다(2.12 vs 2.07) — 이득이 지평 의존적임을 확인한다. 따라서 `supported` 를
+단일 불리언이 아니라 dict 로 보고한다:
+
+```
+supported = {"overall_payoff_advantage": False,   # 60라운드
+             "exploit_phase_defense":     False,
+             "lambda_responsive":         True}
+```
+
+H7 는 억지로 지지시키지 않고, 국면 분해와 지평 의존성을 정직하게 시각화한다
+(패널 F = 착취/협력 국면 보수 분해).
+
+### 5.3 H8 전면 수정 — 집단 역학
+
+**병렬화**: 모든 집단 replicate 를 `run_populations`(spawn 풀)로 실행.
+**지표 확장**: CC율 + 집단 전체 평균 payoff + 초기→후기 기대보수 증가율(`payoff_growth`).
+**네 한계 극복 + 통합:**
+
+* (a) λ_base ∈ {0.1, 0.2, 0.22, **0.24**, 0.26, 0.28, 0.3, 0.4} 스윕 (Albarracin 경계 0.24 포함).
+* (b) 소집단에서 고정전략(TFT/GTFT/WSLS/ALLC/ALLD) 동수 투입 시 CC 기울기 대조.
+* (c) 즉각형:정교형 비율 ∈ {0, 20, 40, 60, 80, 100}%.
+* (d) 대규모 N∈{30, 100} 확장(희소 무작위 짝짓기 표본화), **변덕 상대 포함 base**
+  (`LARGE_MIX`: TFT/GTFT/WSLS/ALLC/ALLD/random/capricious), Adaptive 비율에 따른 CC.
+* (f) 대규모 공정비교: 동일 N=100·변덕 포함 환경에서 filler ∈ {adaptive, 각 고정전략} 를
+  동일 비율로 투입해 기울기 비교.
+* (e) **통합 요인 시뮬레이션** (N≈100): λ × 즉각형 비율 × Adaptive 비율 격자 + CC 에 대한
+  다중회귀(OLS)로 Adaptive 비율(frac)의 독립 효과 검정.
+
+**정직한 보고 — 지지 기준과 ALLC 착시.** 핵심 주장(집단 규모에서 Adaptive 비율↑ → 협력↑)의
+판정은 **규모 확장 증거**로 한다:
+
+```
+supported = (slope[λ=0.4] > 0)  ∧  (대규모 CC 기울기 > 0, 모든 N)  ∧  (통합 OLS: frac 계수 > 0)
+```
+
+고정전략 대조(b/f)는 지지/미지지 **게이트가 아니라 한정 분석**이다. 얕은 CC 지표에서는
+무조건협력(ALLC)이 기계적으로 우세할 수 있고, 심지어 집단 평균 payoff 도 앞설 수 있으나,
+이는 base 의 착취자에게 보수를 상납해 총량을 부풀린 **취약한 협력**이다. 바로 이 착시를
+드러내기 위해 CC 외에 후생·성장 지표를 병기했다.
+
+**추가 통찰 — λ 경계.** λ 에 대한 CC 기울기의 구배가 양수이고, **λ=0.24 부근에서 기울기
+부호가 전환**된다(λ=0.24 에선 음수, λ=0.4 에선 양수). 이는 Albarracin 의 공감 경계를
+집단 수준에서 재현한 것으로, 결함이 아니라 예측이다.
+
+### 5.4 H9/H10 — 귀인 범위 절제 + 이중해리
+
+`attribution_target ∈ {all, intent_only, alpha_only, lambda_only, beta_context}` 절제.
+H9 는 변덕 상대(의도 변동)에서 `alpha_only` < `all`(누적보수), H10 은 정적 잡음 TFT 에서
+`lambda_only` < `all`(CC율)을 검정한다. 추가로 **이중해리**를 보고한다:
+`intent_only` 는 잡음을 의도로 오귀인해 **과잉처벌**(정적 잡음 상대 CC 붕괴),
+`beta_context` 는 의도 귀인 불가로 **과소방어**(착취자에게 보수 상실).
 
 ---
 
 ## 6. 병렬 실행
 
-다이애드는 완전 독립이다. `ipd/sim.py::run_many` 가
-`multiprocessing.get_context("spawn").Pool.imap_unordered` 로 코어에 분배한다.
+다이애드·집단 replicate 는 완전 독립이다.
+`ipd/sim.py::run_many` 와 `run_populations` 가
+`multiprocessing.get_context("spawn").Pool` 로 코어에 분배한다.
 
 * **spawn 필수**: JAX 는 fork-unsafe.
 * 워커 oversubscription 방지를 위해 `sim.py` 최상단(= jax import 이전)에서
   `XLA_FLAGS`(intra-op 1), `OMP/OPENBLAS/MKL_NUM_THREADS=1`, `JAX_PLATFORMS=cpu` 를 설정한다.
-* `--jobs -1` → `cpu_count() − 1`. `--jobs 1` → 순차.
+  메인 스크립트도 import 이전에 동일 환경변수를 이중 설정한다.
+* `--jobs -1` → `cpu_count() − 1`. `--jobs 1` → 순차. 시드로 결정되므로 워커 수와
+  결과가 무관하다.
+* `mp.freeze_support()` 로 Windows/spawn 안전.
 
 ---
 
 ## 7. 실행법
 
+리포지토리 루트(`Halloreg/`)에서 실행한다.
+
 ```bash
-cd <HalloReg 의 부모 디렉터리>          # HalloReg 가 최상위 패키지로 import 되어야 함
-python HalloReg/scripts/run_ipd_experiments.py                 # 기본: seeds=12 rounds=120 jobs=-1
-python HalloReg/scripts/run_ipd_experiments.py --quick         # 스모크 테스트 (~10초)
-python HalloReg/scripts/run_ipd_experiments.py --seeds 24 --rounds 200 --jobs -1
-python HalloReg/scripts/run_ipd_experiments.py --experiments H1 H5 H9H10
-python HalloReg/scripts/run_ipd_experiments.py --backend pymdp --check-equivalence
+# 전체 실험 (기본값: seeds=120, rounds=60, jobs=-1)
+python AIF_IPD/scripts/run_ipd_experiment.py
+
+# 빠른 스모크 테스트 (seeds=3, rounds=30)
+python AIF_IPD/scripts/run_ipd_experiment.py --quick
+
+# 일부 가설만 / 순차 실행
+python AIF_IPD/scripts/run_ipd_experiment.py --experiments H5 H7 H8 --jobs 1
+
+# pymdp 1.0.x ↔ numpy 해석적 EFE 동치성 검증
+python AIF_IPD/scripts/run_ipd_experiment.py --check-equivalence --experiments H1
+
+# (하위호환) 기존 복수형 이름도 동일하게 동작
+python AIF_IPD/scripts/run_ipd_experiments.py --quick
 ```
 
-산출물: `results/halloreg_ipd.png` (3×3 패널), `results/halloreg_results.json`.
+인자: `--seeds`(기본 120), `--rounds`(기본 60), `--jobs`(기본 −1),
+`--experiments`(기본 전체: `H1 H2H3 H4 H5 H6 H7 H8 H9H10`), `--backend {numpy,pymdp}`,
+`--quick`, `--tag`.
 
-### 그림의 불확실성 표기 (모든 패널 공통)
+산출물: `results/` 에 가설별 PNG 10 개(`h1_*` … `h10_*`)와
+`results/halloreg_results{tag}.json`(수치 요약).
 
-음영대와 오차막대는 **시드 간 표본표준편차(±1 SD, `ddof=1`)** 이다 (SE 아님).
-`metrics.aggregate` 는 `{field: (평균, SD, SE)}` 를 반환하며 시각화는 `[1]`(SD)을 쓴다.
+### 그림의 불확실성 표기 (공통)
 
-* **꺾은선 패널 (A, B, F, I)** — 평균 곡선 + 평균±1SD 반투명 음영대 (`band()`).
-  라운드별로 시드 축에 대해 SD 를 계산한다.
-* **막대 패널 (C, D, E, G, H)** — 평균 막대 + 1SD 오차막대(capsize). C·D 는 개별 시드값을
-  지터 산점으로 겹쳐 그려 분포 형태까지 드러낸다.
-* **짝지은 차분**: H5 의 방어 특이성 SD 는 시드별 `방어(착취자) − 방어(잡음TFT)` 를 먼저
-  계산한 뒤 그 분포의 SD 다. `run_many` 가 spec 순서를 보존하므로 시드 정렬이 보장된다
-  (독립 SD 를 합성하면 과대추정된다).
-* **H6 의 SD**: 시드마다 라운드로빈 전체 평균을 하나의 관측치로 삼는다. 상대 전략 간
-  변동성이 시드 간 변동성과 섞이지 않도록 한 것이다.
+음영대와 오차막대는 **시드/replicate 간 표본표준편차(±1 SD, `ddof=1`)** 이다.
 
-### 각 패널의 y축
-
-| 패널 | y축 | 범위/단위 |
-|---|---|---|
-| A, B | 공감 λ | [0, λ_max=0.8] |
-| C | E[α](로짓, 음수 가능) · E[β](양수) | 단위 상이 — 같은 x 그룹 안에서만 비교 |
-| D | 착취가능성 = P(CD)−P(DC) · CC율 | [−1,1] · [0,1] |
-| E | 방어량(−착취가능성) · 방어 특이성 · 누적보수/100 | 막대별 단위 상이 |
-| F | g⁻(불만), g⁺(신뢰), 기질귀인 신뢰도 | 모두 무차원 [0,1] |
-| G, H | 라운드당 평균 보수 | [0, 5] (P=1, R=3, T=5) |
-| I | 집단 상호협력(CC)률 | [0, 1] |
+* **꺾은선 패널** — 평균 곡선 + 평균±1SD 반투명 음영대(`band()`). 라운드별로 시드 축에
+  대해 SD 를 계산한다.
+* **막대 패널** — 평균 막대 + 1SD 오차막대(capsize). 일부 패널은 개별 시드값을 지터
+  산점(`scatter_seeds`)으로 겹쳐 분포 형태까지 드러낸다.
+* **H6 의 SD**: 시드마다 라운드로빈 전체 평균을 하나의 관측치로 삼아, 상대 전략 간
+  변동이 시드 간 변동과 섞이지 않게 한다.
+* **H8 의 SD**: replicate 간. 대규모 집단은 희소 짝짓기 표본화의 분산도 포함한다.
 
 의존성: `numpy`, `matplotlib`. 선택: `inferactively-pymdp>=1.0`, `jax`, `equinox`.
+한글 폰트는 OS 적응형으로 자동 설정된다(Windows = Malgun Gothic).
 
 ---
 
@@ -321,8 +426,8 @@ python HalloReg/scripts/run_ipd_experiments.py --backend pymdp --check-equivalen
 * `agent.log["disp_credence"] / ["ctx_credence"]` → rmPFC 중재 신호 후보.
 * `agent.log["grievance"] / ["trust"]` → vmPFC 즉각가치 / 누적가치 후보.
 * `CoreAllostaticBeliefState.prior_reliability` → 사전학습된 core belief 을 주입하는 자리
-  (Sul et al. 2015 이타성 과제, Lee et al. 2018 창의성 평가 과제로 개인별 사전 추정 후 주입).
-* `StrategyAgent.schedule` → 임의의 형질 전환 스케줄 (변덕 상대 일반화).
+  (Sul et al. 2015 이타성 과제 등으로 개인별 사전 추정 후 주입).
+* `StrategyAgent.schedule` / `CAPRICIOUS_CASES` → 임의의 형질 전환 스케줄(변덕 상대 일반화).
 
 ---
 
@@ -332,7 +437,11 @@ python HalloReg/scripts/run_ipd_experiments.py --backend pymdp --check-equivalen
    2^H 정책을 열거하므로 H≤4 를 권한다.
 2. 완전관측(A=I₄) 가정 하에서는 pymdp 의 상태추론이 자명하다. 지각 잡음을 도입하려면
    `generative.build_A(noise)` 를 쓰고, 이 경우 numpy 해석해 경로는 무효가 된다(pymdp 경로 사용).
-3. `make_capricious` 의 화해 국면을 TFT 로 두면 grudge 교착(echo effect)이 발생해 λ 가
-   회복되지 않는다. 기본값은 GTFT 다. 이는 모형의 결함이 아니라 예측이다.
-4. 무작위(p=0.5) 상대에 대해 정교형은 계속 협력해 손해를 본다 (§5, H5). λ_base 가
-   구조적 사전으로 남아 있기 때문이며, 의도적 설계다.
+3. **H7 의 지평 의존성**: 60 라운드 예산에서는 화해 지연 비용이 방어 이득을 상회해
+   AdaptiveAgent 가 GTFT 에 총보수로 열세다. ToM 이득은 더 긴 지평에서 발현된다(§5.2).
+   이는 모형의 결함이 아니라 정직하게 보고되는 경계조건이다.
+4. **H8 의 CC 착시**: 무조건협력자(ALLC)는 CC율(및 착취자 상납으로 부풀린 집단 payoff)을
+   기계적으로 올릴 수 있다. 강건한 협력과 취약한 협력을 구분하려면 CC 만이 아니라
+   payoff·성장률·강건성을 함께 보아야 한다(§5.3).
+5. λ_base 는 구조적 사전으로 남아, 용서가 보답되지 않는 환경(완전 무작위 상대)에서는
+   정교형이 계속 협력해 손해를 볼 수 있다. 의도적 설계다.

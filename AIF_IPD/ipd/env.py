@@ -19,7 +19,7 @@ from typing import Optional
 
 import numpy as np
 
-from HalloReg.core.constants import COOP, DEFECT, joint_index
+from AIF_IPD.core.constants import COOP, DEFECT, joint_index
 
 
 class Environment:
@@ -126,6 +126,62 @@ def make_opponent(kind: str, seed: int = 0, **kwargs) -> StrategyAgent:
     cfg = presets.get(kind, dict(kind=kind))
     cfg.update(kwargs)
     return StrategyAgent(seed=seed, **cfg)
+
+
+# ------------------------------------------------------------------ H7 형질전환 case 카탈로그
+# 각 case 는 (전환 주기 period, 전략 순환 cycle) 로 정의된다. 60 라운드 기준으로
+# 주기 10/12/15/20/30 라운드, 상호성/착취/화해/WSLS 등 순환 구성이 서로 다르다.
+# 이름 규약: p{period}_{설명}.
+CAPRICIOUS_CASES = {
+    # 짧은 주기(매 10라운드): 상호성 → 착취 → 화해 순환
+    "p10_recip_expl_recon": dict(period=10, cycle=("tit_for_tat", "alld", "generous_tft")),
+    # 중간 주기(매 20라운드): 동일 순환 (원 구현과 유사하되 순환 반복)
+    "p20_recip_expl_recon": dict(period=20, cycle=("tit_for_tat", "alld", "generous_tft")),
+    # 긴 주기(매 30라운드): 상호성 ↔ 착취 2상 전환
+    "p30_recip_expl":       dict(period=30, cycle=("tit_for_tat", "alld")),
+    # 매 15라운드 상호성 ↔ 착취 교대
+    "p15_flip":             dict(period=15, cycle=("tit_for_tat", "alld")),
+    # 매 10라운드 착취-선행 교대 (첫인상이 나쁜 상대)
+    "p10_expl_first":       dict(period=10, cycle=("alld", "tit_for_tat")),
+    # 매 20라운드 착취 → 상호성 → 화해 (착취-선행 3상)
+    "p20_expl_first":       dict(period=20, cycle=("alld", "tit_for_tat", "generous_tft")),
+    # 매 12라운드 WSLS 를 포함한 이질 순환
+    "p12_wsls_mix":         dict(period=12, cycle=("wsls", "alld", "generous_tft")),
+    # 매 20라운드 관대함-선행 순환 (착취 후 화해가 아니라 화해 후 착취)
+    "p20_gen_first":        dict(period=20, cycle=("generous_tft", "alld", "tit_for_tat")),
+}
+
+
+def capricious_switch_rounds(case: str, n_rounds: int) -> list:
+    """해당 case 에서 형질(의도)이 실제로 전환되는 라운드 인덱스 목록(0 제외)."""
+    cfg = CAPRICIOUS_CASES[case]
+    return [r for r in range(cfg["period"], n_rounds, cfg["period"])]
+
+
+def make_capricious_case(case: str, seed: int = 0, n_rounds: int = 60,
+                         error: float = 0.10) -> StrategyAgent:
+    """
+    CAPRICIOUS_CASES 카탈로그의 case 이름으로 형질전환 상대를 생성한다.
+
+    실행잡음 `error`(β 조작화)와 형질 전환(α/ρ/λ_j 조작화)이 동시에 존재하여,
+    '잡음'과 '의도 변화'를 구분하는 잠재 형질 추론이 이득이 되는 조건을 만든다.
+    """
+    cfg = CAPRICIOUS_CASES[case]
+    period, cycle = cfg["period"], cfg["cycle"]
+    sched = [(r, cycle[(r // period) % len(cycle)])
+             for r in range(0, n_rounds, period)]
+    return StrategyAgent(kind=cycle[0], seed=seed, error=error, schedule=sched)
+
+
+def capricious_case_spec(case: str, seed: int = 0, n_rounds: int = 60,
+                         error: float = 0.10) -> dict:
+    """make_capricious_case 와 동일하되 build_from_spec 용 스펙 dict 를 반환."""
+    cfg = CAPRICIOUS_CASES[case]
+    period, cycle = cfg["period"], cfg["cycle"]
+    sched = [(r, cycle[(r // period) % len(cycle)])
+             for r in range(0, n_rounds, period)]
+    return dict(type="strategy", kind=cycle[0], seed=seed, error=error,
+                schedule=sched)
 
 
 def make_capricious(seed: int = 0, n_rounds: int = 120,

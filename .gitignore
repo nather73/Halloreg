@@ -1,0 +1,31 @@
+# ---- Python 바이트코드 / 캐시 (github 업로드 불필요) ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# ---- 가상환경 / 패키징 산출물 ----
+.venv/
+venv/
+env/
+*.egg-info/
+build/
+dist/
+
+# ---- 시뮬레이션 산출물 (results/.gitignore 가 내용물을 무시하지만 이중 안전) ----
+AIF_IPD/results/*
+!AIF_IPD/results/.gitignore
+*.png
+*.json
+!**/package.json
+
+# ---- 에디터 / OS 잡파일 ----
+.vscode/
+.idea/
+.ipynb_checkpoints/
+.DS_Store
+Thumbs.db
+
+# ---- 압축/로그 ----
+*.zip
+*.log

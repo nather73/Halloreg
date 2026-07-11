@@ -25,12 +25,12 @@ from typing import Optional, Dict, List
 
 import numpy as np
 
-from HalloReg.core.constants import (
+from AIF_IPD.core.constants import (
     CC, CD, DC, DD, COOP, DEFECT,
     opponent_action_from_state,
 )
-from HalloReg.core.allostasis import CoreAllostaticBeliefState, LambdaRegulator
-from HalloReg.core.logging_utils import get_logger
+from AIF_IPD.core.allostasis import CoreAllostaticBeliefState, LambdaRegulator
+from AIF_IPD.core.logging_utils import get_logger
 from .tom import (
     OpponentInversion, ObservationContext, TheoryOfMind, GatedToM,
     RecursiveSocialEFE, OpponentSimulator, SophisticatedPlanner,
@@ -69,7 +69,7 @@ class ToMEmpathicAgent:
         # 선택적 pymdp 백엔드
         self._pymdp = None
         if use_pymdp:
-            from HalloReg.core.pymdp_backend import PymdpEFE, pymdp_available
+            from AIF_IPD.core.pymdp_backend import PymdpEFE, pymdp_available
             if pymdp_available():
                 self._pymdp = PymdpEFE(prior_opp_coop=prior_opp_coop)
                 self._empirical_prior = self._pymdp.D
@@ -237,10 +237,10 @@ class AdaptiveAgent(ToMEmpathicAgent):
         # (b) 갱신된 신뢰도 가중치를 입자필터 jitter 에 반영(온라인; 재표집 없음)
         self.inversion.set_reliability(self.core.reliability_weights())
 
-        # (c) λ 위계적 조절
+        # (c) λ 위계적 조절 (즉각형은 DD 도 기질 증거로 충전 — H5 조작화)
         out = self.regulator.step(
             betrayal, opp_cooperated, inferred, self.pred_coop_prev,
-            self.core, regulate=self.regulate_lambda)
+            self.core, regulate=self.regulate_lambda, opp_defected=opp_defected)
         self.lam = out["lam"]
 
         return {
