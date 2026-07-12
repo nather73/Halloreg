@@ -338,6 +338,12 @@ def run_population_spec(spec: dict) -> Dict:
     label_rounds: Dict[str, int] = {}
     exploit_flow: Dict[tuple, float] = {} # (착취자 라벨, 피착취자 라벨) → T 보수 합
     cc_by_matching = []                   # 매칭 재표집별 CC (분산 분해용)
+    # 방향성 라벨쌍별 행동 회계 (keystone 기제, H11): focal 라벨 li 가 상대 라벨
+    # lj 와의 다이애드에서 낸 CC/DD 라운드 수. adaptive-vs-ALLD 의 DD 비율(선택적
+    # 방어)과 adaptive-vs-협력자의 CC 유지율을 직접 측정하기 위함.
+    dir_cc: Dict[tuple, int] = {}         # (li, lj) → li 가 CC(상호협력)한 라운드
+    dir_dd: Dict[tuple, int] = {}         # (li, lj) → li 가 관여한 DD(상호배신) 라운드
+    dir_rounds: Dict[tuple, int] = {}     # (li, lj) → 총 라운드
     n_pairs_total = 0
     dyad_id = 0
 
@@ -371,6 +377,13 @@ def run_population_spec(spec: dict) -> Dict:
             if cd:
                 k2 = (lj, li)
                 exploit_flow[k2] = exploit_flow.get(k2, 0.0) + cd * float(h["opp_payoff"][h["state"] == 1][0])
+            # ---- 방향성 라벨쌍 행동 회계 (keystone 기제, H11) ----
+            cc_n = int(np.sum(h["state"] == CC))
+            dd_n = int(np.sum(h["state"] == DD))
+            for (kf, kt) in ((li, lj), (lj, li)):
+                dir_cc[(kf, kt)] = dir_cc.get((kf, kt), 0) + cc_n
+                dir_dd[(kf, kt)] = dir_dd.get((kf, kt), 0) + dd_n
+                dir_rounds[(kf, kt)] = dir_rounds.get((kf, kt), 0) + n_rounds
         n_pairs_total += len(pairs)
         cc_by_matching.append(float(m_cc / max(m_rounds, 1)))
 
@@ -403,6 +416,13 @@ def run_population_spec(spec: dict) -> Dict:
         "nonexploiter_mean_payoff": float(ne_pay / max(ne_rounds, 1)),
         "alld_exploit_gain": alld_gain,
         "alld_exploit_gain_total": float(sum(alld_gain.values())),
+        # 방향성 라벨쌍별 행동률: "li→lj" → {"cc": CC율, "dd": DD율}
+        # (H11 keystone 기제: adaptive→alld 의 DD율 = 선택적 방어,
+        #  adaptive→협력자 의 CC율 = 협력 지탱)
+        "dyad_behavior": {f"{kf}→{kt}": {
+            "cc": float(dir_cc[(kf, kt)] / max(dir_rounds[(kf, kt)], 1)),
+            "dd": float(dir_dd[(kf, kt)] / max(dir_rounds[(kf, kt)], 1))}
+            for (kf, kt) in dir_rounds},
         "cc_by_matching": cc_by_matching,
         "n_agents": n,
         "n_pairs": n_pairs_total,

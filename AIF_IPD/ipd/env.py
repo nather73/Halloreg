@@ -39,26 +39,47 @@ class StrategyAgent:
     이산 전략 에이전트. `act(my_last_seen)` / `observe(focal_action)` 인터페이스.
 
     kind ∈ {
-        'tit_for_tat', 'allc', 'alld', 'wsls', 'generous_tft',
+        'tit_for_tat', 'allc', 'alld', 'wsls',
+        'generous_tft',        # 확률론적 용서 (probabilistic GTFT)
+        'generous_tft_count',  # 횟수 기반 용서 (count-based GTFT)
         'random', 'exploiter', 'noisy_tft', 'noisy'
     }
 
     error : 실행 잡음률(의도와 반대로 행동할 확률; 낮은 β 조작화).
-    generosity : Generous-TFT 가 상대 배신을 용서(협력)할 확률.
+
+    Generous-TFT 의 두 용서 기제 (v0.4 로 명시적 분리)
+    ------------------------------------------------------
+    * 'generous_tft'  — **확률론적(probabilistic) 용서.** 상대가 배신할 때마다
+                        독립적으로 확률 `generosity` 로 용서(협력)한다. Nowak &
+                        Sigmund (1992) 의 고전적 GTFT 정식화. 누적 배신 이력과
+                        무관하게 각 배신을 개별적으로 확률 용서한다.
+    * 'generous_tft_count' — **횟수 기반(count-based) 용서.** 상대의 배신이
+                        **누적 `forgive_streak` 회 연속**될 때까지는 용서(협력)하고,
+                        그 임계를 넘어선 뒤에야 보복(TFT)으로 전환한다. 연속 협력을
+                        1회라도 관측하면 누적 카운터가 초기화된다. '몇 번까지는
+                        봐주다가 그 이상 배신이 쌓이면 응징' 하는 관용 — 확률이
+                        아니라 **인내 임계(patience threshold)** 로 관용을 정식화.
+
+    generosity     : 확률론적 GTFT 의 용서 확률 (기본 0.3).
+    forgive_streak : 횟수 기반 GTFT 가 보복 없이 견디는 연속 배신 수 (기본 2 —
+                     즉 2회 연속 배신까지는 용서, 3회째부터 보복).
     schedule : [(round, kind), ...] 지정 라운드에 **형질(의도)이 전환**되는 변덕 상대.
                실행잡음(β)이 아니라 기질(α/ρ/λ_j)이 바뀌는 조작 — H7/H9 용.
     """
 
     def __init__(self, kind: str = "tit_for_tat", error: float = 0.0,
                  generosity: float = 0.3, seed: int = 0,
-                 schedule: Optional[list] = None):
+                 schedule: Optional[list] = None,
+                 forgive_streak: int = 2):
         self.kind = kind
         self.schedule = sorted(schedule or [], key=lambda x: x[0])
         self.error = float(error)
         self.generosity = float(generosity)
+        self.forgive_streak = int(forgive_streak)
         self.rng = np.random.default_rng(seed)
         self.my_last = COOP          # 상대(=이 전략) 자신의 직전 행동
         self.other_last = COOP       # 관측한 focal 의 직전 행동
+        self._defect_streak = 0      # 관측한 focal 의 연속 배신 수 (count-based GTFT)
         self.round = 0
 
     # ------------------------------------------------------------ 의도
@@ -71,9 +92,18 @@ class StrategyAgent:
         if k in ("tit_for_tat", "noisy_tft"):
             return self.other_last
         if k == "generous_tft":
+            # 확률론적 용서: 각 배신을 독립 확률 generosity 로 용서
             if self.other_last == DEFECT and self.rng.random() < self.generosity:
                 return COOP           # 관대하게 용서
             return self.other_last
+        if k == "generous_tft_count":
+            # 횟수 기반 용서: 연속 배신이 forgive_streak 이하이면 용서(협력),
+            # 임계를 초과하면 보복(TFT). _defect_streak 은 observe 에서 갱신.
+            if self.other_last == DEFECT:
+                if self._defect_streak <= self.forgive_streak:
+                    return COOP       # 인내 임계 이내 — 용서
+                return DEFECT         # 임계 초과 — 보복
+            return COOP               # 상대가 협력하면 협력
         if k == "wsls":               # win-stay, lose-shift
             # 직전 결과가 '승리'(상호협력 CC 또는 유혹 DC)면 유지, 아니면 전환
             win = (self.my_last == COOP and self.other_last == COOP) or \
@@ -103,6 +133,11 @@ class StrategyAgent:
 
     def observe(self, focal_action: int):
         self.other_last = int(focal_action)
+        # 연속 배신 카운터 갱신 (count-based GTFT 용; 다른 kind 에는 무해)
+        if int(focal_action) == DEFECT:
+            self._defect_streak += 1
+        else:
+            self._defect_streak = 0
 
 
 def make_opponent(kind: str, seed: int = 0, **kwargs) -> StrategyAgent:
@@ -119,6 +154,10 @@ def make_opponent(kind: str, seed: int = 0, **kwargs) -> StrategyAgent:
         "wsls": dict(kind="wsls", error=0.0),
         "generous_tft": dict(kind="generous_tft"),
         "gtft": dict(kind="generous_tft"),
+        "gtft_prob": dict(kind="generous_tft"),
+        # 횟수 기반 GTFT (인내 임계 용서)
+        "generous_tft_count": dict(kind="generous_tft_count"),
+        "gtft_count": dict(kind="generous_tft_count"),
         "random": dict(kind="random"),
         # 정적 형질 + 모호한 배신(약한 실행잡음): H10 의 '정적 상대'
         "static_noisy_tft": dict(kind="tit_for_tat", error=0.10),
@@ -158,6 +197,10 @@ _CAPRICIOUS_CYCLES = {
     "adaptive_expl":    ("adaptive", "alld"),
     # 정교형 AIF → 착취 → 관대한 상호성 (이질 3상)
     "adaptive_mix":     ("adaptive", "alld", "generous_tft"),
+    # 횟수 기반 GTFT 화해 국면을 쓰는 순환 (확률론적 recip_expl_recon 대응쌍)
+    "recip_expl_reconC": ("tit_for_tat", "alld", "generous_tft_count"),
+    # WSLS + 횟수 기반 GTFT 이질 순환 (확률론적 wsls_mix 대응쌍)
+    "wsls_mixC":         ("wsls", "alld", "generous_tft_count"),
 }
 CAPRICIOUS_PERIODS = (10, 30, 60, 120)
 CAPRICIOUS_CASES = {

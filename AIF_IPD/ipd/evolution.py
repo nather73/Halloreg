@@ -124,6 +124,56 @@ def invasion_growth(Pi: np.ndarray, resident: Sequence[float],
     return float(f[invader_idx] - x @ f)
 
 
+def cluster_invasion_growth(Pi: np.ndarray, resident: Sequence[float],
+                            cluster: Sequence[float]) -> float:
+    """
+    (v0.4, H11) 상주 혼합 resident 에 **혼합 조성 cluster** 가 희소 침입할 때의
+    성장률: g = (w_cluster · f) − f̄_res.  단일 유형 침입(invasion_growth)의
+    자연스러운 일반화 — '협력자 클러스터'(adaptive 포함/제외)가 ALLD-heavy
+    상주집단을 침입할 수 있는지를 묻는 H11 진화 프레임에 사용한다.
+    """
+    x = np.asarray(resident, float); x = x / x.sum()
+    w = np.asarray(cluster, float); w = w / w.sum()
+    f = Pi @ x
+    return float(w @ f - x @ f)
+
+
+def replicator_ends_batch(Pi: np.ndarray, X0: np.ndarray,
+                          steps: int = 600) -> np.ndarray:
+    """
+    (v0.4) 다수 초기점의 이산 복제자 갱신을 **벡터화**하여 종착 조성만 반환.
+    X0 shape (n, k) → 반환 shape (n, k).  H11 의 유역 부트스트랩(Π 시드
+    재표집마다 basin 재적분)을 실용적 비용으로 만드는 핵심 최적화 —
+    per-초기점 파이썬 루프를 단일 (n,k)@(k,k) 행렬곱 수열로 대체한다.
+    수치 의미는 replicator_trajectory 와 동일(잡음 없음).
+    """
+    X = np.clip(np.asarray(X0, float), 1e-12, None)
+    X = X / X.sum(axis=1, keepdims=True)
+    for _ in range(steps):
+        F = X @ Pi.T                                # F[n, i] = (Pi @ x_n)_i
+        fbar = np.einsum("ni,ni->n", X, F)
+        X = X * F / np.maximum(fbar[:, None], 1e-12)
+        X = X / X.sum(axis=1, keepdims=True)
+    return X
+
+
+def coop_basin_frac(Pi: np.ndarray, coop_idx: Sequence[int],
+                    n_samples: int = 300, steps: int = 600,
+                    seed: int = 0, X0: Optional[np.ndarray] = None) -> float:
+    """
+    (v0.4) Dirichlet(1) 초기점(또는 주어진 X0)에서 복제자 종착 조성의
+    협력 점유율(coop_idx 합) > 0.5 인 초기점 비율 — 벡터화 경로.
+    같은 X0 를 조건 간 공유하면(공통 초기점) 유형 추가/제거의 유역 효과를
+    짝지어 비교할 수 있다 (H11 basin-widening 대조).
+    """
+    k = Pi.shape[0]
+    if X0 is None:
+        rng = np.random.default_rng(seed)
+        X0 = rng.dirichlet(np.ones(k), size=n_samples)
+    ends = replicator_ends_batch(Pi, X0, steps=steps)
+    return float(np.mean(ends[:, list(coop_idx)].sum(axis=1) > 0.5))
+
+
 def basin_analysis(Pi: np.ndarray, names: List[str], n_samples: int = 300,
                    steps: int = 600, seed: int = 0,
                    coop_types: Optional[List[int]] = None) -> Dict:

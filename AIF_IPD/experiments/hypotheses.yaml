@@ -115,6 +115,27 @@ hypotheses:
     test: paired_perm
     direction: all_greater
     rationale: 귀인 범위 절제의 1차 예측 (모호 배신의 기질 오귀인).
+  H11:
+    primary: keystone_joint        # 결합가설 — 주장 A AND 주장 B (아래)
+    test: slope_boot_paired        # CRN 짝지은 Δ 의 dose 기울기 부트스트랩
+    direction: both_positive
+    claim_A: cooperator_alld_gap_slope    # Δgap(treat−ctrl1) 의 dose 기울기 > 0
+    claim_B: group_cc_slope               # ΔCC(treat−ctrl1) 의 dose 기울기 > 0
+    rationale: >
+      Keystone(핵심종) 가설 — 정교형 AdaptiveAgent 는 스스로 승자가 아니어도
+      (H7 경쟁 열세·H8E 침입 실패와 모순되지 않음) 협력자에게 ALLD 대비
+      상대이점을 주고(주장 A) 집단 협력률을 높인다(주장 B). 구성(composition)
+      인공물을 차단하기 위해 비-swap 구성(특히 ALLD 9/30=30%)을 고정한 치환
+      설계를 쓰고, 핵심 대조는 control-1(fixed-λ ToMEmpathic, λ=0.4) — ToM·
+      공감 기계를 동일하게 두고 λ 자기조절만 제거하므로 treatment−ctrl1 이
+      'λ 위계적 조절이 남을 돕는다' 의 순수 효과다. dose 0 셀은 전 arm 공유
+      (Δ≡0 앵커). 주장 A 의 gap 은 기저 조건부 협력자(TFT/GTFT확률/GTFT횟수/
+      WSLS) 평균 보수 − ALLD 보수. ALLC 이전 회계(alld_exploit_gain)로 CC
+      상승이 착취 이전의 착시인지 가드. 탐색: ALLD 억제·협력자 보호·다이애드
+      기제(adaptive→ALLD 의 DD 방어율 vs adaptive→협력자의 CC 유지율)·
+      control-2(즉각형)/3(추가 TFT)/4(ALLC) 대조·진화 프레임(협력자 상주에
+      adaptive 를 섞을 때 ALLD 침입장벽 심화, ALLD-heavy 상주에 대한 협력자
+      클러스터 침입성, 후보 유형별 협력 유역 확장 비교).
   GS:
     primary: none                # 확증 지표 없음 — 전면 탐색(강건성 지도화)
     rationale: >

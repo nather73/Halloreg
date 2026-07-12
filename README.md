@@ -45,7 +45,7 @@ python AIF_IPD/scripts/run_ipd_experiment.py --check-equivalence
 | `--seeds` | 240 | 조건별 시드(다이애드) 수 |
 | `--rounds` | 60 240 | 다이애드 라운드 수 — 복수 지정 시 각 지평에서 전 실험 반복 후 지평 비교 |
 | `--jobs` | -1 | 병렬 워커 수 (-1 = 코어수-1, 1 = 순차) |
-| `--experiments` | 전체 | `H1 H2H3 H4 H5 H6 H7 H7H H8 H8E H9H10 GS` 중 선택 |
+| `--experiments` | 전체 | `H1 H2H3 H4 H5 H6 H7 H7H H8 H8E H9H10 H11 GS` 중 선택 |
 | `--backend` | numpy | `numpy` (해석적 EFE) 또는 `pymdp` (검증용, 느림) |
 | `--quick` | off | 스모크 테스트 (seeds=3, rounds=30) |
 | `--check-equivalence` | off | pymdp↔numpy EFE 등가성만 검증하고 종료 |
@@ -67,6 +67,7 @@ python AIF_IPD/scripts/run_ipd_experiment.py --check-equivalence
 | `h8e_invasion_structure.png` | H8E-1 보수 구조·침입 성장률 격자·역방향 침입·구성 민감도 |
 | `h8e_replicator_dynamics.png` | H8E-2 복제자 궤적(전 유형 legend)·역침입·끌개 조성·Moran |
 | `h8e_state_space_basins.png` | H8E-3 상태공간 위상 초상·협력 유역 지도·유역 확장 격자 |
+| `h11_keystone.png` | H11 Keystone 검정 — 치환 설계 dose 곡선·Δ 기울기·기제·진화 프레임 |
 | `horizon_overview.png` | 확증 지표의 지평(T=60/240)별 판정 개관 |
 | `h9_h10_attribution_scope.png` | H9/H10 귀인 범위 절제 + 비-ToM 베이스라인 |
 | `gs_game_structure.png` | GS 게임구조(협력지수 CI) 강건성 스윕 |
@@ -131,6 +132,33 @@ AIF_IPD/
    조건부 기울기 플롯, PNG+PDF+캡션 JSON.
 6. **지평 검증.** H7H — Δ(T) 를 전환수 고정/주기 고정 두 족에서 분리 추정, T*,
    히스테리시스 기제 조작.
+
+## v0.4 — GTFT 이중화·H7 상대이점 명시·H11 Keystone (3축)
+
+1. **GTFT 두 용서 기제의 명시적 분리.** 기존 GTFT 는 용서를 확률(30%)로만
+   정의했다. v0.4 는 `generous_tft`(확률론적 용서 — Nowak & Sigmund 1992)와
+   `generous_tft_count`(횟수 기반 용서 — 연속 배신이 `forgive_streak`(기본 2)회를
+   넘기 전까지는 용서하고 임계 초과 시 보복하는 인내 임계 정식화)를 별개 kind 로
+   구현하고, GTFT 가 등장하는 **모든** 시뮬레이션·분석·시각화(H6 잡음 강건성,
+   H7 focal·순환족·대전, H7H Δ(T), H8 LARGE_MIX·filler, H8E 유형계·협력 유역,
+   H11 협력자 기저, GS 강건성 스윕)에 두 유형을 병기한다.
+2. **H7 상대이점의 주기×지평 명시.** adaptive 의 payoff 우위를 GTFT(확률),
+   GTFT(횟수), WSLS 세 rival 각각에 대해 전 case 합산과 **전환 주기 P 별**로
+   분해해 보고·시각화한다(`adaptive_advantage`). 어느 전환 간격과 어느 지평
+   (T=60/240; 지평 비교는 main 의 horizon_comparison)에서 adaptive 가 더 많은
+   보수를 얻는지 부호·CI·유의성(*)을 그림 (d) 패널에 직접 표기한다.
+3. **H11 Keystone(핵심종) 검정.** "adaptive 는 승자가 아니라 조력자" — H7 경쟁
+   열세·H8E 침입 실패와 모순 없이, 협력자에게 ALLD 대비 상대이점을 주고(주장 A:
+   gap = 조건부 협력자 평균 보수 − ALLD 보수) 집단 협력률을 높이는지(주장 B:
+   집단 CC)를 검증한다. 비-swap 구성(ALLD 30%)을 고정한 **치환 설계**
+   (N=30 완전 라운드로빈, dose ∈ {0,3,6,9}, dose0 은 전 arm 공유 + CRN 짝지음),
+   핵심 대조 **control-1 = fixed-λ ToMEmpathic(λ=0.4)** — treatment−ctrl1 이
+   λ 위계적 조절의 순수 효과. 확증 2지표: ΔCC·Δgap 의 dose 기울기 > 0.
+   탐색: ALLD 억제, 협력자 보호, 착취 이전(transfer) 회계 가드, 즉각형/추가
+   TFT/ALLC arm 대조, 다이애드 기제(adaptive→ALLD DD 방어율 vs adaptive→협력자
+   CC 유지율), 진화 프레임(협력자 상주에 adaptive 혼합 시 ALLD 침입장벽 심화,
+   ALLD-heavy 상주에 대한 협력자 클러스터 침입성, 후보 유형별 협력 유역 확장 —
+   adaptive vs TFT/GTFT 두 유형/WSLS/fixed-λ, 벡터화 replicator 부트스트랩).
 
 ```bash
 python scripts/run_ipd_experiment.py --experiments H7H H8E GS   # 보완 실험

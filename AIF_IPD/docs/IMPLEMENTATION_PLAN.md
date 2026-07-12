@@ -668,3 +668,134 @@ legend 를 명시한다. 세 그림으로 분할: `h8e_invasion_structure`(보�
 seeds=240, rounds={60,240} 전 배터리는 16코어(Ryzen AI MAX+ 395)에서
 대략 1.5–3시간으로 추정된다(H8 population 실행과 H8E 격자가 지배적).
 컨테이너(1 CPU)에서는 `--quick` 스모크만 검증하고, 본 실행은 로컬 권장.
+
+## 17. v0.4 확장 — GTFT 이중화·H7 상대이점 명시·H11 Keystone
+
+### 17.1 GTFT 의 두 용서 기제 (확률론적 vs 횟수 기반)
+
+기존 구현은 GTFT 의 용서를 확률(generosity=0.3)로만 정의했다. 그러나 관용은
+**인내 임계(patience threshold)** 로도 정식화할 수 있다: 상대의 배신이 N회
+누적되기 전까지는 용서하고, 임계를 넘어선 뒤에야 보복하는 방식. v0.4 는 두
+기제를 별개 전략 kind 로 분리 구현한다 (`ipd/env.py`):
+
+* `generous_tft` — **확률론적 용서.** 각 배신을 독립 확률 `generosity` 로
+  용서(협력). Nowak & Sigmund (1992) 의 고전적 정식화. 배신 이력과 무관.
+* `generous_tft_count` — **횟수 기반 용서.** 관측한 focal 의 **연속** 배신
+  카운터(`_defect_streak`, observe 에서 갱신; 협력 1회 관측 시 초기화)가
+  `forgive_streak`(기본 2) 이하이면 용서, 초과하면 보복(TFT). 결정적이라
+  잡음-용서 상호작용이 확률형과 질적으로 다르다: 확률형은 배신 폭주에도
+  주기적으로 문을 열어 주지만, 횟수형은 임계 초과 후 상대가 협력으로 복귀할
+  때까지 문을 닫는다.
+
+두 유형은 GTFT 가 등장하는 **모든** 지점에 병기된다: H6 잡음 강건성(전략
+목록+탐색 지표 2개: 횟수>TFT, 횟수 vs 확률 직접 비교), H7(focal·rival·순환족
+`recip_expl_reconC`/`wsls_mixC` 8 case 추가로 총 40 case·5×5 대전), H7H(족a
+Δ_count(T) 탐색 곡선+기울기), H8(LARGE_MIX 0.12→0.06/0.06 분할, filler 목록),
+H8E(유형계 10종으로 확장, 협력 유역 coop_idx), H11(조건부 협력자 기저
+TFT 4/GTFT확률 2/GTFT횟수 2/WSLS 4), GS(H7 미니 3-focal). H7 의 확증 지표는
+사전등록 정합성을 위해 GTFT(확률) 대비로 유지하고, 횟수형 대비는 탐색으로
+병기한다.
+
+### 17.2 H7 — adaptive 상대이점의 주기 × 지평 명시
+
+v0.4 요구: capricious 상대에 대해 GTFT 뿐 아니라 **WSLS 와의 비교**를 수행하고,
+전환 간격(주기 P)과 총 라운드 수(지평 T)에 따라 adaptive 가 payoff 를 더 많이
+획득하는 조건을 명시할 것.
+
+구현 (`exp_H7` 의 `adaptive_advantage`): rival ∈ {GTFT확률, GTFT횟수, WSLS}
+각각에 대해 (i) 전 case 합산 짝지은 순열 + dz, (ii) 주기 P∈{10,30,60,120} 별
+Δ(P) 평균·부트 CI·양측 p·유의성(0 배제)·`adaptive_wins` 부호, (iii)
+`win_periods` (adaptive 우위 주기 목록). 지평 T 의존성은 main 의 지평 이중화
+(T=60/240 반복 + `interpret_horizons`)와 `_horizon_metrics` 의 rival 별 Δ 로
+자동 비교된다 — "어느 전환 간격·어느 지평에서 adaptive 가 이기는가" 가
+`summary.json` 의 `adaptive_advantage`/`horizon_comparison` 과 그림 (d) 패널
+(주기 × rival 그룹 막대, *=CI 0 배제)에 직접 나타난다.
+
+### 17.3 H11 — Keystone(핵심종) 검정
+
+**프레임.** H7(경쟁 열세)·H8E(g<0 침입 실패)는 "adaptive 가 승자인가" 를
+기각했을 뿐, "adaptive 가 남(협력자)을 이롭게 하는가" 는 별개 질문이다.
+생태학의 keystone 논리처럼 본인은 번성하지 못해도 생태계 전체의 협력을
+떠받치는 개체가 존재할 수 있다. 가설은 두 주장으로 분해된다:
+* **주장 A** (집단 내·유형 간): 협력자에게 ALLD 대비 상대이점.
+  DV = gap = (기저 조건부 협력자 가중평균 보수) − (ALLD 보수).
+* **주장 B** (집단 간): 집단 상호협력률(CC) 증진.
+
+**구성 인공물 차단 — 치환 설계.** "adaptive 를 넣었더니 CC 가 올랐다" 는 그
+자체로 아무것도 증명하지 못한다 — ALLD 를 빼고 넣었다면 CC 상승은 착취자
+감소의 산물이다. 그래서 비-swap 구성(특히 ALLD 9/30=30% 착취 압력)을 고정한
+치환 설계를 쓴다: N=30 완전 라운드로빈(매칭 잡음 제거), 기저 = ALLD 9 +
+TFT 4 + GTFT확률 2 + GTFT횟수 2 + WSLS 4, swap dose ∈ {0,3,6,9}, 잔여는
+random filler 패딩. dose 0 은 swap 이 없어 arm 무관 동일 → **전 arm 공유
+셀**(Δ≡0 앵커). CRN 짝지음은 population seed 를 `stable_seed("H11pop",
+dose, rep)` 로 arm 간 공유하여 달성 (공유 기저 구성원의 다이애드 시드가
+arm 간 일치).
+
+**arm 설계 — 각 대조가 다른 교란을 분리.**
+
+| arm | swap 유형 | 분리하는 것 |
+|---|---|---|
+| treatment | 정교형 AdaptiveAgent (all 귀인) | — |
+| control-1 (핵심) | fixed-λ ToMEmpathic (λ=0.4) | λ 자기조절 자체의 효과 |
+| control-2 | 즉각형 adaptive (sophisticated=False) | 정교함(rmPFC)의 효과 |
+| control-3 | 추가 TFT | 조건부 협력자 증량 대비 우위 |
+| control-4 | ALLC | 순진한 협력자 대비 우위 |
+
+control-1 이 과학적으로 가장 중요하다: ToM·공감 기계를 동일하게 두고 오직
+λ 조절만 뺀 대조라서, treatment−ctrl1 차이가 곧 "λ 위계적 조절이 남을
+돕는다" 는 가설의 순수 효과다.
+
+**확증 지표** (`experiments/hypotheses.yaml` H11): ΔCC = CC(treat)−CC(ctrl1)
+와 Δgap 각각의 dose 기울기 > 0 (rep 군집 slope_boot, CI 0 배제).
+
+**탐색·기제.** (i) ALLD 억제: 최대 dose 에서 payoff_ALLD(treat) <
+payoff_ALLD(ctrl1) — 정적 라운드로빈에서 adaptive 가 gap 을 벌리는 직접
+경로는 ALLD 를 만나 방어(D)해 ALLD 평균 보수를 T→P 로 끌어내리는 것뿐이다.
+(ii) 협력자 보호: 유형별 payoff(treat) > payoff(ctrl1). (iii) **이전 회계
+가드**: `alld_exploit_gain_total / group_payoff` 로 CC 상승이 실질인지
+ALLD→피착취자 후생 이전의 착시인지 구분 (H8 §4 회계 재사용). (iv) **다이애드
+기제**: `run_population_spec` 에 신설된 방향성 라벨쌍 행동 회계
+(`dyad_behavior`: "li→lj" 별 CC/DD 율)로 adaptive→ALLD 의 DD 방어율(선택적
+방어)과 adaptive→협력자의 CC 유지율(협력 지탱)을 직접 측정 — 두 값이 동시에
+크면 H1·H5 의 선택적 방어가 집단 수준 keystone 효과로 발현됨을 보인다.
+fixed-λ(tom_fixed)·즉각형(adaptive_imm) 비교군 병기.
+
+**진화 프레임** (Π 추정 후 대수 연산 — 거의 무비용). 유형계 9종
+(TFT/GTFT확률/GTFT횟수/WSLS/ALLC/ALLD/random/adaptive/tom_fixed)의 Π 를
+`estimate_payoff_matrix`(대칭 재사용, env_error=0.10, seeds=30)로 추정한 뒤:
+* **ALLD 침입장벽**: 협력자-only 상주(TFT .30/GTFT확률 .15/GTFT횟수 .15/
+  WSLS .30/ALLC .10) vs 협력자+adaptive(20%) vs 협력자+tom_fixed(20%) 상주에
+  대한 g_ALLD 를 Π-시드 부트로 비교. **장벽 심화** Δg = g(only) − g(+adaptive)
+  > 0 이면 adaptive 가 협력 균형을 ALLD 침입으로부터 지킨다 — 상대이점의
+  진화적 정의. fixed-λ 대조로 λ 조절 귀속.
+* **협력자 클러스터 침입성**: ALLD-heavy 상주(ALLD .8/random .2)에 혼합 조성
+  클러스터가 침입하는 성장률 — 단일 유형 침입의 일반화
+  `cluster_invasion_growth(Pi, resident, cluster)` = (w_cluster·f) − f̄_res
+  (`ipd/evolution.py` 신설). adaptive 포함/제외 클러스터 비교.
+* **후보 유형별 협력 유역 확장**: widening(X) = coop_basin(S) −
+  coop_basin(S∖X), X ∈ {adaptive, tom_fixed, TFT, GTFT확률, GTFT횟수, WSLS}.
+  adaptive 의 widening 이 각 고정전략보다 큰지 **짝지은 Π-시드 부트**(동일
+  boot 인덱스)로 검정. 유역 재적분 비용은 신설 `replicator_ends_batch`
+  (초기점 배치를 (n,k)@(k,k) 행렬곱 수열로 벡터화)와 `coop_basin_frac`
+  (공통 초기점 X0 공유로 짝지은 비교)로 실용화 — per-초기점 파이썬 루프 대비
+  ~100배 가속.
+
+주의(문서화된 구분): H8E 의 기존 역침입은 **순수 adaptive 상주**에 대한
+것이라 이 분석과 다르다. H11 은 **협력자(+adaptive) 혼합 상주** 케이스를
+계산한다.
+
+**시각화** (`h11_keystone.png`, 3×3): (a/c) dose→CC·gap arm 곡선(dose0 공유
+명시), (b/d) Δ 기울기 forest(확증=vs fixed-λ 강조), (e) 최대 dose 라벨별
+보수(ALLD 억제+협력자 보호), (f) keystone 기제 막대(→ALLD DD율, →협력자
+CC율; actor 3종), (g) ALLD 침입장벽 forest, (h) 클러스터 침입성, (i) 후보별
+유역 확장 forest.
+
+### 17.4 기존 결과와의 정합
+
+H8 filler 회귀의 frac×TFT<0 (adaptive 가 TFT 추가보다 CC 를 더 올림), H8
+민감도의 ALLD 비중 0.1–0.3 전 구간 양의 frac 기울기, H8E 의 전 격자 양수
+basin widening 과 T=60 ALLD 역침입 격퇴는 모두 keystone 가설의 약한 지지
+증거였다. H11 은 이를 (1) ALLD·비-swap 구성 고정 치환 설계, (2) fixed-λ
+대조, (3) cooperator−ALLD gap 확증 지표, (4) 혼합 상주 ALLD 침입장벽으로
+정면 검증한다. 결과가 H7/H8E "기각" 과 공존하면 — adaptive 는 지지만 남을
+돕는다 — 두 기각의 재해석 서사가 완성된다.
