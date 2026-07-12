@@ -600,3 +600,71 @@ pytest tests/                          # (pytest 설치 시)
 
 의존성: `experiments/hypotheses.yaml` 사전등록 로딩에 PyYAML 이 있으면 사용하고,
 없으면 내장 사본으로 폴백한다(선택 의존성).
+
+## 16. v0.3 확장 — 지평 이중화·변덕 격자·진화 동역학 재정식화
+
+### 16.1 지평(T) 이중화와 정직한 지평 비교
+`main()` 을 재구성해 `--rounds` 를 목록으로 받고(기본 `60 240`), 각 지평에서
+전 실험을 반복 실행한다. 지평별 실험 그림에는 `_T60`/`_T240` 접미가 붙는다.
+H7H·H8E 는 함수 내부에서 여러 T 를 함께 스윕하므로 지평 루프에서 제외하고
+(GLOBAL_EXPERIMENTS) 1회만 실행한다.
+
+`interpret_horizons()` 는 두 지평의 `supported`(딕셔너리로 분해된 하위기준
+포함)를 비교해 **지지 여부가 뒤집히는 하위기준만** `support_flips` 로 추린다.
+뒤집힘이 있으면 H7H 의 Δ(T) ≈ b·T − c·k 기제(학습·화해의 고정비용이 긴
+지평에서 상환; T*≈170 부근 교차)와 정합하는지 지표 방향으로 확인하라는
+해석 텍스트를 자동 생성한다. 이는 "짧은 지평의 결론을 긴 지평으로 외삽하지
+않는다"는 방법론적 약속을 코드 수준에서 강제하는 장치다. `horizon_overview.png`
+는 확증 지표별 (방향 성립 ∧ Holm 유의) 판정을 지평 축으로 나열해, 지평
+의존적 가설을 한눈에 드러낸다.
+
+### 16.2 H7 — 변덕 상대의 (주기 × 순환족) 격자와 SwitchingAgent
+기존 H7 은 고정전략 사이의 전환만 다뤘다. v0.3 은 case 카탈로그를
+전환 주기 {10,30,60,120} × 순환족 8종으로 재정의한다(총 32 case). 순환족
+중 셋(coop_trap, adaptive_expl, adaptive_mix)은 국면에 **정교형 adaptive
+에이전트**를 포함한다.
+
+`SwitchingAgent` 는 비-AIF 경로(act/observe 인터페이스)로 구현하되, 국면이
+전략일 때는 내부 `StrategyAgent` 의 kind 를 교체해 memory-1 연속성을
+유지하고, 국면이 adaptive 일 때는 **지속되는 단일 AdaptiveAgent 를 매 라운드
+step** 시킨다. 방출 행동은 관측 상태에 인코딩되어, 국면 전환을 "실행 오류와
+동일한 self-model 정합" 방식으로 처리한다(온난 전환 — cold reset 이 아니라
+행동 계층의 연속적 재조정). 실행 잡음은 방출 계층에서 대칭으로 부과한다.
+
+주기 의존성은 두 층위로 보고한다: (a) 주기별 Δ(P)=adaptive−GTFT 를
+one-sample 순열 + CI 로 검정하고 `switches_in_horizon` 을 병기하며, 지평 내
+전환이 0회인 퇴화 case(예: T=60 에서 P=60,120)를 무전환 대조로 명시한다.
+(b) 순환족 분해(fixed_cycles vs aif_cycles). 지지 부호가 주기에 따라 갈리면
+`period_dependent=True` 로 표시하고 그림의 Δ(P) 패널을 색으로 구분한다.
+확증 지표는 종전대로 전 case 합산 보수 하나로 유지한다(다중검정 통제).
+
+### 16.3 H8E — 침입·복제자·상태공간의 재정식화
+`estimate_payoff_matrix` 에 대칭 재사용(`symmetric=True`: i≤j 다이애드만
+실행하고 Π[i,j]/Π[j,i] 를 동시 기록 — 다이애드 절반화)과 seed_offset 을
+추가했다. 격자는 env_error {0,.05,.10,.15,.20} × T {60,240}, Π seeds=50.
+
+확증 지표는 **err=0.10 의 지평별 침입 성장률** 두 개(T=60, T=240)로, LARGE_MIX
+상주집단에 대한 adaptive 침입 g>0 를 부트스트랩 CI 로 판정한다. 지지가 지평
+의존적이면 `horizon_dependent` 로 정직 보고한다(v0.1.2 에서 T=60 은 g<0:
+학습·화해 고정비용 미상환, H7H T*≈170 과 정합).
+
+탐색 축은 다섯 갈래다. (a) 전 격자 침입 g(즉각형 adaptive 대조 포함).
+(b) **역방향 침입**: 순수 adaptive 및 혼합(85% adaptive+15% LARGE_MIX)
+상주집단에 각 고정전략+즉각형이 침입하는 g 를 전 격자에서 부트스트랩하고,
+ALLD 격퇴 여부를 확인한다. (c) 상주 구성 민감도: Dirichlet 무작위 구성
+100개의 침입가능 비율과 g~ALLD비중 기울기(slope_boot) + ALLD 비중 구조적
+스윕. (d) **Replicator 상태공간**: attractor_analysis(종착점 0.02 양자화
+군집→끌개 목록+유역 비율), 3-유형 부분계(ad-alld-TFT, ad-alld-ALLC)의
+심플렉스 위상 초상(궤적+끌개)과 cooperation basin 지도(basin_map_3), 9유형
+협력 유역 비율의 adaptive 유/무 확장 Δ. (e) Moran 평균장 교차검증(지평별).
+
+복제자 궤적 그림은 9개 유형 전체를 고정 색 매핑(TYPE_COLORS)으로 그리고
+legend 를 명시한다. 세 그림으로 분할: `h8e_invasion_structure`(보수 구조·
+침입 격자·역침입 forest·구성 민감도), `h8e_replicator_dynamics`(궤적·역침입
+동역학·끌개 조성·Moran), `h8e_state_space_basins`(위상 초상·유역 지도·유역
+확장 격자).
+
+### 16.4 예상 로컬 런타임
+seeds=240, rounds={60,240} 전 배터리는 16코어(Ryzen AI MAX+ 395)에서
+대략 1.5–3시간으로 추정된다(H8 population 실행과 H8E 격자가 지배적).
+컨테이너(1 CPU)에서는 `--quick` 스모크만 검증하고, 본 실행은 로컬 권장.

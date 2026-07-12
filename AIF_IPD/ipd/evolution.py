@@ -36,37 +36,59 @@ LOGGER = get_logger("HalloReg.evolution")
 # ---------------------------------------------------------------- Π 추정
 def estimate_payoff_matrix(type_specs: Dict[str, dict], n_rounds: int,
                            seeds: int, n_jobs: int,
-                           env_error: float = 0.10) -> Dict:
+                           env_error: float = 0.10,
+                           symmetric: bool = True,
+                           seed_offset: int = 0) -> Dict:
     """
     유형 쌍별 (행 유형의) 라운드당 평균 보수 행렬 Π 와 시드 간 SD 를 추정.
 
     type_specs : {유형이름: _build_one 호환 스펙(dict, seed 제외)}
     env_error  : 환경 계층 실행오류 — 모든 유형에 **대칭** 부과 (§2 잡음 대칭화).
+    symmetric  : True 면 순서쌍 (i,j), i≤j 만 시뮬레이션하고, 같은 다이애드의
+                 my_payoff/opp_payoff 를 각각 Π[i,j]/Π[j,i] 표본으로 재사용한다
+                 (환경잡음이 양측 대칭이므로 두 방향 모두 유효한 iid 추정치;
+                 다이애드 수를 절반으로 감축 — v0.3 (err×T) 격자 확장 대응).
+                 대각 (i,i) 은 양측 평균을 사용한다.
+    seed_offset: (err, T) 조건 간 시드 독립화를 위한 오프셋.
     """
     names = list(type_specs)
     k = len(names)
     specs, registry = [], {}
-    for i, ri in enumerate(names):
-        for j, cj in enumerate(names):
-            for sd in range(seeds):
-                a = dict(type_specs[ri]); a["seed"] = 10_000 + sd * 17 + i
-                b = dict(type_specs[cj]); b["seed"] = 20_000 + sd * 17 + j
-                registry[(i, j, sd)] = len(specs)
-                specs.append({"agent": a, "opponent": b,
-                              "env_err_agent": env_error,
-                              "env_err_opponent": env_error,
-                              "noise_seed": 900_000 + sd * 101 + i * 7 + j})
+    pair_iter = ([(i, j) for i in range(k) for j in range(i, k)] if symmetric
+                 else [(i, j) for i in range(k) for j in range(k)])
+    for (i, j) in pair_iter:
+        ri, cj = names[i], names[j]
+        for sd in range(seeds):
+            a = dict(type_specs[ri]); a["seed"] = 10_000 + seed_offset + sd * 17 + i
+            b = dict(type_specs[cj]); b["seed"] = 20_000 + seed_offset + sd * 17 + j
+            registry[(i, j, sd)] = len(specs)
+            specs.append({"agent": a, "opponent": b,
+                          "env_err_agent": env_error,
+                          "env_err_opponent": env_error,
+                          "noise_seed": 900_000 + seed_offset * 7
+                                        + sd * 101 + i * 7 + j})
     res = run_many(specs, n_rounds=n_rounds, n_jobs=n_jobs, verbose=False)
     Pi = np.zeros((k, k)); Pi_sd = np.zeros((k, k))
     raw = np.zeros((k, k, seeds))               # 시드 원자료 (침입 부트스트랩용)
+    for (i, j) in pair_iter:
+        my = np.array([float(np.mean(res[registry[(i, j, sd)]]
+                                     ["hist"]["my_payoff"]))
+                       for sd in range(seeds)])
+        if symmetric:
+            op = np.array([float(np.mean(res[registry[(i, j, sd)]]
+                                         ["hist"]["opp_payoff"]))
+                           for sd in range(seeds)])
+            if i == j:
+                raw[i, i] = 0.5 * (my + op)
+            else:
+                raw[i, j] = my
+                raw[j, i] = op
+        else:
+            raw[i, j] = my
     for i in range(k):
         for j in range(k):
-            v = np.array([float(np.mean(res[registry[(i, j, sd)]]
-                                        ["hist"]["my_payoff"]))
-                          for sd in range(seeds)])
-            raw[i, j] = v
-            Pi[i, j] = v.mean()
-            Pi_sd[i, j] = v.std(ddof=1) if seeds > 1 else 0.0
+            Pi[i, j] = raw[i, j].mean()
+            Pi_sd[i, j] = raw[i, j].std(ddof=1) if seeds > 1 else 0.0
     return {"names": names, "Pi": Pi, "Pi_sd": Pi_sd, "raw": raw,
             "n_rounds": n_rounds, "seeds": seeds, "env_error": env_error}
 
@@ -125,6 +147,86 @@ def basin_analysis(Pi: np.ndarray, names: List[str], n_samples: int = 300,
         coop_share = ends[:, coop_types].sum(axis=1)
         out["coop_basin_frac"] = float(np.mean(coop_share > 0.5))
     return out
+
+
+# ------------------------------------------------------- 끌개(attractor)
+def attractor_analysis(Pi: np.ndarray, names: List[str], n_samples: int = 400,
+                       steps: int = 800, seed: int = 0,
+                       round_to: float = 0.02) -> Dict:
+    """
+    Dirichlet(1) 초기점 n_samples 개에서 복제자 궤적을 적분해 종착점을
+    `round_to` 격자로 양자화·군집화한다. 반환: 끌개 목록(평균 조성, 유역
+    비율)과 원 종착점 배열 — Replicator 상태 공간의 끌개 구조 시각화용.
+    """
+    rng = np.random.default_rng(seed)
+    k = Pi.shape[0]
+    ends = np.empty((n_samples, k))
+    for s in range(n_samples):
+        ends[s] = replicator_trajectory(Pi, rng.dirichlet(np.ones(k)),
+                                        steps=steps)[-1]
+    keys = np.round(ends / round_to).astype(int)
+    uniq, inv, cnt = np.unique(keys, axis=0, return_inverse=True,
+                               return_counts=True)
+    order = np.argsort(-cnt)
+    attractors = []
+    for o in order:
+        mask = inv == o
+        attractors.append({
+            "composition": ends[mask].mean(axis=0).tolist(),
+            "basin_frac": float(cnt[o] / n_samples),
+        })
+    return {"names": names, "attractors": attractors, "ends": ends}
+
+
+def restrict_matrix(Pi: np.ndarray, names: List[str],
+                    subset: Sequence[str]) -> Tuple[np.ndarray, List[str]]:
+    """유형 부분집합으로 제한한 부분 보수 행렬 (3-유형 위상 초상용)."""
+    idx = [names.index(s) for s in subset]
+    return Pi[np.ix_(idx, idx)], list(subset)
+
+
+# ------------------------------------------------- 3-유형 심플렉스(ternary)
+def ternary_xy(x: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    바리센트릭 조성 x(..., 3) → 2D 데카르트 좌표.
+    꼭짓점: 유형0=(0,0), 유형1=(1,0), 유형2=(0.5, √3/2).
+    """
+    x = np.asarray(x, float)
+    px = x[..., 1] + 0.5 * x[..., 2]
+    py = (np.sqrt(3) / 2.0) * x[..., 2]
+    return px, py
+
+
+def ternary_grid(n: int = 25, margin: float = 0.01) -> np.ndarray:
+    """심플렉스 내부의 규칙 바리센트릭 격자 (초기점/유역 지도용)."""
+    pts = []
+    for i in range(n + 1):
+        for j in range(n + 1 - i):
+            a = i / n; b = j / n; c = 1.0 - a - b
+            x = np.array([a, b, c])
+            x = np.clip(x, margin, None); x = x / x.sum()
+            pts.append(x)
+    return np.asarray(pts)
+
+
+def basin_map_3(Pi3: np.ndarray, coop_idx: Sequence[int], n: int = 25,
+                steps: int = 800) -> Dict:
+    """
+    3-유형 부분계의 협력 유역 지도: 격자 초기점별 (종착 협력 점유율,
+    종착 지배유형)을 계산. Replicator 상태 공간·attractor·cooperation
+    basin 시각화의 데이터 소스.
+    """
+    grid = ternary_grid(n)
+    coop_share = np.empty(len(grid))
+    dominant = np.empty(len(grid), dtype=int)
+    ends = np.empty((len(grid), 3))
+    for s, x0 in enumerate(grid):
+        e = replicator_trajectory(Pi3, x0, steps=steps)[-1]
+        ends[s] = e
+        coop_share[s] = float(e[list(coop_idx)].sum())
+        dominant[s] = int(np.argmax(e))
+    return {"grid": grid, "ends": ends, "coop_share": coop_share,
+            "dominant": dominant}
 
 
 # ---------------------------------------------------------------- Moran

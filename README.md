@@ -20,8 +20,11 @@ pip install inferactively-pymdp   # 선택: --backend pymdp / --check-equivalenc
 리포지토리 루트(`Halloreg/`)에서 실행한다.
 
 ```bash
-# 전체 실험 (기본값: seeds=120, rounds=60, 모든 코어 사용)
+# 전체 실험 (기본값: seeds=240, rounds=60 240 두 지평, 모든 코어 사용)
 python AIF_IPD/scripts/run_ipd_experiment.py
+
+# 단일 지평만
+python AIF_IPD/scripts/run_ipd_experiment.py --rounds 60
 
 # 빠른 확인
 python AIF_IPD/scripts/run_ipd_experiment.py --quick
@@ -30,7 +33,7 @@ python AIF_IPD/scripts/run_ipd_experiment.py --quick
 python AIF_IPD/scripts/run_ipd_experiment.py --experiments H5 H7 H8 --jobs 1
 
 # pymdp 1.0.x 와 numpy 해석적 EFE 동치성 검증
-python AIF_IPD/scripts/run_ipd_experiment.py --check-equivalence --experiments H1
+python AIF_IPD/scripts/run_ipd_experiment.py --check-equivalence
 ```
 
 기존 이름 `run_ipd_experiments.py` (복수형) 도 위임 셔틀로 남아 동일하게 동작한다.
@@ -39,16 +42,17 @@ python AIF_IPD/scripts/run_ipd_experiment.py --check-equivalence --experiments H
 
 | 인자 | 기본값 | 설명 |
 |---|---|---|
-| `--seeds` | 120 | 조건별 시드(다이애드) 수 |
-| `--rounds` | 60 | 다이애드 라운드 수 |
+| `--seeds` | 240 | 조건별 시드(다이애드) 수 |
+| `--rounds` | 60 240 | 다이애드 라운드 수 — 복수 지정 시 각 지평에서 전 실험 반복 후 지평 비교 |
 | `--jobs` | -1 | 병렬 워커 수 (-1 = 코어수-1, 1 = 순차) |
 | `--experiments` | 전체 | `H1 H2H3 H4 H5 H6 H7 H7H H8 H8E H9H10 GS` 중 선택 |
 | `--backend` | numpy | `numpy` (해석적 EFE) 또는 `pymdp` (검증용, 느림) |
 | `--quick` | off | 스모크 테스트 (seeds=3, rounds=30) |
+| `--check-equivalence` | off | pymdp↔numpy EFE 등가성만 검증하고 종료 |
 
 ## 출력
 
-`AIF_IPD/results/` 에 **가설마다 개별 PNG** 와 수치 요약 JSON 이 저장된다.
+`AIF_IPD/results/` 에 **가설마다 개별 PNG** 와 수치 요약 JSON 이 저장된다. 복수 지평 실행 시 지평별 실험 그림은 `_T60`/`_T240` 접미가 붙고(H7H·H8E 는 내부에서 여러 T 를 함께 다루므로 접미 없음), 지평 간 확증 판정 개관은 `horizon_overview.png` 로 저장된다.
 
 | 파일 | 가설 |
 |---|---|
@@ -57,10 +61,13 @@ python AIF_IPD/scripts/run_ipd_experiment.py --check-equivalence --experiments H
 | `h4_cooperation_recovery.png` | H4 TFT 상대 상호협력 비열등성 |
 | `h5_immediate_vs_sophisticated.png` | H5 즉각형 vs 정교형 + 2x2x2 요인 forest |
 | `h6_noise_robustness.png` | H6 잡음 하 고정전략 성능 |
-| `h7_capricious_partners.png` | H7 변덕 상대 + λ 반응성(순열 영가설) + 대칭 잡음 대전 |
+| `h7_capricious_partners.png` | H7 변덕 상대(주기×순환족 격자) + 주기 의존성 Δ(P) + λ 반응성 + 대칭 잡음 대전 |
 | `h7h_horizon_dependence.png` | H7H 지평 스윕(전환수/주기 고정 족, T*, 히스테리시스) |
 | `h8_scaling_cooperation.png` | H8 규모 확장 + 조건부 기울기 플롯 + ALLC 이전 회계 |
-| `h8e_evolutionary_dynamics.png` | H8E 복제자·Moran 역학(침입 성장률·유역) |
+| `h8e_invasion_structure.png` | H8E-1 보수 구조·침입 성장률 격자·역방향 침입·구성 민감도 |
+| `h8e_replicator_dynamics.png` | H8E-2 복제자 궤적(전 유형 legend)·역침입·끌개 조성·Moran |
+| `h8e_state_space_basins.png` | H8E-3 상태공간 위상 초상·협력 유역 지도·유역 확장 격자 |
+| `horizon_overview.png` | 확증 지표의 지평(T=60/240)별 판정 개관 |
 | `h9_h10_attribution_scope.png` | H9/H10 귀인 범위 절제 + 비-ToM 베이스라인 |
 | `gs_game_structure.png` | GS 게임구조(협력지수 CI) 강건성 스윕 |
 | `recovery_tom.png` | ToM 파라미터 복원 연구(편향·RMSE·커버리지·식별불능) |
@@ -84,7 +91,29 @@ AIF_IPD/
   results/     산출물 (gitignore)
 ```
 
-## v0.2 — 연구 보완 (6축)
+## v0.3 — 지평 이중화·변덕 격자·진화 동역학 (3축)
+
+`docs/IMPLEMENTATION_PLAN.md` §16 참조.
+
+1. **지평 이중화.** 기본 실행이 `--rounds 60 240` 두 지평에서 전 실험을 반복하고,
+   `interpret_horizons()` 가 지지 여부(딕셔너리로 분해된 하위기준)를 지평 간
+   비교해 **뒤집히는 기준만** 추려 H7H 의 Δ(T)≈b·T−c·k 기제와 정합하는지
+   해석 텍스트를 자동 생성한다. `horizon_overview.png` 로 확증 지표의 지평별
+   판정을 개관한다. 짧은 지평의 결론을 긴 지평으로 외삽하지 않는다는 방침을
+   코드로 강제한다.
+2. **H7 변덕 격자.** case 카탈로그를 전환 주기 {10,30,60,120} × 순환족 8종
+   (정교형 adaptive 국면 포함 3종)으로 재정의(32 case). `SwitchingAgent` 는
+   전략 국면은 memory-1 연속으로, adaptive 국면은 지속 에이전트의 온난 전환으로
+   처리한다. 주기별 Δ(P)=adaptive−GTFT 를 무전환 대조와 함께 보고하고, 지지
+   부호가 주기에 갈리면 `period_dependent` 로 명시·시각화한다.
+3. **H8E 진화 동역학.** env_error {0,.05,.1,.15,.2}×T{60,240} 격자(Π seeds=50,
+   대칭 재사용). 확증은 err=0.10 의 지평별 침입 성장률. 탐색: 역방향 침입
+   (adaptive 상주 → 고정전략), Dirichlet 구성 민감도, Replicator 상태공간
+   (끌개·3-유형 위상 초상·cooperation basin), Moran 교차검증. 복제자 궤적은
+   9유형 전체를 고정 색 legend 로 그린다. 그림 3분할(invasion_structure /
+   replicator_dynamics / state_space_basins).
+
+
 
 학술 비판에 대응해 6개 축을 보완했다. 자세한 내용은 `docs/IMPLEMENTATION_PLAN.md`
 §10–15 및 "주장 감사(Claims Audit)" 표 참조.

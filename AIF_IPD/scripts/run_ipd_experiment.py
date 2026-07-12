@@ -55,7 +55,9 @@ from matplotlib import font_manager
 from AIF_IPD.core.constants import CC, CD, DC, DD, COOP, DEFECT
 from AIF_IPD.core.logging_utils import get_logger, set_korean_font
 from AIF_IPD.ipd.env import (
-    CAPRICIOUS_CASES, capricious_case_spec, capricious_switch_rounds,
+    CAPRICIOUS_CASES, CAPRICIOUS_PERIODS, DEFAULT_CAPRICIOUS_CASE,
+    capricious_case_spec, capricious_switch_rounds,
+    fixed_capricious_cases, capricious_cases_by_period,
 )
 from AIF_IPD.ipd.sim import run_many, run_populations
 from AIF_IPD.ipd.metrics import (
@@ -97,22 +99,32 @@ def prereg_of(h: str) -> dict:
 
 
 # ------------------------------------------------- 확증/탐색 결과 레지스트리
-PRIMARY: list = []      # [{"hyp", "label", "p", "direction_met", "es"}]
-EXPLORATORY: list = []  # [{"hyp", "label", "p"}]
+PRIMARY: list = []      # [{"hyp", "label", "p", "direction_met", "es", "tag"}]
+EXPLORATORY: list = []  # [{"hyp", "label", "p", "tag"}]
+
+# 현재 실행 중인 지평 태그 (main 루프가 설정; "T60"/"T240"/""(전지평 실험))
+CUR_TAG: str = ""
+
+
+def _tagged(label: str) -> str:
+    return f"{label} [{CUR_TAG}]" if CUR_TAG else label
 
 
 def register_primary(hyp: str, label: str, p: float, direction_met: bool,
                      es_str: str = ""):
-    PRIMARY.append({"hyp": hyp, "label": label, "p": float(p),
-                    "direction_met": bool(direction_met), "es": es_str})
+    PRIMARY.append({"hyp": hyp, "label": _tagged(label), "p": float(p),
+                    "direction_met": bool(direction_met), "es": es_str,
+                    "tag": CUR_TAG})
     LOGGER.info("[확증][%s] %s — %s, 방향성립=%s (p_raw=%.4g; Holm 은 전 가설 종료 후)",
-                hyp, label, es_str, direction_met, p)
+                hyp, _tagged(label), es_str, direction_met, p)
 
 
 def register_exploratory(hyp: str, label: str, p: float, note: str = ""):
-    EXPLORATORY.append({"hyp": hyp, "label": label, "p": float(p)})
+    EXPLORATORY.append({"hyp": hyp, "label": _tagged(label), "p": float(p),
+                        "tag": CUR_TAG})
     if note:
-        LOGGER.info("[탐색][%s] %s — %s (p_raw=%.4g; FDR 은 종료 후)", hyp, label, note, p)
+        LOGGER.info("[탐색][%s] %s — %s (p_raw=%.4g; FDR 은 종료 후)",
+                    hyp, _tagged(label), note, p)
 
 
 def stable_seed(*key) -> int:
@@ -496,17 +508,35 @@ def exp_H6(seeds, rounds, jobs, backend):
 # ================================================================== H7
 def exp_H7(seeds, rounds, jobs, backend):
     """
-    H7 [확증] 전 case 합산 라운드당 보수: adaptive > GTFT (짝지은 순열).
-    [탐색] λ 반응성 — 무작위 정렬 순열 영가설 대비 (임계값 0.02 폐기, §2);
-           국면 분해; 4×4 대전 (환경 계층 잡음으로 전원 대칭, §2);
-           비-ToM 학습 베이스라인(§3: qlearner, bayes_br) 병기.
+    H7 (v0.3 전면 확장) — 형질전환 case 격자: 주기 {10,30,60,120} × 순환족 8
+    (고정전략 순환 6 + **AIF 국면 포함 이질 순환 2** — SwitchingAgent).
+
+    [확증] 전 case 합산 라운드당 보수: adaptive > GTFT (짝지은 순열; 지평별).
+    [탐색] (i) **주기 의존성**: 주기 P 별 Δ(P)=adaptive−GTFT (지지 부호가
+           주기에 따라 상이하면 명시·시각화 — 본 리비전의 핵심 추가),
+           (ii) 순환족 분해: AIF 국면 포함 case vs 고정전략 순환 case,
+           (iii) λ 반응성(무작위 정렬 순열), (iv) 국면 분해,
+           (v) 4×4 대전 (환경 계층 대칭 잡음), (vi) 비-ToM 베이스라인.
+
+    잡음 설계 (v0.3): primary 잡음 0.10 에서 **전 focal × 전 case** 격자를
+    실행하고, 잡음 스윕 {0.0, 0.20} 은 주 대비쌍(adaptive, GTFT)에 한정한다
+    (32 case × 240 seeds 격자 확장에 따른 설계상 명시적 절충).
+
+    퇴화 case 주의: 지평 T 가 주기 P 이하이면(예: T=60 의 p60/p120) 지평 내
+    전환이 0회 — '무전환 대조'로 유지되며 전환 정렬·주기 반응 분석에서
+    자동 제외되고, Δ(P) 해석에 전환 횟수를 병기한다.
     """
-    LOGGER.info("[H7] 다양한 변덕 상대 (형질전환 case %d개) + 베이스라인",
-                len(CAPRICIOUS_CASES))
+    LOGGER.info("[H7] 형질전환 case 격자 %d개 (주기 %s × 순환족) + 베이스라인",
+                len(CAPRICIOUS_CASES), list(CAPRICIOUS_PERIODS))
     quick = seeds < 10
-    cases = list(CAPRICIOUS_CASES)[:3] if quick else list(CAPRICIOUS_CASES)
-    noise_levels = (0.0, 0.10) if quick else (0.0, 0.10, 0.20)
+    if quick:
+        cases = ["p10_recip_expl_recon", "p30_flip", "p10_adaptive_expl"]
+        noise_levels = (0.0, 0.10)
+    else:
+        cases = list(CAPRICIOUS_CASES)
+        noise_levels = (0.0, 0.10, 0.20)
     primary_noise = 0.10
+    sweep_focals = ("adaptive", "generous_tft")   # 비-primary 잡음의 스윕 대상
     focals = {
         "adaptive": agent_spec("adaptive", 0, kappa=0.9, sophisticated=True,
                                use_pymdp=backend == "pymdp"),
@@ -518,7 +548,9 @@ def exp_H7(seeds, rounds, jobs, backend):
     }
     specs, registry = [], {}
     for err in noise_levels:
-        for name, cfg in focals.items():
+        focal_set = focals if err == primary_noise else \
+            {k: focals[k] for k in sweep_focals}
+        for name, cfg in focal_set.items():
             for case in cases:
                 for sd in range(seeds):
                     a = dict(cfg); a["seed"] = sd
@@ -527,26 +559,31 @@ def exp_H7(seeds, rounds, jobs, backend):
                     registry[(err, name, case, sd)] = len(specs)
                     specs.append({"agent": a, "opponent": o,
                                   "noise_seed": 7000 + sd})
-    LOGGER.info("[H7] 다이애드 %d 개 실행", len(specs))
+    LOGGER.info("[H7] 다이애드 %d 개 실행 (primary 잡음 전 focal, 스윕 잡음 %s 한정)",
+                len(specs), sweep_focals)
     res = run_many(specs, n_rounds=rounds, n_jobs=jobs, verbose=False)
 
     def R(err, name, case, sd):
         return res[registry[(err, name, case, sd)]]
 
+    def has(err, name):
+        return (err, name, cases[0], 0) in registry
+
     raw = {(err, n, c): [float(np.mean(R(err, n, c, sd)["hist"]["my_payoff"]))
                          for sd in range(seeds)]
-           for err in noise_levels for n in focals for c in cases}
+           for err in noise_levels for n in focals for c in cases
+           if has(err, n)}
     agg_seed = {n: [float(np.mean([raw[(primary_noise, n, c)][sd] for c in cases]))
                     for sd in range(seeds)] for n in focals}
     per_case = {n: {c: (mean_sd(raw[(primary_noise, n, c)])[0],
                         boot_mean_ci(raw[(primary_noise, n, c)], seed=71)["ci"])
                     for c in cases} for n in focals}
     sweep = {str(e): {n: float(np.mean([np.mean(raw[(e, n, c)]) for c in cases]))
-                      for n in focals} for e in noise_levels}
+                      for n in focals if has(e, n)} for e in noise_levels}
     sweep_ci = {str(e): {n: boot_mean_ci(
         [float(np.mean([raw[(e, n, c)][sd] for c in cases]))
-         for sd in range(seeds)], seed=72)["ci"] for n in focals}
-        for e in noise_levels}
+         for sd in range(seeds)], seed=72)["ci"]
+        for n in focals if has(e, n)} for e in noise_levels}
 
     pri = paired_stats(agg_seed["adaptive"], agg_seed["generous_tft"],
                        "greater", seed=73)
@@ -557,6 +594,52 @@ def exp_H7(seeds, rounds, jobs, backend):
                          seed=74)
         register_exploratory("H7", f"adaptive vs {base}", t["p"],
                              fmt_es(t["es"], "dz"))
+
+    # ---- (신규) 주기 의존성: 주기별 Δ(P) = adaptive − GTFT ----
+    periods_here = sorted({CAPRICIOUS_CASES[c]["period"] for c in cases})
+    period_stats = {}
+    for P in periods_here:
+        cs = [c for c in cases if CAPRICIOUS_CASES[c]["period"] == P]
+        d_seed = [float(np.mean([raw[(primary_noise, "adaptive", c)][sd]
+                                 - raw[(primary_noise, "generous_tft", c)][sd]
+                                 for c in cs])) for sd in range(seeds)]
+        t = one_sample_perm(d_seed, mu0=0.0, alternative="two-sided",
+                            seed=750 + P)
+        ci = boot_mean_ci(d_seed, seed=751 + P)["ci"]
+        n_sw = len(capricious_switch_rounds(cs[0], rounds))
+        period_stats[P] = {
+            "delta_mean": float(np.mean(d_seed)), "ci": ci, "p": t["p"],
+            "n_cases": len(cs), "switches_in_horizon": n_sw,
+            "supported": bool(np.mean(d_seed) > 0),
+        }
+        register_exploratory(
+            "H7", f"주기 P={P} Δ(adaptive−GTFT)", t["p"],
+            f"Δ={np.mean(d_seed):+.3f} CI[{ci[0]:.3f},{ci[1]:.3f}] "
+            f"(지평 내 전환 {n_sw}회{'; 무전환 대조' if n_sw == 0 else ''})")
+    signs = {P: period_stats[P]["supported"] for P in periods_here}
+    period_dependent = len(set(signs.values())) > 1
+    if period_dependent:
+        LOGGER.info("[H7] ⚠ 지지 여부가 전환 주기에 의존: %s — 그림·해석에 명시",
+                    signs)
+    else:
+        LOGGER.info("[H7] 주기별 Δ 부호 일관: %s", signs)
+
+    # ---- (신규) 순환족 분해: AIF 국면 포함 case vs 고정전략 순환 case ----
+    fixed_cs = [c for c in cases if "adaptive" not in CAPRICIOUS_CASES[c]["cycle"]]
+    aif_cs = [c for c in cases if "adaptive" in CAPRICIOUS_CASES[c]["cycle"]]
+    family_split = {}
+    for lbl, cs in (("fixed_cycles", fixed_cs), ("aif_cycles", aif_cs)):
+        if not cs:
+            continue
+        d_seed = [float(np.mean([raw[(primary_noise, "adaptive", c)][sd]
+                                 - raw[(primary_noise, "generous_tft", c)][sd]
+                                 for c in cs])) for sd in range(seeds)]
+        t = one_sample_perm(d_seed, mu0=0.0, alternative="two-sided", seed=760)
+        family_split[lbl] = {"delta_mean": float(np.mean(d_seed)),
+                             "ci": boot_mean_ci(d_seed, seed=761)["ci"],
+                             "p": t["p"], "n_cases": len(cs)}
+        register_exploratory("H7", f"순환족[{lbl}] Δ(adaptive−GTFT)", t["p"],
+                             f"Δ={np.mean(d_seed):+.3f} (case {len(cs)}개)")
 
     # ---- λ 반응성: 전환 정렬 vs 무작위 정렬 순열 영가설 (§2) ----
     W_PRE, W_POST, K_NULL = 5, 10, 200
@@ -690,12 +773,18 @@ def exp_H7(seeds, rounds, jobs, backend):
             matrix_ci[i, j] = boot_mean_ci(v, seed=78)["ci"]
     supported = {"overall_payoff_advantage": bool(pri["mean_a"] > pri["mean_b"]),
                  "exploit_phase_defense": bool(px["mean_a"] > px["mean_b"]),
-                 "lambda_responsive": lam_responsive}
-    LOGGER.info("[H7] → %s (총보수의 지평 의존성은 H7H 에서 [확증] 검증)", supported)
+                 "lambda_responsive": lam_responsive,
+                 "by_period": signs,
+                 "period_dependent": bool(period_dependent)}
+    LOGGER.info("[H7] → %s (총보수의 지평 의존성은 H7H·지평 비교에서 [확증] 검증)",
+                supported)
     return {"cases": cases, "noise_levels": [str(n) for n in noise_levels],
             "primary_noise": primary_noise, "primary": pri,
+            "sweep_focals": list(sweep_focals),
             "per_case": {n: {c: [v[0], v[1]] for c, v in d.items()}
                          for n, d in per_case.items()},
+            "period_stats": {str(P): v for P, v in period_stats.items()},
+            "family_split": family_split,
             "sweep": sweep, "sweep_ci": sweep_ci,
             "phase_pay": {f"{n}|{ph}": mean_sd([x for x in phase_pay[(n, ph)]
                                                 if not np.isnan(x)])
@@ -720,7 +809,8 @@ def exp_H7(seeds, rounds, jobs, backend):
 # ================================================================== H7H
 def exp_H7H(seeds, rounds, jobs, backend):
     """
-    H7H (§6) — 지평 의존성의 체계적 검증.
+    H7H (§6) — 지평 의존성의 체계적 검증. (전지평 실험 — main 에서 1회 실행;
+    `rounds` 는 목록으로 전달되며 내부 T 스윕이 요청 지평 {60, 240} 을 포함.)
 
     Δ(T) = payoff_adaptive − payoff_GTFT (CRN 짝지음) 를 두 스케줄 족에서 추정:
       족 a (전환수 고정): 국면 길이 ∝ T (3국면). 예측 Δ(T) ≈ b·T − c·k₀ → T 에 개선.
@@ -731,7 +821,9 @@ def exp_H7H(seeds, rounds, jobs, backend):
     """
     LOGGER.info("[H7H] 지평 의존성: 스케줄 족 × T 스윕 + 히스테리시스 조작")
     quick = seeds < 10
-    Ts = [30, 60] if quick else [60, 90, 120, 180, 240]
+    req = sorted(set(rounds)) if isinstance(rounds, (list, tuple)) else [int(rounds)]
+    Ts = sorted(set([30, 60] + req))[:3] if quick else \
+        sorted(set([60, 90, 120, 180, 240]) | set(req))
     noises_a = [0.10] if quick else [0.05, 0.10, 0.20]
     periods_b = [10] if quick else [10, 20, 30]
     primary_noise = 0.10
@@ -886,7 +978,7 @@ def _largest_remainder(weights: dict, n: int) -> dict:
 
 
 def _m_strat(kind: str, n_rounds: int, error: float = 0.10,
-             case: str = "p20_recip_expl_recon") -> dict:
+             case: str = DEFAULT_CAPRICIOUS_CASE) -> dict:
     if kind == "capricious":
         return capricious_case_spec(case, seed=0, n_rounds=n_rounds, error=error)
     err = 0.0 if kind in ("random",) else error
@@ -909,12 +1001,12 @@ def _large_members(n: int, n_adaptive: int, n_rounds: int, backend: str,
     weights = weights or LARGE_MIX
     counts = _largest_remainder(weights, n - n_adaptive)
     members, labels = [], []
-    cases = list(CAPRICIOUS_CASES)
+    cases = fixed_capricious_cases()      # 집단 구성원은 고정전략 순환 case 만
     for kind, cnt in counts.items():
         for i in range(cnt):
             case = (str((rng or np.random.default_rng(0)).choice(cases))
                     if (rand_capricious and kind == "capricious")
-                    else "p20_recip_expl_recon")
+                    else DEFAULT_CAPRICIOUS_CASE)
             members.append(_m_strat(kind, n_rounds, case=case))
             labels.append(kind)
     ad_cfg = _m_adaptive(backend, **(adaptive_kw or {}))
@@ -1314,113 +1406,320 @@ def exp_H8(seeds, rounds, jobs, backend):
 
 
 # ================================================================== H8E
+# 유형별 고정 색 (모든 복제자/Moran 그림에서 전 유형 legend 명시 — v0.3 요구)
+TYPE_COLORS = {
+    "tit_for_tat": "#1f77b4", "generous_tft": "#2ca02c", "wsls": "#17becf",
+    "allc": "#bcbd22", "alld": "#d62728", "random": "#7f7f7f",
+    "capricious": "#9467bd", "adaptive": "#ff7f0e", "adaptive_imm": "#8c564b",
+}
+
+
+def _resident_from_mix(names, mix):
+    w = np.zeros(len(names))
+    for kind, v in mix.items():
+        if kind in names:
+            w[names.index(kind)] = v
+    return w / w.sum()
+
+
+def _growth_boot(raw, resident, inv_idx, n_boot=2000, seed=0):
+    """Π 시드 부트스트랩으로 침입 성장률 g 의 점추정·95% CI·양측 p."""
+    pi_seeds = raw.shape[2]
+    g_obs = evo.invasion_growth(raw.mean(axis=2), resident, inv_idx)
+    rng = np.random.default_rng(seed)
+    gb = np.array([evo.invasion_growth(
+        raw[:, :, rng.integers(0, pi_seeds, pi_seeds)].mean(axis=2),
+        resident, inv_idx) for _ in range(n_boot)])
+    ci = [float(np.percentile(gb, 2.5)), float(np.percentile(gb, 97.5))]
+    pv = float(np.clip(2 * min((gb <= 0).mean(), (gb >= 0).mean()),
+                       1.0 / n_boot, 1.0))
+    return {"g": float(g_obs), "ci": ci, "p": pv}
+
+
 def exp_H8E(seeds, rounds, jobs, backend):
     """
-    H8E (§3) — 실제 '집단 역학': 평균장 복제자 + 경험보수 Moran.
+    H8E (v0.3 전면 확장) — 진화적 동역학: 평균장 복제자 + 경험보수 Moran.
 
-    [확증] 기준 혼합 상주집단(LARGE_MIX 7유형)에 대한 adaptive 침입 성장률 > 0
-           (Π 시드 부트스트랩 CI 가 0 배제).
-    [탐색] 복제자 궤적·고정점, 협력 유역(basin) 비율(adaptive 유/무 대조),
-           Moran 과정의 평균장 교차검증.
+    Π 격자 : env_error ∈ {0.0, 0.05, 0.10, 0.15, 0.20} × T ∈ {60, 240},
+             pi_seeds = 50 (요구 사양), 순서쌍 대칭 재사용으로 다이애드 절반화.
+
+    [확증] 기준 혼합 상주집단(LARGE_MIX)에 대한 adaptive 침입 성장률 > 0 —
+           **지평별 2개** (T=60, T=240; primary 잡음 0.10). v0.1.2 관찰
+           (T=60 에서 g<0)과 H7H 의 T*≈170 에 비추어 지평 의존성이 예상되며,
+           지지 여부는 지평별로 정직하게 분리 보고한다.
+    [탐색] (a) g(err, T) 전 격자 (즉각형 병기),
+           (b) **역방향 침입**: 정교형 adaptive 다수 상주집단에 각 고정전략이
+               침입할 때의 성장률 — 순수/혼합(85%) 상주 두 구성, 전 격자,
+               복제자 궤적으로 동역학 검증,
+           (c) **상주 구성 민감도**: Dirichlet 무작위 구성 + ALLD 비중 스윕에서
+               adaptive 침입 가능 구성 비율과 g~ALLD 비중 기울기,
+           (d) 복제자 궤적(전 유형 legend), **끌개(attractor) 구조**,
+               **협력 유역(cooperation basin)** — 3-유형 부분계의 상태공간
+               위상 초상(벡터장 + 유역 지도)과 전 격자 유역 비율,
+           (e) Moran 평균장 교차검증 (지평별).
     """
-    LOGGER.info("[H8E] 복제자 동역학 + Moran 과정")
+    LOGGER.info("[H8E] 복제자 동역학 + Moran — (err × T) 격자")
     quick = seeds < 10
-    pi_seeds = 2 if quick else max(6, seeds // 6)
-    type_specs = {
-        "tit_for_tat": _m_strat("tit_for_tat", rounds),
-        "generous_tft": _m_strat("generous_tft", rounds),
-        "wsls": _m_strat("wsls", rounds),
-        "allc": _m_strat("allc", rounds),
-        "alld": _m_strat("alld", rounds),
-        "random": _m_strat("random", rounds),
-        "capricious": _m_strat("capricious", rounds),
-        "adaptive": _m_adaptive(backend, sophisticated=True),
-        "adaptive_imm": _m_adaptive(backend, sophisticated=False),
-    }
-    est = evo.estimate_payoff_matrix(type_specs, n_rounds=rounds,
-                                     seeds=pi_seeds, n_jobs=jobs,
-                                     env_error=0.10)
-    names, Pi, Pi_sd = est["names"], est["Pi"], est["Pi_sd"]
-    raw = est["raw"]                             # (k, k, seeds)
+    pi_seeds = 4 if quick else 50
+    env_errors = [0.10] if quick else [0.0, 0.05, 0.10, 0.15, 0.20]
+    req = sorted(set(rounds)) if isinstance(rounds, (list, tuple)) else [int(rounds)]
+    Ts = req[:1] if quick else sorted(set([60, 240]) | set(req))
+    primary_err = 0.10 if 0.10 in env_errors else env_errors[0]
+
+    def type_specs_for(T):
+        return {
+            "tit_for_tat": _m_strat("tit_for_tat", T),
+            "generous_tft": _m_strat("generous_tft", T),
+            "wsls": _m_strat("wsls", T),
+            "allc": _m_strat("allc", T),
+            "alld": _m_strat("alld", T),
+            "random": _m_strat("random", T),
+            "capricious": _m_strat("capricious", T),
+            "adaptive": _m_adaptive(backend, sophisticated=True),
+            "adaptive_imm": _m_adaptive(backend, sophisticated=False),
+        }
+
+    est = {}
+    for ti, T in enumerate(Ts):
+        for ei, err in enumerate(env_errors):
+            t0 = time.time()
+            est[(err, T)] = evo.estimate_payoff_matrix(
+                type_specs_for(T), n_rounds=T, seeds=pi_seeds, n_jobs=jobs,
+                env_error=err, symmetric=True,
+                seed_offset=1000 * (ti * len(env_errors) + ei))
+            LOGGER.info("[H8E] Π(err=%.2f, T=%d) 추정 %.1fs", err, T,
+                        time.time() - t0)
+    names = est[(primary_err, Ts[0])]["names"]
     k = len(names)
-    resident_w = np.zeros(k)
-    for kind, w in LARGE_MIX.items():
-        resident_w[names.index(kind)] = w
-    resident_w /= resident_w.sum()
-    i_ad = names.index("adaptive"); i_imm = names.index("adaptive_imm")
+    i_ad, i_imm = names.index("adaptive"), names.index("adaptive_imm")
+    fixed_names = [n for n in names if n not in ("adaptive", "adaptive_imm")]
+    resident_w = _resident_from_mix(names, LARGE_MIX)
 
-    g_obs = evo.invasion_growth(Pi, resident_w, i_ad)
-    rngb = np.random.default_rng(801)
-    g_boot = []
-    for _ in range(2000):
-        idx = rngb.integers(0, pi_seeds, pi_seeds)
-        g_boot.append(evo.invasion_growth(raw[:, :, idx].mean(axis=2),
-                                          resident_w, i_ad))
-    g_ci = [float(np.percentile(g_boot, 2.5)), float(np.percentile(g_boot, 97.5))]
-    p_g = float(np.clip(2 * min(np.mean(np.array(g_boot) <= 0),
-                                np.mean(np.array(g_boot) >= 0)),
-                        1 / 2000, 1.0))
-    register_primary("H8E", "adaptive 침입 성장률 > 0", p_g, g_ci[0] > 0,
-                     f"g={g_obs:.3f} [{g_ci[0]:.3f}, {g_ci[1]:.3f}]")
-    g_imm = evo.invasion_growth(Pi, resident_w, i_imm)
-    register_exploratory("H8E", "즉각형 침입 성장률", 1.0, f"g={g_imm:.3f}")
+    # ---- (확증 + a) 기준 혼합 상주집단 침입 격자 ----
+    inv_grid = {}
+    for (err, T), e in est.items():
+        inv_grid[(err, T)] = {
+            "adaptive": _growth_boot(e["raw"], resident_w, i_ad,
+                                     seed=stable_seed("g_ad", err, T)),
+            "adaptive_imm": _growth_boot(e["raw"], resident_w, i_imm,
+                                         seed=stable_seed("g_im", err, T)),
+        }
+    supported_by_T = {}
+    for T in Ts:
+        g = inv_grid[(primary_err, T)]["adaptive"]
+        register_primary("H8E", f"adaptive 침입 성장률 > 0 (T={T})", g["p"],
+                         g["ci"][0] > 0,
+                         f"g={g['g']:.3f} [{g['ci'][0]:.3f}, {g['ci'][1]:.3f}]")
+        supported_by_T[f"T{T}"] = bool(g["ci"][0] > 0)
+        g_i = inv_grid[(primary_err, T)]["adaptive_imm"]
+        register_exploratory("H8E", f"즉각형 침입 성장률 (T={T})", g_i["p"],
+                             f"g={g_i['g']:.3f}")
+    horizon_dependent = len(set(supported_by_T.values())) > 1
+    if horizon_dependent:
+        LOGGER.info("[H8E] ⚠ 침입 지지 여부가 지평에 의존: %s — H7H 의 "
+                    "T* 기제(학습·화해 비용의 상환)와 정합 여부를 해석에 명시",
+                    supported_by_T)
 
-    # 복제자 궤적 (3 초기점: 기준혼합+ε adaptive / 균등 / ALLD 과다)
+    # ---- (b) 역방향 침입: adaptive 다수 상주집단에 고정전략 침입 ----
+    invaders = fixed_names + ["adaptive_imm"]
+    res_pure = np.eye(k)[i_ad]
+    res_mixed = 0.85 * res_pure + 0.15 * _resident_from_mix(
+        names, {n: LARGE_MIX.get(n, 0.0) for n in fixed_names})
+    res_mixed /= res_mixed.sum()
+    reverse = {}
+    for (err, T), e in est.items():
+        rv = {}
+        for inv in invaders:
+            ii = names.index(inv)
+            rv[inv] = {
+                "pure": _growth_boot(e["raw"], res_pure, ii,
+                                     seed=stable_seed("rvP", err, T, inv)),
+                "mixed": _growth_boot(e["raw"], res_mixed, ii,
+                                      seed=stable_seed("rvM", err, T, inv)),
+            }
+        reverse[(err, T)] = rv
+    for T in Ts:
+        can = [inv for inv in invaders
+               if reverse[(primary_err, T)][inv]["pure"]["ci"][0] > 0]
+        cannot = [inv for inv in invaders
+                  if reverse[(primary_err, T)][inv]["pure"]["ci"][1] < 0]
+        register_exploratory(
+            "H8E", f"역침입 (T={T}, 순수 adaptive 상주)", 1.0,
+            f"침입 가능(CI>0): {can or '없음'} / 격퇴(CI<0): {cannot or '없음'}")
+    # 역침입 동역학 검증: adaptive 다수 + 침입자 5% 초기점의 복제자 궤적
+    reverse_traj = {}
+    for T in Ts:
+        Pi = est[(primary_err, T)]["Pi"]
+        tr = {}
+        for inv in invaders:
+            x0 = np.full(k, 0.02 / (k - 2))
+            x0[i_ad] = 0.93
+            x0[names.index(inv)] = 0.05
+            x0 /= x0.sum()
+            tr[inv] = evo.replicator_trajectory(Pi, x0, steps=400)[
+                :, names.index(inv)]
+        reverse_traj[T] = tr
+
+    # ---- (c) 상주 구성 민감도 (Π 대수 — 무비용) ----
+    n_comp = 8 if quick else 100
+    rng_c = np.random.default_rng(808)
+    comp_out = {}
+    alld_sweep_shares = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+    for (err, T), e in est.items():
+        Pi = e["Pi"]
+        gs, alld_share = [], []
+        for _ in range(n_comp):
+            w7 = rng_c.dirichlet(np.ones(len(fixed_names)))
+            w = np.zeros(k)
+            for nm, v in zip(fixed_names, w7):
+                w[names.index(nm)] = v
+            gs.append(evo.invasion_growth(Pi, w, i_ad))
+            alld_share.append(float(w7[fixed_names.index("alld")]))
+        sl = slope_boot(alld_share, gs, seed=stable_seed("comp", err, T))
+        sweep_g = []
+        for sh in alld_sweep_shares:
+            mix = {nm: LARGE_MIX.get(nm, 0.0) for nm in fixed_names}
+            tot = sum(v for nm, v in mix.items() if nm != "alld")
+            for nm in mix:
+                if nm != "alld":
+                    mix[nm] = mix[nm] / tot * (1 - sh)
+            mix["alld"] = sh
+            sweep_g.append(evo.invasion_growth(
+                Pi, _resident_from_mix(names, mix), i_ad))
+        comp_out[(err, T)] = {
+            "frac_invadable": float(np.mean(np.array(gs) > 0)),
+            "g_vs_alld_slope": sl,
+            "g_samples": gs, "alld_share_samples": alld_share,
+            "alld_sweep": {"shares": alld_sweep_shares, "g": sweep_g},
+        }
+    for T in Ts:
+        co = comp_out[(primary_err, T)]
+        register_exploratory(
+            "H8E", f"구성 민감도 (T={T})", co["g_vs_alld_slope"]["p"],
+            f"침입 가능 구성 비율={co['frac_invadable']:.2f}, "
+            f"g~ALLD 비중 기울기={co['g_vs_alld_slope']['slope']:.3f}")
+
+    # ---- (d) 복제자 궤적 / 끌개 / 협력 유역 ----
+    coop_idx = [names.index(t) for t in
+                ("tit_for_tat", "generous_tft", "wsls", "allc",
+                 "adaptive", "adaptive_imm")]
     x0s = {}
-    x_mix = resident_w * 0.9
-    x_mix[i_ad] = 0.1
+    x_mix = resident_w * 0.9; x_mix[i_ad] = 0.1
     x0s["mix+10%ad"] = x_mix / x_mix.sum()
     x0s["uniform"] = np.ones(k) / k
     x_alld = np.ones(k) * 0.05
     x_alld[names.index("alld")] = 1.0 - 0.05 * (k - 1)
     x0s["alld_heavy"] = x_alld
-    trajs = {lbl: evo.replicator_trajectory(Pi, x0, steps=500)
-             for lbl, x0 in x0s.items()}
-    # 협력 유역: adaptive 포함 vs 제외 (adaptive 열 제거) 대조
-    coop_idx = [names.index(t) for t in
-                ("tit_for_tat", "generous_tft", "wsls", "allc",
-                 "adaptive", "adaptive_imm")]
-    n_basin = 40 if quick else 200
-    basin_with = evo.basin_analysis(Pi, names, n_samples=n_basin, seed=802,
-                                    coop_types=coop_idx)
-    keep = [i for i in range(k) if i not in (i_ad, i_imm)]
-    names_wo = [names[i] for i in keep]
-    coop_wo = [names_wo.index(t) for t in
-               ("tit_for_tat", "generous_tft", "wsls", "allc")]
-    basin_wo = evo.basin_analysis(Pi[np.ix_(keep, keep)], names_wo,
-                                  n_samples=n_basin, seed=802,
-                                  coop_types=coop_wo)
-    widen = basin_with["coop_basin_frac"] - basin_wo["coop_basin_frac"]
-    register_exploratory("H8E", "협력 유역 확장 (adaptive 유−무)", 1.0,
-                         f"Δbasin={widen:+.3f} "
-                         f"({basin_with['coop_basin_frac']:.2f} vs "
-                         f"{basin_wo['coop_basin_frac']:.2f})")
-    # Moran (평균장 교차검증)
+    trajs, attractors, basins = {}, {}, {}
+    n_basin = 40 if quick else 400
+    for T in Ts:
+        Pi = est[(primary_err, T)]["Pi"]
+        trajs[T] = {lbl: evo.replicator_trajectory(Pi, x0, steps=500)
+                    for lbl, x0 in x0s.items()}
+        attractors[T] = evo.attractor_analysis(
+            Pi, names, n_samples=n_basin, steps=800,
+            seed=stable_seed("attr", T))
+        top = attractors[T]["attractors"][:3]
+        register_exploratory(
+            "H8E", f"끌개 구조 (T={T})", 1.0,
+            "; ".join(f"유역 {a['basin_frac']:.2f} → " + ", ".join(
+                f"{names[i]}={c:.2f}" for i, c in enumerate(a["composition"])
+                if c > 0.05) for a in top))
+    for (err, T), e in est.items():
+        Pi = e["Pi"]
+        bw = evo.basin_analysis(Pi, names, n_samples=n_basin,
+                                seed=802, coop_types=coop_idx)
+        keep = [i for i in range(k) if i not in (i_ad, i_imm)]
+        names_wo = [names[i] for i in keep]
+        coop_wo = [names_wo.index(t) for t in
+                   ("tit_for_tat", "generous_tft", "wsls", "allc")]
+        bo = evo.basin_analysis(Pi[np.ix_(keep, keep)], names_wo,
+                                n_samples=n_basin, seed=802,
+                                coop_types=coop_wo)
+        basins[(err, T)] = {"with": bw["coop_basin_frac"],
+                            "without": bo["coop_basin_frac"],
+                            "widening": float(bw["coop_basin_frac"]
+                                              - bo["coop_basin_frac"])}
+    for T in Ts:
+        b = basins[(primary_err, T)]
+        register_exploratory("H8E", f"협력 유역 확장 (T={T}, adaptive 유−무)",
+                             1.0, f"Δbasin={b['widening']:+.3f} "
+                             f"({b['with']:.2f} vs {b['without']:.2f})")
+
+    # 3-유형 부분계 상태공간: (adaptive, alld, tit_for_tat) / (adaptive, alld, allc)
+    subsystems = {"ad_alld_tft": ("adaptive", "alld", "tit_for_tat"),
+                  "ad_alld_allc": ("adaptive", "alld", "allc")}
+    tern = {}
+    n_grid = 9 if quick else 23
+    for T in Ts:
+        Pi = est[(primary_err, T)]["Pi"]
+        for key, subset in subsystems.items():
+            Pi3, sub_names = evo.restrict_matrix(Pi, names, subset)
+            coop3 = [i for i, nm in enumerate(sub_names) if nm != "alld"]
+            bm = evo.basin_map_3(Pi3, coop3, n=n_grid, steps=800)
+            starts = evo.ternary_grid(4)
+            tr3 = [evo.replicator_trajectory(Pi3, x0, steps=600)
+                   for x0 in starts]
+            tern[(key, T)] = {"names": sub_names, "map": bm,
+                              "trajs": tr3, "Pi3": Pi3}
+
+    # ---- (e) Moran (평균장 교차검증; 지평별) ----
+    moran = {}
     n_moran = 2 if quick else 10
     gens = 10 if quick else 30
-    init = np.round(np.r_[resident_w[:len(names) - 2] * 0.9,
-                          [0.10, 0.0]] * 100).astype(int)
-    init[0] += 100 - init.sum()
-    moran = np.stack([evo.moran_process(Pi, Pi_sd, init, generations=gens,
-                                        mutation=0.01, seed=810 + r)
-                      for r in range(n_moran)])
-    ad_final = moran[:, -1, i_ad]
-    ad_grew = float(np.mean(ad_final > init[i_ad] / 100))
-    register_exploratory("H8E", "Moran adaptive 성장 (평균장 교차검증)", 1.0,
-                         f"최종 빈도={ad_final.mean():.2f} (초기 0.10), "
-                         f"성장 rep 비율={ad_grew:.2f}")
-    return {"names": names, "Pi": Pi.tolist(), "Pi_sd": Pi_sd.tolist(),
-            "pi_seeds": pi_seeds,
-            "invasion": {"adaptive": {"g": g_obs, "ci": g_ci, "p": p_g},
-                         "adaptive_imm": {"g": g_imm}},
-            "basin": {"with_adaptive": basin_with,
-                      "without_adaptive": basin_wo, "widening": float(widen)},
-            "moran": {"final_adaptive_mean": float(ad_final.mean()),
-                      "grew_frac": ad_grew, "reps": n_moran,
-                      "generations": gens},
-            "supported": bool(g_ci[0] > 0),
-            "traces": {"replicator": {lbl: t for lbl, t in trajs.items()},
-                       "moran_freq": moran}}
+    for T in Ts:
+        e = est[(primary_err, T)]
+        init = np.round(np.r_[resident_w[:k - 2] * 0.9, [0.10, 0.0]]
+                        * 100).astype(int)
+        init[0] += 100 - init.sum()
+        mf = np.stack([evo.moran_process(e["Pi"], e["Pi_sd"], init,
+                                         generations=gens, mutation=0.01,
+                                         seed=810 + r)
+                       for r in range(n_moran)])
+        ad_final = mf[:, -1, i_ad]
+        moran[T] = {"freq": mf, "final_adaptive_mean": float(ad_final.mean()),
+                    "grew_frac": float(np.mean(ad_final > init[i_ad] / 100)),
+                    "reps": n_moran, "generations": gens}
+        register_exploratory("H8E", f"Moran adaptive 성장 (T={T})", 1.0,
+                             f"최종 빈도={ad_final.mean():.2f} (초기 0.10)")
+
+    def gk(d):        # (err, T) 튜플 키 → 문자열 키 (JSON 직렬화)
+        return {f"err{err}|T{T}": v for (err, T), v in d.items()}
+
+    supported = {
+        "invasion_by_T": supported_by_T,
+        "horizon_dependent": bool(horizon_dependent),
+        "reverse_alld_repelled": {
+            f"T{T}": bool(reverse[(primary_err, T)]["alld"]["pure"]["ci"][1] < 0)
+            for T in Ts},
+        "basin_widening_positive": {
+            f"T{T}": bool(basins[(primary_err, T)]["widening"] > 0) for T in Ts},
+    }
+    LOGGER.info("[H8E] → %s", supported)
+    return {"names": names, "Ts": Ts, "env_errors": env_errors,
+            "primary_err": primary_err, "pi_seeds": pi_seeds,
+            "Pi": {f"err{err}|T{T}": e["Pi"].tolist()
+                   for (err, T), e in est.items()},
+            "invasion_grid": gk({key: v for key, v in inv_grid.items()}),
+            "reverse_invasion": gk({key: {inv: {kk: vv for kk, vv in d.items()}
+                                          for inv, d in rv.items()}
+                                    for key, rv in reverse.items()}),
+            "composition": gk({key: {kk: vv for kk, vv in v.items()
+                                     if kk not in ("g_samples",
+                                                   "alld_share_samples")}
+                               for key, v in comp_out.items()}),
+            "attractors": {f"T{T}": {"attractors": a["attractors"][:8]}
+                           for T, a in attractors.items()},
+            "basins": gk(basins),
+            "moran": {f"T{T}": {kk: vv for kk, vv in m.items() if kk != "freq"}
+                      for T, m in moran.items()},
+            "supported": supported,
+            "traces": {"replicator": trajs, "moran": moran,
+                       "reverse_traj": reverse_traj,
+                       "comp_raw": comp_out, "ternary": tern,
+                       "attractor_full": attractors,
+                       "est_keys": list(est.keys()),
+                       "Pi_mats": {key: est[key]["Pi"] for key in est}}}
 
 
 # ================================================================== GS
@@ -1436,7 +1735,8 @@ def exp_GS(seeds, rounds, jobs, backend):
     quick = seeds < 10
     cis = [0.4, 0.5, 0.6]
     n_seed = max(3, seeds // 3)
-    cases = list(CAPRICIOUS_CASES)[:3]
+    # 고정전략 순환 case 3개 (짧은 주기 위주 — T=60 에서도 전환 존재)
+    cases = ["p10_recip_expl_recon", "p30_flip", "p10_expl_first"]
     out = {}
     for ci in cis:
         extra = {"game_ci": ci}
@@ -1618,7 +1918,7 @@ def _n_note(ax, n, loc="lower right"):
 
 
 # --------------------------------------------------------------- 그림들
-def fig_H1(d):
+def fig_H1(d, tag=""):
     _kfont()
     fig, ax = plt.subplots(1, 3, figsize=(15, 4))
     t = d["traces"]
@@ -1638,13 +1938,13 @@ def fig_H1(d):
            colors=["C0", "C1"])
     ax[2].set_title(f"착취가능성 [확증] ({d['primary']['es'] if isinstance(d['primary'].get('es'),str) else fmt_es(d['primary']['es'],'dz')})")
     ax[2].set_ylabel("exploitability"); _n_note(ax[2], len(r["expl_ad"]))
-    _save(fig, "h1_self_protection",
+    _save(fig, "h1_self_protection" + tag,
           "H1: adaptive 는 착취자에게 λ 를 낮춰 자기보호하나 고정-λ 는 못 한다. "
           "밴드=시드 16–84 백분위, 막대=평균±부트스트랩 95% CI.",
           f"seeds={len(r['expl_ad'])}")
 
 
-def fig_H2_H3(d):
+def fig_H2_H3(d, tag=""):
     _kfont()
     fig, ax = plt.subplots(1, 3, figsize=(15, 4))
     for opp, c in zip(("exploiter", "noisy_tft", "noisy"), ("C3", "C2", "C1")):
@@ -1672,13 +1972,13 @@ def fig_H2_H3(d):
     ax[2].annotate("mechanism_attributed=" + str(d["ablation"]["mechanism_attributed"]),
                    xy=(0.5, 0.95), xycoords="axes fraction", ha="center",
                    fontsize=8, color="0.3")
-    _save(fig, "h2_h3_intent_context",
+    _save(fig, "h2_h3_intent_context" + tag,
           "H2/H3: noisy TFT 는 λ 회복(맥락 귀인), 착취자는 높은 E[β](의도 귀인). "
           "절제 패널: intent_only/beta_clamp 에서 회복 감쇠 → 회복을 β-귀인에 귀속.",
           f"seeds={len(b_ex)}")
 
 
-def fig_H4(d):
+def fig_H4(d, tag=""):
     _kfont()
     fig, ax = plt.subplots(1, 2, figsize=(10, 4))
     band(ax[0], d["traces"]["lam_adaptive"], "adaptive λ", color="C0")
@@ -1692,12 +1992,12 @@ def fig_H4(d):
                   label=f"floor={d['primary']['floor']}")
     ax[1].set_title("CC율 비열등성 [확증]"); ax[1].set_ylabel("CC rate")
     ax[1].legend(fontsize=8); _n_note(ax[1], len(r["cc_ad"]))
-    _save(fig, "h4_cooperation_recovery",
+    _save(fig, "h4_cooperation_recovery" + tag,
           "H4: adaptive 의 CC율은 fixed 대비 비열등(margin 0.95)하며 floor 초과.",
           f"seeds={len(r['cc_ad'])}")
 
 
-def fig_H5(d):
+def fig_H5(d, tag=""):
     _kfont()
     fig, ax = plt.subplots(1, 3, figsize=(15, 4))
     r = d["raw"]
@@ -1722,13 +2022,13 @@ def fig_H5(d):
     ax[2].set_yticks(yy); ax[2].set_yticklabels(names, fontsize=8)
     ax[2].set_title("2×2×2 요인 (방어량) [탐색]")
     ax[2].set_xlabel("계수 ±코딩 (부트 95% CI)")
-    _save(fig, "h5_immediate_vs_sophisticated",
+    _save(fig, "h5_immediate_vs_sophisticated" + tag,
           "H5: 즉각형(vmPFC)은 방어량↑·화해보수↓. Forest=요인 분해 계수 CI. "
           "DD-충전 경로는 조작 확인이며 조기 배신·위험곡선이 창발적 예측.",
           f"seeds={len(r['defense_imm'])}")
 
 
-def fig_H6(d):
+def fig_H6(d, tag=""):
     _kfont()
     fig, ax = plt.subplots(1, 2, figsize=(11, 4), sharey=True)
     strategies = list(next(iter(d["scores"].values())).keys())
@@ -1740,14 +2040,14 @@ def fig_H6(d):
         ax[k].set_title(f"잡음 {nz}"); ax[k].tick_params(axis="x", labelrotation=30)
         _n_note(ax[k], d["n_seed"])
     ax[0].set_ylabel("라운드당 평균 보수")
-    _save(fig, "h6_noise_robustness",
+    _save(fig, "h6_noise_robustness" + tag,
           "H6: 잡음 하에서 GTFT/WSLS 가 TFT 를 앞선다 (라운드로빈 평균±부트 CI).",
           f"seeds={d['n_seed']}")
 
 
-def fig_H7(d):
+def fig_H7(d, tag=""):
     _kfont()
-    fig, ax = plt.subplots(2, 2, figsize=(13, 9))
+    fig, ax = plt.subplots(2, 3, figsize=(18, 9))
     t = d["traces"]; rel = t["rel"]
     # (a) 전환 정렬 보수 — 시드 CI 밴드 + case 얇은선 (§5)
     for name, c in (("adaptive", "C0"), ("generous_tft", "C1")):
@@ -1756,15 +2056,16 @@ def fig_H7(d):
         ax[0, 0].plot(rel, m, color=c, lw=2, label=name)
         ax[0, 0].fill_between(rel, lo, hi, alpha=0.18, color=c)
     for case, arr in t["aligned_case"]["adaptive"].items():
-        ax[0, 0].plot(rel, arr, color="C0", lw=0.5, alpha=0.35)
+        ax[0, 0].plot(rel, arr, color="C0", lw=0.5, alpha=0.25)
     ax[0, 0].axvline(0, color="0.5", ls="--"); ax[0, 0].legend(fontsize=8)
     ax[0, 0].set_title("전환 정렬 보수 (밴드=시드 95%CI, 얇은선=case)")
-    ax[0, 0].set_xlabel("전환 상대 라운드"); _n_note(ax[0, 0],
-                                                 t["aligned_seed"]["adaptive"].shape[0])
+    ax[0, 0].set_xlabel("전환 상대 라운드")
+    _n_note(ax[0, 0], t["aligned_seed"]["adaptive"].shape[0])
     # (b) λ 전환 정렬
     lam = t["lam_aligned_seed"]; m = lam.mean(axis=0)
     lo, hi = np.percentile(lam, [16, 84], axis=0)
-    ax[0, 1].plot(rel, m, color="C0", lw=2); ax[0, 1].fill_between(rel, lo, hi, alpha=0.2, color="C0")
+    ax[0, 1].plot(rel, m, color="C0", lw=2)
+    ax[0, 1].fill_between(rel, lo, hi, alpha=0.2, color="C0")
     ax[0, 1].axvline(0, color="0.5", ls="--")
     ax[0, 1].set_title(f"λ 전환 반응 (z̄={d['lambda_perm']['z_mean']:.2f}, "
                        f"p={d['lambda_perm']['p']:.3f})")
@@ -1775,30 +2076,78 @@ def fig_H7(d):
              "qlearner", "bayes_br"]
     order = [o for o in order if o in means]
     ags = t["agg_seed"]
-    bar_ci(ax[1, 0], range(len(order)), [means[o] for o in order],
+    bar_ci(ax[0, 2], range(len(order)), [means[o] for o in order],
            [boot_mean_ci(ags[o])["ci"] for o in order], order,
            colors=["C0"] + ["0.6"] * (len(order) - 1))
-    ax[1, 0].tick_params(axis="x", labelrotation=30)
-    ax[1, 0].set_title(f"전 case 총보수 [확증] adaptive vs GTFT ({fmt_es(d['primary']['es'],'dz')})")
-    ax[1, 0].set_ylabel("라운드당 평균 보수")
-    # (d) 대전 행렬 (대칭 환경 잡음)
+    ax[0, 2].tick_params(axis="x", labelrotation=30)
+    ax[0, 2].set_title(f"전 case 총보수 [확증] adaptive vs GTFT "
+                       f"({fmt_es(d['primary']['es'], 'dz')})")
+    ax[0, 2].set_ylabel("라운드당 평균 보수")
+    # (d, 신규) 주기 의존성: Δ(P) — 지지 부호가 주기에 따라 다르면 색으로 구분
+    ps = d["period_stats"]
+    Ps = sorted(ps, key=lambda x: int(x))
+    dm = [ps[P]["delta_mean"] for P in Ps]
+    err = np.array([[ps[P]["delta_mean"] - ps[P]["ci"][0],
+                     ps[P]["ci"][1] - ps[P]["delta_mean"]] for P in Ps]).T
+    cols = ["C0" if ps[P]["supported"] else "C3" for P in Ps]
+    ax[1, 0].bar(range(len(Ps)), dm, yerr=err, capsize=4, color=cols, alpha=0.85)
+    ax[1, 0].axhline(0, color="0.4", lw=1)
+    ax[1, 0].set_xticks(range(len(Ps)))
+    ax[1, 0].set_xticklabels(
+        [f"P={P}\n({ps[P]['switches_in_horizon']}회 전환"
+         + ("; 무전환" if ps[P]['switches_in_horizon'] == 0 else "") + ")"
+         for P in Ps], fontsize=8)
+    dep = d["supported"].get("period_dependent", False)
+    ax[1, 0].set_title("전환 주기별 Δ = adaptive − GTFT [탐색]\n"
+                       f"(지지의 주기 의존성: {'있음 ⚠' if dep else '없음'}; "
+                       "파랑=Δ>0, 빨강=Δ<0)")
+    ax[1, 0].set_ylabel("Δ (라운드당)")
+    # (e, 신규) case 격자 히트맵: 주기 × 순환족의 Δ
+    fam_names, per_names = [], []
+    for c in d["cases"]:
+        fam = c.split("_", 1)[1]
+        if fam not in fam_names:
+            fam_names.append(fam)
+    per_names = sorted({CAPRICIOUS_CASES[c]["period"] for c in d["cases"]})
+    grid = np.full((len(per_names), len(fam_names)), np.nan)
+    for c in d["cases"]:
+        P = CAPRICIOUS_CASES[c]["period"]; fam = c.split("_", 1)[1]
+        da = d["per_case"]["adaptive"][c][0] - d["per_case"]["generous_tft"][c][0]
+        grid[per_names.index(P), fam_names.index(fam)] = da
+    vmax = np.nanmax(np.abs(grid)) or 1.0
+    im = ax[1, 1].imshow(grid, cmap="RdBu", vmin=-vmax, vmax=vmax,
+                         aspect="auto")
+    ax[1, 1].set_xticks(range(len(fam_names)))
+    ax[1, 1].set_xticklabels(fam_names, rotation=40, fontsize=7, ha="right")
+    ax[1, 1].set_yticks(range(len(per_names)))
+    ax[1, 1].set_yticklabels([f"P={P}" for P in per_names], fontsize=8)
+    for i in range(len(per_names)):
+        for j in range(len(fam_names)):
+            if np.isfinite(grid[i, j]):
+                ax[1, 1].text(j, i, f"{grid[i, j]:+.2f}", ha="center",
+                              va="center", fontsize=7)
+    ax[1, 1].set_title("case 격자 Δ (adaptive−GTFT)\n"
+                       "열: 순환족 (adaptive_* = AIF 국면 포함)")
+    fig.colorbar(im, ax=ax[1, 1], fraction=0.046)
+    # (f) 4×4 대전 행렬 (대칭 환경 잡음)
     mat = np.array(d["tournament"]["matrix"]); names = d["tournament"]["names"]
-    im = ax[1, 1].imshow(mat, cmap="viridis")
-    ax[1, 1].set_xticks(range(4)); ax[1, 1].set_xticklabels(names, rotation=30, fontsize=8)
-    ax[1, 1].set_yticks(range(4)); ax[1, 1].set_yticklabels(names, fontsize=8)
+    im = ax[1, 2].imshow(mat, cmap="viridis")
+    ax[1, 2].set_xticks(range(4)); ax[1, 2].set_xticklabels(names, rotation=30, fontsize=8)
+    ax[1, 2].set_yticks(range(4)); ax[1, 2].set_yticklabels(names, fontsize=8)
     for i in range(4):
         for j in range(4):
-            ax[1, 1].text(j, i, f"{mat[i, j]:.2f}", ha="center", va="center",
+            ax[1, 2].text(j, i, f"{mat[i, j]:.2f}", ha="center", va="center",
                           color="w", fontsize=8)
-    ax[1, 1].set_title(f"4×4 대전 (대칭 잡음 {d['tournament']['symmetric_env_noise']})")
-    fig.colorbar(im, ax=ax[1, 1], fraction=0.046)
-    _save(fig, "h7_capricious_partners",
-          "H7: 변덕 상대에서 λ 는 전환에 반응(무작위 정렬 순열 대비). 총보수 "
-          "우위는 지평 의존적이며 H7H 에서 기제 검증. 대전은 환경 계층 대칭 잡음.",
+    ax[1, 2].set_title(f"4×4 대전 (대칭 잡음 {d['tournament']['symmetric_env_noise']})")
+    fig.colorbar(im, ax=ax[1, 2], fraction=0.046)
+    _save(fig, "h7_capricious_partners" + tag,
+          "H7(v0.3): 주기 {10,30,60,120} × 순환족(AIF 국면 포함) case 격자. "
+          "λ 는 전환에 반응(무작위 정렬 순열 대비). Δ(P) 패널은 지지 여부의 "
+          "전환 주기 의존성을 명시(무전환 대조 병기). 대전은 환경 계층 대칭 잡음.",
           f"cases={len(d['cases'])}, noise={d['primary_noise']}")
 
 
-def fig_H7H(d):
+def fig_H7H(d, tag=""):
     _kfont()
     fig, ax = plt.subplots(2, 2, figsize=(13, 9))
     Ts = d["Ts"]
@@ -1841,13 +2190,13 @@ def fig_H7H(d):
     ax[1, 1].axhline(0, color="r", ls="--", lw=1); ax[1, 1].legend(fontsize=8)
     ax[1, 1].set_title("족a 잡음 스윕"); ax[1, 1].set_xlabel("지평 T")
     ax[1, 1].set_ylabel("Δ")
-    _save(fig, "h7h_horizon_dependence",
+    _save(fig, "h7h_horizon_dependence" + tag,
           "H7H: Δ(T) 를 두 스케줄 족에서 분리 추정. 족a(전환수 고정)는 T 에 선형 "
           "개선, 족b(주기 고정)는 근사 T-불변. forgiveness↑→Δ개선(기제 조작).",
           f"Ts={Ts}")
 
 
-def fig_H8(d):
+def fig_H8(d, tag=""):
     _kfont()
     fig, ax = plt.subplots(3, 3, figsize=(16, 13))
     # (a) λ 곡선
@@ -1931,54 +2280,250 @@ def fig_H8(d):
     ax[2, 2].axvline(0, color="r", ls="--", lw=1)
     ax[2, 2].set_yticks(range(len(sk))); ax[2, 2].set_yticklabels(sk, fontsize=7)
     ax[2, 2].set_title("(g) 구성 민감도: frac 기울기"); ax[2, 2].set_xlabel("기울기 CI")
-    _save(fig, "h8_scaling_cooperation",
+    _save(fig, "h8_scaling_cooperation" + tag,
           "H8: λ=0.4 조건부 frac 기울기[확증]. 이중축 제거·조건부 기울기 플롯. "
           "ALLC 착시를 착취 이전 비중으로 측정. 구성 민감도로 부호 강건성 지도화.",
           f"reps small={d['reps']['small']}/large={d['reps']['large']}")
 
 
-def fig_H8E(d):
+def _tern_frame(ax, sub_names):
+    """3-유형 심플렉스 테두리 + 꼭짓점 라벨."""
+    V = np.array([[0, 0], [1, 0], [0.5, np.sqrt(3) / 2], [0, 0]])
+    ax.plot(V[:, 0], V[:, 1], color="0.3", lw=1)
+    ax.text(-0.03, -0.04, sub_names[0], ha="right", fontsize=8,
+            color=TYPE_COLORS.get(sub_names[0], "k"))
+    ax.text(1.03, -0.04, sub_names[1], ha="left", fontsize=8,
+            color=TYPE_COLORS.get(sub_names[1], "k"))
+    ax.text(0.5, np.sqrt(3) / 2 + 0.03, sub_names[2], ha="center", fontsize=8,
+            color=TYPE_COLORS.get(sub_names[2], "k"))
+    ax.set_xlim(-0.12, 1.12); ax.set_ylim(-0.12, 1.0)
+    ax.set_aspect("equal"); ax.axis("off")
+
+
+def _tern_panel(ax, td, title, mode="phase"):
+    """
+    3-유형 부분계 패널.
+    mode="phase": 궤적(회색) + 벡터장 화살표 + 끌개 점 — Replicator 상태 공간.
+    mode="basin": 격자 초기점을 종착 협력 점유율로 채색 — cooperation basin.
+    """
+    sub_names = td["names"]; bm = td["map"]
+    _tern_frame(ax, sub_names)
+    if mode == "basin":
+        gx, gy = evo.ternary_xy(bm["grid"])
+        sc = ax.scatter(gx, gy, c=bm["coop_share"], cmap="RdYlGn", vmin=0,
+                        vmax=1, s=14, marker="h", lw=0)
+        plt.colorbar(sc, ax=ax, fraction=0.046, label="종착 협력 점유율")
+    else:
+        for tr in td["trajs"]:
+            px, py = evo.ternary_xy(tr)
+            ax.plot(px, py, color="0.55", lw=0.7, alpha=0.7)
+            ax.plot(px[0], py[0], ".", color="0.55", ms=3)
+        # 끌개: 유역 지도의 종착점 군집 (0.02 양자화)
+        ends = bm["ends"]
+        keys = np.round(ends / 0.02).astype(int)
+        uniq, cnt = np.unique(keys, axis=0, return_counts=True)
+        for u, c in zip(uniq, cnt):
+            e = u * 0.02
+            ex, ey = evo.ternary_xy(np.asarray(e, float))
+            ax.plot(ex, ey, "*", ms=6 + 14 * (c / cnt.sum()), color="C3",
+                    mec="k", mew=0.4, zorder=5)
+    ax.set_title(title, fontsize=9)
+
+
+def fig_H8E(d, tag=""):
+    """H8E 시각화 3부작: 침입 구조 / 복제자 동역학 / 상태공간·유역."""
     _kfont()
-    fig, ax = plt.subplots(2, 2, figsize=(13, 9))
-    names = d["names"]; Pi = np.array(d["Pi"])
-    im = ax[0, 0].imshow(Pi, cmap="RdYlGn")
-    ax[0, 0].set_xticks(range(len(names))); ax[0, 0].set_xticklabels(names, rotation=45, fontsize=7, ha="right")
-    ax[0, 0].set_yticks(range(len(names))); ax[0, 0].set_yticklabels(names, fontsize=7)
-    ax[0, 0].set_title("유형 쌍별 보수 Π (행=focal)")
-    fig.colorbar(im, ax=ax[0, 0], fraction=0.046)
-    # 복제자 궤적 (mix+10%ad)
-    tr = d["traces"]["replicator"]["mix+10%ad"]
-    i_ad = names.index("adaptive")
-    for i, nm in enumerate(names):
-        ax[0, 1].plot(tr[:, i], lw=(2 if nm == "adaptive" else 1),
-                      label=nm if nm in ("adaptive", "alld", "tit_for_tat") else None,
-                      alpha=(1 if nm == "adaptive" else 0.6))
-    ax[0, 1].set_title("복제자 궤적 (기준혼합+10% adaptive)")
-    ax[0, 1].set_xlabel("세대"); ax[0, 1].set_ylabel("빈도"); ax[0, 1].legend(fontsize=8)
-    # 유역 대조
-    bw = d["basin"]["with_adaptive"]["coop_basin_frac"]
-    bo = d["basin"]["without_adaptive"]["coop_basin_frac"]
-    ax[1, 0].bar([0, 1], [bo, bw], color=["0.6", "C0"])
-    ax[1, 0].set_xticks([0, 1]); ax[1, 0].set_xticklabels(["adaptive 무", "adaptive 유"])
-    ax[1, 0].set_title(f"협력 유역 비율 (Δ={d['basin']['widening']:+.3f})")
-    ax[1, 0].set_ylabel("협력 종착 초기점 비율")
-    inv = d["invasion"]["adaptive"]
-    ax[1, 0].annotate(f"침입 g={inv['g']:.3f}\n[{inv['ci'][0]:.3f},{inv['ci'][1]:.3f}] [확증]",
-                      xy=(0.5, 0.85), xycoords="axes fraction", ha="center", fontsize=9)
-    # Moran
-    mf = np.array(d["traces"]["moran_freq"])  # (reps, gens, k)
-    mad = mf[:, :, i_ad]
-    m = mad.mean(axis=0); lo, hi = np.percentile(mad, [16, 84], axis=0)
-    ax[1, 1].plot(m, color="C0", lw=2); ax[1, 1].fill_between(range(len(m)), lo, hi, alpha=0.2, color="C0")
-    ax[1, 1].set_title(f"Moran adaptive 빈도 (교차검증)\n최종={d['moran']['final_adaptive_mean']:.2f}")
-    ax[1, 1].set_xlabel("세대"); ax[1, 1].set_ylabel("adaptive 빈도")
-    _save(fig, "h8e_evolutionary_dynamics",
-          "H8E: 복제자 동역학·Moran 과정. adaptive 침입 성장률>0[확증], 협력 유역 "
-          "확장, 평균장–ABM 교차검증. 실제 '집단 역학' 으로 재정식화.",
+    names = d["names"]; Ts = d["Ts"]; errs = d["env_errors"]
+    perr = d["primary_err"]; t = d["traces"]
+    Tmain = Ts[-1]
+
+    # ============ 그림 1: 보수 구조와 침입 (h8e_invasion_structure) ============
+    fig, ax = plt.subplots(2, 3, figsize=(18, 10))
+    for col, T in enumerate(Ts[:2]):
+        Pi = np.array(t["Pi_mats"][(perr, T)])
+        im = ax[0, col].imshow(Pi, cmap="RdYlGn")
+        ax[0, col].set_xticks(range(len(names)))
+        ax[0, col].set_xticklabels(names, rotation=45, fontsize=7, ha="right")
+        ax[0, col].set_yticks(range(len(names)))
+        ax[0, col].set_yticklabels(names, fontsize=7)
+        ax[0, col].set_title(f"Π (행=focal, err={perr}, T={T})")
+        fig.colorbar(im, ax=ax[0, col], fraction=0.046)
+    if len(Ts) < 2:
+        ax[0, 1].axis("off")
+    # 침입 성장률 격자 g(err, T)
+    G = np.array([[d["invasion_grid"][f"err{e}|T{T}"]["adaptive"]["g"]
+                   for T in Ts] for e in errs])
+    vmax = np.max(np.abs(G)) or 1.0
+    im = ax[0, 2].imshow(G, cmap="RdBu_r", vmin=-vmax, vmax=vmax, aspect="auto")
+    ax[0, 2].set_xticks(range(len(Ts)))
+    ax[0, 2].set_xticklabels([f"T={T}" for T in Ts])
+    ax[0, 2].set_yticks(range(len(errs)))
+    ax[0, 2].set_yticklabels([f"err={e}" for e in errs], fontsize=8)
+    for i, e in enumerate(errs):
+        for j, T in enumerate(Ts):
+            g = d["invasion_grid"][f"err{e}|T{T}"]["adaptive"]
+            star = "*" if (g["ci"][0] > 0 or g["ci"][1] < 0) else ""
+            ax[0, 2].text(j, i, f"{g['g']:+.2f}{star}", ha="center",
+                          va="center", fontsize=8)
+    ax[0, 2].set_title("adaptive 침입 성장률 g(err, T) [확증: err=0.10]\n"
+                       "(*: 부트 95% CI 가 0 배제)")
+    fig.colorbar(im, ax=ax[0, 2], fraction=0.046)
+    # 역방향 침입 forest (순수 adaptive 상주, primary err, 지평별)
+    inv_names = [n for n in names if n not in ("adaptive",)]
+    inv_names = [n for n in inv_names if n in d["reverse_invasion"]
+                 [f"err{perr}|T{Ts[0]}"]]
+    yy = np.arange(len(inv_names))
+    off = np.linspace(-0.18, 0.18, len(Ts))
+    for ti, T in enumerate(Ts):
+        rv = d["reverse_invasion"][f"err{perr}|T{T}"]
+        for i, inv in enumerate(inv_names):
+            g = rv[inv]["pure"]
+            ax[1, 0].plot(g["ci"], [i + off[ti]] * 2, color=f"C{ti}", lw=1.4)
+            ax[1, 0].plot(g["g"], i + off[ti], "o", ms=4, color=f"C{ti}",
+                          label=f"T={T}" if i == 0 else None)
+    ax[1, 0].axvline(0, color="r", ls="--", lw=1)
+    ax[1, 0].set_yticks(yy); ax[1, 0].set_yticklabels(inv_names, fontsize=8)
+    ax[1, 0].legend(fontsize=8)
+    ax[1, 0].set_title("역방향 침입: 순수 adaptive 상주집단에 대한\n"
+                       "각 전략의 침입 성장률 (err=0.10)")
+    ax[1, 0].set_xlabel("g (부트 95% CI)")
+    # 구성 민감도: g vs 상주 ALLD 비중 (Dirichlet 표본 + 구조적 스윕)
+    for ti, T in enumerate(Ts):
+        co = t["comp_raw"][(perr, T)]
+        ax[1, 1].scatter(co["alld_share_samples"], co["g_samples"], s=8,
+                         alpha=0.4, color=f"C{ti}",
+                         label=f"T={T} (침입가능 {co['frac_invadable']:.0%})")
+        sw = co["alld_sweep"]
+        ax[1, 1].plot(sw["shares"], sw["g"], "-", color=f"C{ti}", lw=1.8)
+    ax[1, 1].axhline(0, color="r", ls="--", lw=1); ax[1, 1].legend(fontsize=8)
+    ax[1, 1].set_title("상주 구성 민감도 (Dirichlet 무작위 구성 + ALLD 스윕)")
+    ax[1, 1].set_xlabel("상주 ALLD 비중"); ax[1, 1].set_ylabel("adaptive 침입 g")
+    # 침입 가능 구성 비율 히트맵 (err × T)
+    F = np.array([[t["comp_raw"][(e, T)]["frac_invadable"] for T in Ts]
+                  for e in errs])
+    im = ax[1, 2].imshow(F, cmap="viridis", vmin=0, vmax=1, aspect="auto")
+    ax[1, 2].set_xticks(range(len(Ts)))
+    ax[1, 2].set_xticklabels([f"T={T}" for T in Ts])
+    ax[1, 2].set_yticks(range(len(errs)))
+    ax[1, 2].set_yticklabels([f"err={e}" for e in errs], fontsize=8)
+    for i in range(len(errs)):
+        for j in range(len(Ts)):
+            ax[1, 2].text(j, i, f"{F[i, j]:.2f}", ha="center", va="center",
+                          color="w", fontsize=8)
+    ax[1, 2].set_title("adaptive 침입 가능 상주 구성의 비율")
+    fig.colorbar(im, ax=ax[1, 2], fraction=0.046)
+    _save(fig, "h8e_invasion_structure" + tag,
+          "H8E-1: 쌍별 보수 Π(지평별), 침입 성장률의 (err×T) 격자[확증: "
+          "err=0.10 지평별], 역방향 침입(adaptive 상주 → 고정전략 침입), "
+          "상주 구성 민감도.",
+          f"Π seeds={d['pi_seeds']}, errs={errs}, Ts={Ts}")
+
+    # ============ 그림 2: 복제자·Moran 동역학 (h8e_replicator_dynamics) ============
+    fig, ax = plt.subplots(2, 3, figsize=(18, 10))
+    for col, T in enumerate(Ts[:2]):
+        tr = t["replicator"][T]["mix+10%ad"]
+        for i, nm in enumerate(names):
+            ax[0, col].plot(tr[:, i], lw=(2.2 if nm == "adaptive" else 1.2),
+                            color=TYPE_COLORS.get(nm), label=nm)
+        ax[0, col].set_title(f"복제자 궤적 (기준혼합+10% adaptive, T={T})")
+        ax[0, col].set_xlabel("세대"); ax[0, col].set_ylabel("빈도")
+        ax[0, col].legend(fontsize=7, ncol=2)   # 전 유형 legend 명시 (v0.3)
+    if len(Ts) < 2:
+        ax[0, 1].axis("off")
+    # 역침입 동역학 (T=Tmain): adaptive 다수 + 침입자 5% 초기점
+    for inv, curve in t["reverse_traj"][Tmain].items():
+        ax[0, 2].plot(curve, lw=1.4, color=TYPE_COLORS.get(inv), label=inv)
+    ax[0, 2].axhline(0.05, color="0.6", ls=":", lw=1)
+    ax[0, 2].set_title(f"역침입 복제자 궤적 (침입자 빈도, T={Tmain})\n"
+                       "초기 5% — 0.05 선 위로 성장 시 침입 성공")
+    ax[0, 2].set_xlabel("세대"); ax[0, 2].set_ylabel("침입자 빈도")
+    ax[0, 2].legend(fontsize=7, ncol=2)
+    # 끌개 구조: 상위 끌개의 조성 누적막대 + 유역 비율
+    for col, T in enumerate(Ts[:2]):
+        ats = d["attractors"][f"T{T}"]["attractors"][:5]
+        bottoms = np.zeros(len(ats))
+        for i, nm in enumerate(names):
+            vals = [a["composition"][i] for a in ats]
+            ax[1, col].bar(range(len(ats)), vals, bottom=bottoms,
+                           color=TYPE_COLORS.get(nm), label=nm, width=0.7)
+            bottoms += np.array(vals)
+        ax[1, col].set_xticks(range(len(ats)))
+        ax[1, col].set_xticklabels([f"유역\n{a['basin_frac']:.0%}"
+                                    for a in ats], fontsize=8)
+        ax[1, col].set_title(f"복제자 끌개 조성 (Dirichlet 초기점, T={T})")
+        ax[1, col].set_ylabel("조성")
+        if col == 0:
+            ax[1, col].legend(fontsize=6, ncol=2)
+    if len(Ts) < 2:
+        ax[1, 1].axis("off")
+    # Moran 교차검증 (지평별)
+    for ti, T in enumerate(Ts):
+        mf = np.array(t["moran"][T]["freq"])
+        mad = mf[:, :, names.index("adaptive")]
+        m = mad.mean(axis=0); lo, hi = np.percentile(mad, [16, 84], axis=0)
+        ax[1, 2].plot(m, color=f"C{ti}", lw=2,
+                      label=f"T={T} (최종 {t['moran'][T]['final_adaptive_mean']:.2f})")
+        ax[1, 2].fill_between(range(len(m)), lo, hi, alpha=0.15,
+                              color=f"C{ti}")
+    ax[1, 2].axhline(0.10, color="0.6", ls=":", lw=1)
+    ax[1, 2].set_title("Moran adaptive 빈도 (평균장 교차검증)")
+    ax[1, 2].set_xlabel("세대"); ax[1, 2].set_ylabel("adaptive 빈도")
+    ax[1, 2].legend(fontsize=8)
+    _save(fig, "h8e_replicator_dynamics" + tag,
+          "H8E-2: 복제자 궤적(전 유형 legend 명시)·역침입 동역학·끌개 조성"
+          "(유역 비율)·Moran 교차검증. 지평 T={60,240} 병렬 비교.",
           f"Π seeds={d['pi_seeds']}")
 
+    # ============ 그림 3: 상태공간·협력 유역 (h8e_state_space_basins) ============
+    fig, ax = plt.subplots(2, 3, figsize=(18, 10))
+    key_a, key_b = "ad_alld_tft", "ad_alld_allc"
+    for col, T in enumerate(Ts[:2]):
+        _tern_panel(ax[0, col], t["ternary"][(key_a, T)],
+                    f"상태공간 위상 초상 (adaptive–alld–TFT, T={T})\n"
+                    "회색=궤적, ★=끌개(크기∝유역)", mode="phase")
+    if len(Ts) < 2:
+        ax[0, 1].axis("off")
+    _tern_panel(ax[0, 2], t["ternary"][(key_a, Tmain)],
+                f"협력 유역 지도 (adaptive–alld–TFT, T={Tmain})", mode="basin")
+    _tern_panel(ax[1, 0], t["ternary"][(key_b, Tmain)],
+                f"협력 유역 지도 (adaptive–alld–ALLC, T={Tmain})", mode="basin")
+    # 협력 유역 비율 히트맵 (adaptive 포함, 전 격자)
+    BW = np.array([[d["basins"][f"err{e}|T{T}"]["with"] for T in Ts]
+                   for e in errs])
+    im = ax[1, 1].imshow(BW, cmap="RdYlGn", vmin=0, vmax=1, aspect="auto")
+    ax[1, 1].set_xticks(range(len(Ts)))
+    ax[1, 1].set_xticklabels([f"T={T}" for T in Ts])
+    ax[1, 1].set_yticks(range(len(errs)))
+    ax[1, 1].set_yticklabels([f"err={e}" for e in errs], fontsize=8)
+    for i in range(len(errs)):
+        for j in range(len(Ts)):
+            ax[1, 1].text(j, i, f"{BW[i, j]:.2f}", ha="center", va="center",
+                          fontsize=8)
+    ax[1, 1].set_title("협력 유역 비율 (9유형 전체, adaptive 포함)")
+    fig.colorbar(im, ax=ax[1, 1], fraction=0.046)
+    # 유역 확장 (with − without adaptive)
+    DW = np.array([[d["basins"][f"err{e}|T{T}"]["widening"] for T in Ts]
+                   for e in errs])
+    vmax = np.max(np.abs(DW)) or 1.0
+    im = ax[1, 2].imshow(DW, cmap="RdBu_r", vmin=-vmax, vmax=vmax,
+                         aspect="auto")
+    ax[1, 2].set_xticks(range(len(Ts)))
+    ax[1, 2].set_xticklabels([f"T={T}" for T in Ts])
+    ax[1, 2].set_yticks(range(len(errs)))
+    ax[1, 2].set_yticklabels([f"err={e}" for e in errs], fontsize=8)
+    for i in range(len(errs)):
+        for j in range(len(Ts)):
+            ax[1, 2].text(j, i, f"{DW[i, j]:+.2f}", ha="center", va="center",
+                          fontsize=8)
+    ax[1, 2].set_title("협력 유역 확장 Δ (adaptive 유 − 무)")
+    fig.colorbar(im, ax=ax[1, 2], fraction=0.046)
+    _save(fig, "h8e_state_space_basins" + tag,
+          "H8E-3: Replicator 상태 공간(3-유형 위상 초상 + 끌개), cooperation "
+          "basin 지도, 협력 유역 비율·확장의 (err×T) 격자.",
+          f"basin n={len(t['ternary'][(key_a, Tmain)]['map']['grid'])} 격자점")
 
-def fig_GS(d):
+
+def fig_GS(d, tag=""):
     _kfont()
     fig, ax = plt.subplots(1, 3, figsize=(15, 4))
     cis = d["cis"]; R = d["results"]
@@ -2001,13 +2546,13 @@ def fig_GS(d):
               w, label="frac=0.5", color="C0")
     ax[2].set_xticks(range(len(cis))); ax[2].set_xticklabels([f"CI={c}" for c in cis])
     ax[2].set_title("H8 소집단 CC (frac 방향)"); ax[2].legend(fontsize=8)
-    _save(fig, "gs_game_structure",
+    _save(fig, "gs_game_structure" + tag,
           "GS[탐색]: 협력지수 CI 스윕에서 핵심 결론(H1 부호, H7 열세, H8 방향)의 "
           "강건성 지도화. 확증 지표 아님(사전등록).",
           f"CI∈{d['cis']}")
 
 
-def fig_H9_H10(d):
+def fig_H9_H10(d, tag=""):
     _kfont()
     fig, ax = plt.subplots(1, 3, figsize=(15, 4))
     pc = d["payoff_capricious"]; order = ["all", "alpha_only", "lambda_only"]
@@ -2029,13 +2574,14 @@ def fig_H9_H10(d):
            [cs[k][1] for k in order], order, colors=["C0", "C4", "C5"])
     ax[2].set_title("H10 정적 상대 CC [확증]"); ax[2].set_ylabel("CC rate")
     ax[2].tick_params(axis="x", labelrotation=20)
-    _save(fig, "h9_h10_attribution_scope",
+    _save(fig, "h9_h10_attribution_scope" + tag,
           "H9/H10: 완전 귀인(all)이 α-only(변덕 추적)·λ-only(정적 CC)를 모두 "
           "앞선다. 비-ToM 베이스라인 병기로 ToM 이득을 학습 이득과 분리.",
           f"seeds={pc['all'][1] and ''}")
 
 
 # ==================================================================== main
+# 지평별 실행 실험 (T=60/240 각각) vs 전지평 실험 (내부 T 스윕; 1회 실행)
 EXPERIMENTS = {
     "H1": (exp_H1, fig_H1),
     "H2H3": (exp_H2_H3, fig_H2_H3),
@@ -2049,17 +2595,20 @@ EXPERIMENTS = {
     "H9H10": (exp_H9_H10, fig_H9_H10),
     "GS": (exp_GS, fig_GS),
 }
+GLOBAL_EXPERIMENTS = {"H7H", "H8E"}   # 내부 T 스윕 — rounds 목록을 통째로 전달
 
 
 def _jsonable(o):
     if isinstance(o, dict):
-        return {k: _jsonable(v) for k, v in o.items() if k != "traces"}
+        return {str(k): _jsonable(v) for k, v in o.items() if k != "traces"}
     if isinstance(o, (list, tuple)):
         return [_jsonable(x) for x in o]
     if isinstance(o, np.ndarray):
         return o.tolist()
     if isinstance(o, (np.floating, np.integer)):
         return float(o)
+    if isinstance(o, (np.bool_,)):
+        return bool(o)
     return o
 
 
@@ -2075,24 +2624,157 @@ def apply_corrections():
             x["q_fdr"] = q
 
 
+# ------------------------------------------------------ 지평(T) 비교·해석
+def _horizon_metrics(name: str, out: dict) -> dict:
+    """지평 비교용 핵심 지표 추출 (실험별)."""
+    try:
+        if name == "H1":
+            r = out["raw"]
+            return {"착취가능성 Δ(adaptive−fixed)":
+                    float(np.mean(r["expl_ad"]) - np.mean(r["expl_fx"]))}
+        if name == "H2H3":
+            rec = out["ablation"]["recovery_means"]
+            return {"λ 회복량(all)": float(rec["all"]),
+                    "E[β] 판별 Δ": float(out["primary_H3"]["mean_a"]
+                                         - out["primary_H3"]["mean_b"])}
+        if name == "H4":
+            r = out["raw"]
+            return {"CC(adaptive)": float(np.mean(r["cc_ad"])),
+                    "CC(fixed)": float(np.mean(r["cc_fx"]))}
+        if name == "H5":
+            r = out["raw"]
+            return {"방어량 Δ(즉각−정교)":
+                    float(np.mean(r["defense_imm"]) - np.mean(r["defense_soph"])),
+                    "noisyTFT 라운드당 보수 Δ(즉각−정교)":
+                    float((np.mean(r["payoff_imm"]) - np.mean(r["payoff_soph"]))
+                          / max(len(out["traces"].get("cumpay|immediate|noisy_tft",
+                                                      [[0]])[0]), 1))}
+        if name == "H6":
+            sc = out["scores"]["0.15"]
+            return {"잡음0.15 GTFT−TFT": float(sc["generous_tft"]
+                                               - sc["tit_for_tat"])}
+        if name == "H7":
+            m = out["means"]
+            d = {"전 case Δ(adaptive−GTFT)": float(m["adaptive"]
+                                                   - m["generous_tft"])}
+            for P, v in out["period_stats"].items():
+                d[f"Δ(P={P})"] = float(v["delta_mean"])
+            return d
+        if name == "H8":
+            return {"λ=0.4 조건부 frac 기울기": float(out["primary"]["est"])}
+        if name == "H9H10":
+            pc = out["payoff_capricious"]; cs = out["cc_static"]
+            return {"변덕 보수 Δ(all−α-only)":
+                    float(pc["all"][0] - pc["alpha_only"][0]),
+                    "정적 CC Δ(all−λ-only)":
+                    float(cs["all"][0] - cs["lambda_only"][0])}
+        if name == "GS":
+            return {f"CI={c} H8 방향": out["results"][c]["h8_direction_positive"]
+                    for c in out["cis"]}
+    except Exception as e:                                    # pragma: no cover
+        LOGGER.warning("지평 지표 추출 실패 (%s): %s", name, e)
+    return {}
+
+
+def _flat_supported(sup) -> dict:
+    if isinstance(sup, dict):
+        return {k: v for k, v in sup.items() if isinstance(v, (bool, np.bool_))}
+    if sup is None:
+        return {}
+    return {"supported": bool(sup)}
+
+
+def interpret_horizons(name: str, outs: dict) -> dict:
+    """
+    T=60 vs T=240 결과 비교 + 해석 (지지 여부가 유의미하게 달라지는 경우 명시).
+    outs : {T: 실험 출력}
+    """
+    Ts = sorted(outs)
+    sup = {f"T{T}": _flat_supported(outs[T].get("supported")) for T in Ts}
+    mets = {f"T{T}": _horizon_metrics(name, outs[T]) for T in Ts}
+    keys = set().union(*(set(v) for v in sup.values()))
+    flips = {k: {f"T{T}": sup[f"T{T}"].get(k) for T in Ts}
+             for k in keys
+             if len({sup[f"T{T}"].get(k) for T in Ts}) > 1}
+    if flips:
+        text = (f"{name}: 지지 여부가 지평 의존적 — {flips}. "
+                "H7H 의 기제(Δ(T) ≈ b·T − c·k: 학습·화해의 고정비용이 긴 "
+                "지평에서 상환, T*≈170 부근 교차)와 정합하는지 지표 방향으로 "
+                "확인할 것. 짧은 지평(T=60)의 결론을 긴 지평으로 외삽하지 말 것.")
+    else:
+        text = (f"{name}: 지지 여부가 두 지평(T={Ts})에서 불변. "
+                "핵심 지표의 크기 변화는 metrics_by_T 참조.")
+    LOGGER.info("[지평 비교][%s] %s", name, text)
+    return {"supported_by_T": sup, "metrics_by_T": mets,
+            "support_flips": _jsonable(flips), "interpretation": text}
+
+
+def fig_horizon_overview(summary: dict, Ts: list):
+    """확증(1차) 지표의 지평별 판정 개관 그림."""
+    if len(Ts) < 2 or not PRIMARY:
+        return
+    _kfont()
+    rows = {}
+    for x in PRIMARY:
+        base = x["label"].rsplit(" [", 1)[0]
+        rows.setdefault((x["hyp"], base), {})[x.get("tag") or "전지평"] = x
+    labels = [f"[{h}] {b}" for (h, b) in rows]
+    cols = [f"T{T}" for T in Ts] + ["전지평"]
+    fig, ax = plt.subplots(figsize=(11, 0.42 * len(rows) + 2))
+    alpha_f = PREREG.get("alpha_family", 0.05)
+    for i, key in enumerate(rows):
+        for j, col in enumerate(cols):
+            x = rows[key].get(col)
+            if x is None:
+                continue
+            ok_dir = x.get("direction_met")
+            ok_p = x.get("p_holm", 1.0) < alpha_f
+            c = "C2" if (ok_dir and ok_p) else ("C1" if ok_dir else "C3")
+            ax.scatter(j, i, s=160, color=c, marker="s")
+            ax.text(j, i, "" if ok_dir and ok_p else ("d" if ok_dir else "×"),
+                    ha="center", va="center", fontsize=7, color="w")
+    ax.set_xticks(range(len(cols))); ax.set_xticklabels(cols)
+    ax.set_yticks(range(len(rows))); ax.set_yticklabels(labels, fontsize=7)
+    ax.invert_yaxis()
+    ax.set_title("확증(1차) 지표 지평별 판정 — 초록=방향+Holm 유의, "
+                 "주황(d)=방향만, 빨강(×)=방향 미성립")
+    _save(fig, "horizon_overview",
+          "지평(T=60/240)별 확증 지표 판정 개관. 지지가 지평 의존적인 가설은 "
+          "행 내 색 변화로 드러난다 (H7H 의 Δ(T) 기제 참조).",
+          f"Ts={Ts}")
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--seeds", type=int, default=120)
-    ap.add_argument("--rounds", type=int, default=60)
+    ap.add_argument("--seeds", type=int, default=240)
+    ap.add_argument("--rounds", type=int, nargs="+", default=[60, 240],
+                    help="지평 목록 — 각 지평에서 전 실험을 반복 (기본 60 240)")
     ap.add_argument("--jobs", type=int, default=-1)
     ap.add_argument("--backend", choices=["numpy", "pymdp"], default="numpy")
     ap.add_argument("--experiments", nargs="*", default=list(EXPERIMENTS))
     ap.add_argument("--quick", action="store_true",
-                    help="스모크: seeds=3, rounds=30")
+                    help="스모크: seeds=3, rounds=[30]")
+    ap.add_argument("--check-equivalence", action="store_true",
+                    help="pymdp↔numpy EFE 등가성만 검증하고 종료")
     args = ap.parse_args()
+    if args.check_equivalence:
+        from AIF_IPD.core.pymdp_backend import PymdpEFE, pymdp_available
+        if not pymdp_available():
+            LOGGER.warning("pymdp(JAX) 미설치 — 등가성 검증 불가")
+            return
+        ok = PymdpEFE.check_equivalence()
+        LOGGER.info("pymdp↔numpy EFE 등가성: %s", "통과" if ok else "실패")
+        return
     if args.quick:
-        args.seeds, args.rounds = 3, 30
-    LOGGER.info("=== HalloReg v0.2 (연구 보완판) — seeds=%d rounds=%d jobs=%d "
-                "backend=%s ===", args.seeds, args.rounds, args.jobs, args.backend)
+        args.seeds, args.rounds = 3, [30]
+    Ts = sorted(set(args.rounds))
+    LOGGER.info("=== HalloReg v0.3 — seeds=%d rounds=%s jobs=%d backend=%s ===",
+                args.seeds, Ts, args.jobs, args.backend)
     LOGGER.info("사전등록: %s (α_family=%s, FDR q=%s)", _PREREG_PATH.name,
                 PREREG.get("alpha_family"), PREREG.get("fdr_q"))
 
-    summary = {"config": vars(args), "results": {}}
+    global CUR_TAG
+    summary = {"config": {**vars(args), "rounds": Ts}, "results": {}}
     for name in args.experiments:
         if name not in EXPERIMENTS:
             LOGGER.warning("알 수 없는 실험 '%s' 건너뜀", name)
@@ -2100,18 +2782,44 @@ def main():
         fn, figfn = EXPERIMENTS[name]
         t0 = time.time()
         LOGGER.info("──────── 실험 %s 시작 ────────", name)
-        out = fn(args.seeds, args.rounds, args.jobs, args.backend)
-        try:
-            figfn(out)
-        except Exception as e:
-            LOGGER.exception("그림 %s 실패: %s", name, e)
-        summary["results"][name] = _jsonable(
-            {k: v for k, v in out.items() if k != "traces"})
-        LOGGER.info("──────── 실험 %s 완료 (%.1fs) ────────", name, time.time() - t0)
+        if name in GLOBAL_EXPERIMENTS:            # 내부 T 스윕 — 1회
+            CUR_TAG = ""
+            out = fn(args.seeds, Ts, args.jobs, args.backend)
+            try:
+                figfn(out)
+            except Exception as e:
+                LOGGER.exception("그림 %s 실패: %s", name, e)
+            summary["results"][name] = _jsonable(
+                {k: v for k, v in out.items() if k != "traces"})
+        else:                                     # 지평별 반복
+            outs = {}
+            entry = {}
+            for T in Ts:
+                CUR_TAG = f"T{T}"
+                LOGGER.info("──── %s @ T=%d ────", name, T)
+                out = fn(args.seeds, T, args.jobs, args.backend)
+                try:
+                    figfn(out, tag=f"_T{T}")
+                except Exception as e:
+                    LOGGER.exception("그림 %s(T=%d) 실패: %s", name, T, e)
+                outs[T] = out
+                entry[f"T{T}"] = _jsonable(
+                    {k: v for k, v in out.items() if k != "traces"})
+            CUR_TAG = ""
+            if len(Ts) > 1:
+                entry["horizon_comparison"] = _jsonable(
+                    interpret_horizons(name, outs))
+            summary["results"][name] = entry
+        LOGGER.info("──────── 실험 %s 완료 (%.1fs) ────────", name,
+                    time.time() - t0)
 
     apply_corrections()
     summary["confirmatory"] = PRIMARY
     summary["exploratory"] = EXPLORATORY
+    try:
+        fig_horizon_overview(summary, Ts)
+    except Exception as e:
+        LOGGER.exception("지평 개관 그림 실패: %s", e)
     with open(RESULTS / "summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
 

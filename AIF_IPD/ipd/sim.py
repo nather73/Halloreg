@@ -166,6 +166,9 @@ def _build_one(cfg: dict):
         from .env import make_opponent
         kind = cfg.pop("kind")
         return make_opponent(kind, **cfg)
+    if typ == "switching":                      # 고정전략×AIF 혼합 형질전환 (v0.3)
+        from .env import SwitchingAgent
+        return SwitchingAgent(**cfg)
     if typ in ("qlearner", "bayes_br", "fictitious"):
         from .baselines import make_baseline
         return make_baseline(typ, **cfg)

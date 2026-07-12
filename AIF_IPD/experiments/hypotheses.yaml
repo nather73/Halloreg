@@ -63,9 +63,15 @@ hypotheses:
     test: paired_perm
     direction: adaptive_greater
     rationale: >
-      전 case 합산 라운드당 보수. 60라운드 지평에서 미지지가 예상되며(v0.1.1
-      관찰), 이는 H7H 지평 스윕의 [확증] 대상 기제 예측과 함께 해석한다.
-      λ 반응성은 무작위 정렬 순열 영가설 대비 z (탐색)로 보고 — 임계값 0.02 폐기.
+      전 case 합산 라운드당 보수. v0.3 은 case 격자를 주기 {10,30,60,120} ×
+      순환족 8종(AIF adaptive 국면 포함 3종)으로 확장 — 확증 지표는 전 case
+      합산 하나로 유지하고, 주기별 Δ(P)=adaptive−GTFT 와 순환족 분해
+      (fixed_cycles vs aif_cycles)는 탐색으로 보고한다. 지지 여부가 주기에
+      의존하면 period_dependent 로 명시하고 그림에 병기한다(무전환 퇴화
+      case — 지평 내 전환 0회 — 는 대조로 표기). 짧은 지평(T=60)에서
+      미지지가 예상되며(v0.1.1 관찰) H7H 의 Δ(T)≈b·T−c·k 기제와 함께
+      해석한다. λ 반응성은 무작위 정렬 순열 영가설 대비 z (탐색) — 임계값
+      0.02 폐기.
   H7H:
     primary: horizon_slope_family_a
     test: slope_boot
@@ -88,8 +94,17 @@ hypotheses:
     test: boot_ci
     direction: positive          # 기준 혼합 상주집단에 대한 침입 성장률 > 0
     rationale: >
-      '집단 역학' 의 재정식화: 침입 가능성과 협력 유역. Moran 은 평균장
-      교차검증(탐색).
+      '집단 역학' 의 재정식화: 침입 가능성과 협력 유역. v0.3 격자:
+      env_error {0,.05,.10,.15,.20} × T {60,240}, Π seeds=50(대칭 재사용).
+      확증은 err=0.10 의 지평별(T=60, T=240) 침입 성장률 g>0 두 지표 —
+      지지가 지평 의존적이면 horizon_dependent 로 정직 보고(v0.1.2 에서
+      T=60 은 g<0 관찰: 학습·화해 고정비용 미상환, H7H T*≈170 과 정합).
+      탐색: (a) 전 격자 침입 g(즉각형 대조 포함), (b) 역방향 침입 — 순수/
+      혼합 adaptive 상주집단에 대한 고정전략들의 g (ALLD 격퇴 여부),
+      (c) 상주 구성 민감도 — Dirichlet 무작위 구성의 침입가능 비율과
+      g~ALLD 비중 기울기, (d) Replicator 상태공간 — 끌개 목록·유역 비율,
+      3-유형 부분계 위상 초상과 cooperation basin 지도, 9유형 협력 유역
+      비율의 with/without adaptive 확장 Δ, (e) Moran 평균장 교차검증.
   H9:
     primary: capricious_payoff_all_vs_alpha_only
     test: paired_perm
