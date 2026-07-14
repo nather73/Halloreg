@@ -141,3 +141,31 @@ hypotheses:
     rationale: >
       게임구조 일반화(협력지수 CI 스윕)는 결론의 강건성 영역을 지도화하는
       민감도 분석이며 확증 가설이 아니다.
+  H12:
+    primary: keystone_frontier     # 결합가설 — C1 AND C2 AND C3 (아래)
+    test: axis_slope_boot          # Π-시드 CRN 곡면 회귀 + 부트 근찾기(교차)
+    direction: c1_pos_c2_neg_c3_exists
+    confirm_C1: threat_monotone_RP        # R-P: ∂[sub_widening(ad)−sub_widening(rnd)]/∂ρ_D > 0
+    confirm_C2: redundancy_monotone_RD    # R-D: ∂[sub_widening(ad)−sub_widening(TFT)]/∂m < 0
+    confirm_C3: frontier_crossing_RD      # R-D: adaptive−best_fixed 부호전환 m* 축 범위 내부
+    rationale: >
+      상주 조건부 Keystone 프런티어 — adaptive 의 '협력 유역 확장' 기여가
+      상주 구성에 따라 부호가 뒤집히는 H8E(+0.67)·H11(adaptive<TFT) 상충을
+      해소한다. 고정 최대 유형집합 S*(11종: TFT/GTFT확률/GTFT횟수/WSLS/ALLC/
+      ALLD/random/capricious/adaptive/adaptive_imm/tom_fixed) 위 단일 심플렉스
+      에서 상주를 '지지집합 변경' 이 아니라 '초기점 사전 평균의 대치 슬롯'
+      으로 재정의(원칙 A·D). 유형 기여는 제거가 아니라 중립 filler(random)
+      대치로 측정(원칙 B). 지표: sub_widening(X|배경,슬롯) =
+      coop_basin_frac(Π*,P_B,슬롯=X) − coop_basin_frac(Π*,P_B,슬롯=random) —
+      지지집합·차원·척도가 모든 상주에서 불변이라 두 선행 결과가 같은 저울에
+      오른다(2.1–2.3 인공물 제거). 위협축(R-P ρ_D, R-K ρ_C, R-N env err)과
+      중복축(R-D 협력자 다양성 m)을 명시적으로 매개변수화(원칙 C)해 반응 곡면을
+      추정한다. 확증: C1 위협 단조성(R-P 기울기>0, Π-시드 군집 부트 CI 0 배제),
+      C2 중복 단조성(R-D 비대체성 기울기<0), C3 교차 경계 m* 존재(부트 근찾기,
+      축 범위 내부·CI 유계). 교차가 범위를 벗어나면 '관측 범위 내 부재'로
+      정직 보고하고 외삽 금지(§6.3). 초기점 사전은 균등(interior)과 ALLD-heavy
+      구조적(structural) 두 종을 병기(원칙 E)해 결론 일치를 강건성으로 보고.
+      탐색: Shapley 순서무관 기여 φ(adaptive) vs φ(TFT)(C={ad,TFT,GTFT,WSLS},
+      2^4 연립)·ALLD 침입장벽 심화 Δg(random 앵커 대비 치환 회계)·R-K 변덕
+      대응의 정교(adaptive) vs 즉각(adaptive_imm) 분해(H5 연결)·H8E(고변덕·
+      저중복)와 H11(무변덕·고중복)을 곡면 위 두 점으로 재현·정위.

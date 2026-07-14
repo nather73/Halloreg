@@ -45,7 +45,7 @@ python AIF_IPD/scripts/run_ipd_experiment.py --check-equivalence
 | `--seeds` | 240 | 조건별 시드(다이애드) 수 |
 | `--rounds` | 60 240 | 다이애드 라운드 수 — 복수 지정 시 각 지평에서 전 실험 반복 후 지평 비교 |
 | `--jobs` | -1 | 병렬 워커 수 (-1 = 코어수-1, 1 = 순차) |
-| `--experiments` | 전체 | `H1 H2H3 H4 H5 H6 H7 H7H H8 H8E H9H10 H11 GS` 중 선택 |
+| `--experiments` | 전체 | `H1 H2H3 H4 H5 H6 H7 H7H H8 H8E H9H10 H11 H12 GS` 중 선택 |
 | `--backend` | numpy | `numpy` (해석적 EFE) 또는 `pymdp` (검증용, 느림) |
 | `--quick` | off | 스모크 테스트 (seeds=3, rounds=30) |
 | `--check-equivalence` | off | pymdp↔numpy EFE 등가성만 검증하고 종료 |
@@ -68,6 +68,7 @@ python AIF_IPD/scripts/run_ipd_experiment.py --check-equivalence
 | `h8e_replicator_dynamics.png` | H8E-2 복제자 궤적(전 유형 legend)·역침입·끌개 조성·Moran |
 | `h8e_state_space_basins.png` | H8E-3 상태공간 위상 초상·협력 유역 지도·유역 확장 격자 |
 | `h11_keystone.png` | H11 Keystone 검정 — 치환 설계 dose 곡선·Δ 기울기·기제·진화 프레임 |
+| `h12_keystone_frontier.png` | H12 상주 조건부 Keystone 프런티어 — R-P/R-K/R-N 위협축·R-D 중복축 반응 곡면·비대체성·교차 m*·Shapley·ALLD 장벽 심화·H8E/H11 정위 |
 | `horizon_overview.png` | 확증 지표의 지평(T=60/240)별 판정 개관 |
 | `h9_h10_attribution_scope.png` | H9/H10 귀인 범위 절제 + 비-ToM 베이스라인 |
 | `gs_game_structure.png` | GS 게임구조(협력지수 CI) 강건성 스윕 |
@@ -167,6 +168,49 @@ python tests/test_golden.py            # 회귀 테스트 (--update 로 스냅�
 ```
 
 선택 의존성: PyYAML(사전등록 로딩; 없으면 내장 사본 폴백), pytest(테스트 러너).
+
+## v0.5 — H12 상주 조건부 Keystone 프런티어
+
+**동기 — 인공물 대 실질의 분리.** H8E(고변덕·저중복 상주에서 adaptive 의 협력
+유역 확장 Δ=+0.67 @T=240)와 H11(무변덕·고중복 상주에서 adaptive < TFT)은
+"adaptive 의 유역 확장 기여" 의 **부호가 상주 구성에 따라 뒤집히는** 상충으로
+보인다. H12 는 (1) 두 결과가 서로 다른 **지지집합·차원·척도** 위에서 측정된
+데서 비롯한 교란(인공물)을 제거하고, (2) 남는 실질 성분을 **상주 구성을 독립변수로
+갖는 반응 곡면**으로 정량화해 keystone 경계를 규명한다.
+
+1. **고정 심플렉스 재정의(원칙 A·D).** 단일 정준 최대 유형집합 **S\*(11종:
+   TFT·GTFT확률·GTFT횟수·WSLS·ALLC·ALLD·random·capricious·adaptive·adaptive_imm·
+   tom_fixed)** 를 고정한다. 상주는 "지지집합 변경" 이 아니라 S\* 위 **초기점 사전
+   평균의 대치 슬롯** 으로 재정의된다. 추정량은 고정 Π\* + 고정 초기점 사전 위의
+   단일 범함수로 고정.
+2. **중립 filler 대치 측정(원칙 B).** 한 유형의 기여는 제거가 아니라 **중립
+   filler(random) 대치**로 측정한다:
+   `sub_widening(X | 배경 B, 슬롯 s) = coop_basin_frac(Π*, P_B, 슬롯=X)
+   − coop_basin_frac(Π*, P_B, 슬롯=random)`. 지지집합·차원·척도가 모든 상주에서
+   불변이라 H8E·H11 두 결과가 **동일 저울**에 오른다.
+3. **위협축·중복축 매개화(원칙 C).** 위협축 — **R-P**(ALLD 점유 ρ_D ∈
+   {0,.1,.2,.3,.4}), **R-K**(변덕 점유 ρ_C ∈ {0,.1,.2,.3}), **R-N**(환경 잡음 err
+   격자). 중복축 — **R-D**(협력자 다양성 m: TFT단독→+GTFT→+WSLS→+GTFT횟수·ALLC).
+   슬롯 점유는 협력자 예산에서만 인출하고 ALLD/변덕 점유는 불변으로 유지.
+4. **확증 3지표(사전등록).** **C1** 위협 단조성(R-P/R-K 에서
+   sub_widening 기울기 > 0), **C2** 중복 단조성(R-D 에서 [sub_widening(adaptive)
+   − sub_widening(TFT)] 기울기 < 0), **C3** 교차 프런티어 m\* 존재(basin(adaptive)
+   − basin(best_fixed) 부호전환이 R-D 범위 **내부**, 부트 근찾기 CI 유계). 교차가
+   관측 범위를 벗어나면 "범위 내 부재" 로 정직 보고하고 외삽하지 않는다(§6.3).
+5. **초기점 사전 이중화(원칙 E).** 균등 Dirichlet(1) interior 사전과 ALLD-heavy
+   구조적 사전을 병기해 C1/C2 결론 일치를 강건성으로 보고한다.
+6. **탐색.** Shapley 순서무관 기여 φ(adaptive) vs φ(TFT)(C={ad,TFT,GTFT,WSLS},
+   2⁴ 연립)·ALLD 침입장벽 심화 Δg(random 앵커 대비 치환 회계, fixed-λ 대조)·
+   R-K 변덕대응 정교(adaptive) vs 즉각(adaptive_imm) 기울기 분해(H5 연결)·
+   H8E(고변덕·저중복)와 H11(무변덕·고중복)을 곡면 위 두 점으로 재현·정위.
+
+H12 는 H8E 와 동형으로 내부에서 **err×T 격자를 자체 추정**(Π\* 는 전 상주가 공유 —
+원칙 A 의 부수효과)하므로 `GLOBAL_EXPERIMENTS` 에 속하며 전체 지평 목록을 함께
+받는다. 설계 원문: `docs/H12_resident_conditioned_keystone_DESIGN.md`.
+
+```bash
+python scripts/run_ipd_experiment.py --experiments H12        # H12 단독(내부 err/T 스윕)
+```
 
 ## 재현성
 

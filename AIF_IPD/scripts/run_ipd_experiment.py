@@ -3,8 +3,20 @@
 run_ipd_experiment.py
 =====================
 
-HalloReg 메인 엔트리포인트: IPD 시뮬레이션 → 가설검증(H1–H11 + H7H/H8E/GS)
+HalloReg 메인 엔트리포인트: IPD 시뮬레이션 → 가설검증(H1–H12 + H7H/H8E/GS)
 → 가설별 시각화.
+
+v0.5 (Keystone 프런티어 판) — H12 추가:
+  §H12 상주 조건부 Keystone 프런티어 — adaptive 의 '협력 유역 확장' 기여가
+        상주 구성에 따라 부호가 뒤집히는 H8E(+0.67)·H11(adaptive<TFT) 상충을,
+        고정 최대 유형집합 S*(11종) 위 단일 심플렉스에서 중립 filler(random)
+        대치 기반 유역 확장 sub_widening 으로 재정의(원칙 A·B·D)해 인공물
+        (차원·배경·척도 교란)을 제거하고, 위협축(R-P ρ_D·R-K ρ_C·R-N err)과
+        중복축(R-D 협력자 다양성 m)을 따라 반응 곡면으로 정량화. [확증×3]
+        C1 위협 단조성·C2 비대체성 단조성·C3 keystone 프런티어 교차 m*.
+        [탐색] Shapley 순서무관 기여·ALLD 침입장벽 심화(random 앵커)·구조적
+        사전 일치(원칙 E)·H8E/H11 좌표 정위. 내부 err/T 스윕(H8E 와 동형).
+        설계: docs/H12_resident_conditioned_keystone_DESIGN.md.
 
 v0.4 (Keystone 판) — 3축 확장:
   §17.1 GTFT 이중화: 확률론적(generous_tft) vs 횟수 기반(generous_tft_count)
@@ -2276,6 +2288,515 @@ def exp_H11(seeds, rounds, jobs, backend):
             "traces": {"mech": mech, "Pi": est["Pi"]}}
 
 
+# ================================================================== H12
+# H12 — 상주 조건부 Keystone 프런티어 (설계: docs/H12_resident_conditioned_keystone_DESIGN.md)
+#
+# 배경: adaptive 의 '협력 유역 확장' 기여가 상주 구성에 따라 부호가 뒤집힌다
+#       (H8E: Δ=+0.67 @T=240 / H11: adaptive < TFT). H12 는 이 상충을
+#       (1) 인공물(차원 재정규화·중복·지지 불일치)을 지표 재정의로 제거하고
+#       (2) 실질 성분을 '상주 구성을 독립변인으로 하는 반응 곡면' 으로 정량화해
+#       adaptive 가 keystone 이 되는 조건 경계를 확정한다.
+#
+# 설계 규범 (§3):
+#   원칙 A — 고정 최대 유형집합 S*(11종) 위 단일 심플렉스. 상주 = 그 위 분포.
+#   원칙 B — 중립 filler(random) 대치로 유형 기여 측정 (제거 아님).
+#   원칙 C — 위협축(ρ_D·ρ_C·err)·중복축(협력자 다양성 m)의 명시적 매개변수화.
+#   원칙 D — estimand 를 고정 Π*·고정 초기점 사전 위 하나의 범함수로 못박음.
+#   원칙 E — 균등(interior) 사전과 ALLD-heavy 구조적(structural) 사전 병기.
+#
+# 확증 지표 (§6.1): [C1] 위협 단조성(R-P 기울기>0) · [C2] 중복 단조성
+#   (R-D 비대체성 기울기<0) · [C3] 교차 경계 존재(R-D keystone 프런티어 m*).
+H12_CANON = ["tit_for_tat", "generous_tft", "generous_tft_count", "wsls",
+             "allc", "alld", "random", "capricious",
+             "adaptive", "adaptive_imm", "tom_fixed"]          # S* (11종)
+H12_NONCOOP = ("alld", "random", "capricious")                  # 위협·중립
+H12_FIXED_COOP = ["tit_for_tat", "generous_tft", "generous_tft_count",
+                  "wsls", "allc"]                               # best_fixed 후보
+H12_M_PROFILES = {                                              # 중복 축 m
+    1: ["tit_for_tat"],
+    2: ["tit_for_tat", "generous_tft"],
+    3: ["tit_for_tat", "generous_tft", "wsls"],
+    5: ["tit_for_tat", "generous_tft", "wsls",
+        "generous_tft_count", "allc"],
+}
+
+
+def _h12_type_specs(T, backend):
+    """정준 지지집합 S*(11종) 의 Π* 추정용 유형 스펙."""
+    return {
+        "tit_for_tat": _m_strat("tit_for_tat", T),
+        "generous_tft": _m_strat("generous_tft", T),
+        "generous_tft_count": _m_strat("generous_tft_count", T),
+        "wsls": _m_strat("wsls", T),
+        "allc": _m_strat("allc", T),
+        "alld": _m_strat("alld", T),
+        "random": _m_strat("random", T),
+        "capricious": _m_strat("capricious", T),
+        "adaptive": _m_adaptive(backend, sophisticated=True),
+        "adaptive_imm": _m_adaptive(backend, sophisticated=False),
+        "tom_fixed": agent_spec("tom_empathic", 0, use_pymdp=backend == "pymdp"),
+    }
+
+
+def _h12_resident_mean(names, rho_D, rho_C, m_profile, slot_type, slot_share):
+    """
+    §4.1 배경 조성 + 대치 슬롯 → S* 위 상주 조성(초기점 사전 평균).
+      배경 = ρ_D·ALLD + ρ_C·capricious + (1−ρ_D−ρ_C−s)·[다양성 프로파일 m]
+      대치 슬롯 = s·e_{slot_type}   (슬롯 지분 s 는 **협력자 몫에서만** 차감 —
+                                     ALLD·capricious 지분 불변, §4.1)
+    """
+    w = np.zeros(len(names))
+
+    def ix(nm):
+        return names.index(nm)
+
+    w[ix("alld")] += rho_D
+    w[ix("capricious")] += rho_C
+    coop_budget = max(1.0 - rho_D - rho_C, 0.0)
+    m_budget = max(coop_budget - slot_share, 0.0)
+    if m_profile:
+        for nm in m_profile:
+            w[ix(nm)] += m_budget / len(m_profile)
+    else:
+        w[ix("random")] += m_budget
+    w[ix(slot_type)] += slot_share
+    s = w.sum()
+    return w / s if s > 0 else np.ones(len(names)) / len(names)
+
+
+def _h12_prior_points(U0, resident_mean, blend, alld_idx=None, corner=0.0):
+    """
+    공통 U0(Dirichlet(1) 배치)를 상주 평균으로 결정적 대응(원칙 D·5.4):
+        X0 = (1−blend)·U0 + blend·mean   (mean 은 슬롯이 인코딩된 상주 조성)
+    corner>0 이면 구조적 사전(원칙 E): mean 을 ALLD 코너로 당긴다
+        mean ← corner·e_ALLD + (1−corner)·mean.
+    U0 를 전 상주·슬롯·부트에 공유하므로 '슬롯만 바뀌는' 짝지음이 성립한다.
+    """
+    mean = resident_mean.copy()
+    if corner > 0 and alld_idx is not None:
+        e = np.zeros_like(mean)
+        e[alld_idx] = 1.0
+        mean = corner * e + (1.0 - corner) * mean
+    X0 = (1.0 - blend) * U0 + blend * mean[None, :]
+    X0 = np.clip(X0, 1e-12, None)
+    return X0 / X0.sum(axis=1, keepdims=True)
+
+
+def exp_H12(seeds, rounds, jobs, backend):
+    """
+    H12 [확증×3] 상주 조건부 Keystone 프런티어.
+
+    Π* 격자 : env_error ∈ {0,.05,.10,.15,.20} × T ∈ {60,240}, 정준 지지집합
+              S*(11종), 대칭 재사용, pi_seeds≥30 (원칙 A — 1회 캐시·전 상주 공유).
+
+    지표 재정의 (§5.1): sub_widening(X | 배경 B, 슬롯 s)
+        = coop_basin_frac(Π*, P_B, 슬롯=X) − coop_basin_frac(Π*, P_B, 슬롯=random)
+      지지집합은 항상 S*(11종) 불변 — 슬롯 유형만 X↔random. 슬롯은 초기점 사전
+      P_B 의 평균 성분으로 인코딩되어 차원·척도가 완전히 고정된다(2.1–2.3 제거).
+
+    [확증] C1 위협 단조성(R-P ρ_D 기울기 > 0) · C2 중복 단조성(R-D 다양성
+           기울기 < 0) · C3 교차 경계 m* 존재(R-D keystone 프런티어).
+    [탐색] R-K(변덕)·R-N(잡음) 축 · Shapley φ(adaptive) vs φ(TFT)(순서 무관
+           기여, C={ad,TFT,GTFT,WSLS}) · ALLD 침입장벽 심화 Δg(random 앵커) ·
+           구조적 사전(원칙 E) 결론 일치 · H8E/H11 좌표 정위(triangulate) ·
+           R-K 변덕 대응의 정교(adaptive) vs 즉각(adaptive_imm) 분해.
+    """
+    import math
+    from itertools import combinations
+
+    LOGGER.info("[H12] 상주 조건부 Keystone 프런티어 — 고정 심플렉스 S*(11종) 반응 곡면")
+    quick = seeds < 10
+    pi_seeds = 4 if quick else 30
+    env_errors = [0.10] if quick else [0.0, 0.05, 0.10, 0.15, 0.20]
+    req = sorted(set(rounds)) if isinstance(rounds, (list, tuple)) else [int(rounds)]
+    Ts = req[:1] if quick else sorted(set([60, 240]) | set(req))
+    primary_err = 0.10 if 0.10 in env_errors else env_errors[0]
+    T_main = Ts[-1]                          # keystone 은 긴 지평(H8E +0.67 @T=240)
+    slot_share = 0.20                        # 대치 슬롯 지분 (§4.1 예시)
+    blend = 0.30                             # interior 사전(원칙 E: 대역 질문)
+    corner_struct, blend_struct = 0.60, 0.45  # 구조적 사전(원칙 E: 침입 질문)
+    n_basin = 40 if quick else 300
+    basin_steps = 250 if quick else 500
+    n_boot = 40 if quick else 300            # basin 곡면 부트 (Π-시드 CRN)
+    n_boot_g = 200 if quick else 2000        # 침입장벽 부트 (저비용)
+    n_boot_s = 20 if quick else 120          # 구조적 사전·Shapley 부트
+
+    # ---------------- 1) Π*(err × T) 추정 (원칙 A) ----------------
+    est = {}
+    for ti, T in enumerate(Ts):
+        for ei, err in enumerate(env_errors):
+            t0 = time.time()
+            est[(err, T)] = evo.estimate_payoff_matrix(
+                _h12_type_specs(T, backend), n_rounds=T, seeds=pi_seeds,
+                n_jobs=jobs, env_error=err, symmetric=True,
+                seed_offset=61_000 + 1000 * (ti * len(env_errors) + ei))
+            LOGGER.info("[H12] Π*(err=%.2f, T=%d, 11종) 추정 %.1fs", err, T,
+                        time.time() - t0)
+    names = est[(primary_err, T_main)]["names"]
+    k = len(names)
+    coop_idx = [i for i, nm in enumerate(names) if nm not in H12_NONCOOP]
+    i_alld = names.index("alld")
+    raw_main = est[(primary_err, T_main)]["raw"]
+    Pi_full_main = raw_main.mean(axis=2)
+
+    # 공통 초기점 U0 (원칙 D·5.4 — 전 상주·슬롯·부트 공유)
+    U0 = np.random.default_rng(stable_seed("H12U0")).dirichlet(np.ones(k),
+                                                               size=n_basin)
+
+    def basin_slot(Pi, rho_D, rho_C, m_profile, slot, corner=0.0, bl=None):
+        rm = _h12_resident_mean(names, rho_D, rho_C, m_profile, slot, slot_share)
+        X0 = _h12_prior_points(U0, rm, blend if bl is None else bl,
+                               alld_idx=i_alld, corner=corner)
+        return evo.coop_basin_frac(Pi, coop_idx, steps=basin_steps, X0=X0)
+
+    # ---------------- 2) 축 곡면 부트 엔진 (Π-시드 CRN) ----------------
+    def axis_surface(raw, coord_specs, slots, seed, corner=0.0, bl=None,
+                     n_b=n_boot):
+        coords = [c for c, _ in coord_specs]
+        S = len(slots)
+        Pi_f = raw.mean(axis=2)
+        pt = np.array([[basin_slot(Pi_f, cs["rho_D"], cs["rho_C"],
+                                   cs["m_profile"], sl, corner, bl)
+                        for sl in slots] for _, cs in coord_specs])   # (C,S)
+        rng = np.random.default_rng(seed)
+        ps = raw.shape[2]
+        boot = np.empty((n_b, len(coords), S))
+        for b in range(n_b):
+            idx = rng.integers(0, ps, ps)
+            Pi_b = raw[:, :, idx].mean(axis=2)
+            for cidx, (_, cs) in enumerate(coord_specs):
+                for si, sl in enumerate(slots):
+                    boot[b, cidx, si] = basin_slot(Pi_b, cs["rho_D"], cs["rho_C"],
+                                                   cs["m_profile"], sl, corner, bl)
+        return {"coords": coords, "slots": list(slots), "point": pt, "boot": boot}
+
+    def si(surf, sl):
+        return surf["slots"].index(sl)
+
+    def marginal(surf, X):                    # sub_widening(X) = basin(X) − basin(random)
+        xi, ri = si(surf, X), si(surf, "random")
+        return surf["point"][:, xi] - surf["point"][:, ri], \
+            surf["boot"][:, :, xi] - surf["boot"][:, :, ri]
+
+    def irreplace(surf, X, Y):                # sub_widening(X) − sub_widening(Y) (random 상쇄)
+        xi, yi = si(surf, X), si(surf, Y)
+        return surf["point"][:, xi] - surf["point"][:, yi], \
+            surf["boot"][:, :, xi] - surf["boot"][:, :, yi]
+
+    def keystone_delta(surf):                 # basin(adaptive) − max_fixed basin(fixed)
+        ai = si(surf, "adaptive")
+        fis = [si(surf, f) for f in H12_FIXED_COOP]
+        pt = surf["point"][:, ai] - surf["point"][:, fis].max(axis=1)
+        bt = surf["boot"][:, :, ai] - surf["boot"][:, :, fis].max(axis=2)
+        return pt, bt
+
+    def slope_ci(coords, bt, pt):
+        c = np.asarray(coords, float)
+        sl_obs = float(np.polyfit(c, pt, 1)[0])
+        sls = np.array([np.polyfit(c, bt[b], 1)[0] for b in range(bt.shape[0])])
+        ci = [float(np.percentile(sls, 2.5)), float(np.percentile(sls, 97.5))]
+        p = float(np.clip(2 * min((sls <= 0).mean(), (sls >= 0).mean()),
+                          1.0 / len(sls), 1.0))
+        return {"slope": sl_obs, "ci": ci, "p": p, "coords": list(coords),
+                "curve": [float(x) for x in pt],
+                "curve_ci": [[float(np.percentile(bt[:, c2], 2.5)),
+                              float(np.percentile(bt[:, c2], 97.5))]
+                             for c2 in range(bt.shape[1])]}
+
+    def crossing_ci(coords, bt, pt):
+        c = np.asarray(coords, float)
+
+        def root(v):
+            for i in range(len(c) - 1):
+                a, b2 = v[i], v[i + 1]
+                if a == 0:
+                    return float(c[i])
+                if (a < 0) != (b2 < 0):
+                    return float(c[i] + (a / (a - b2)) * (c[i + 1] - c[i]))
+            return None
+        r_obs = root(pt)
+        roots = [root(bt[b]) for b in range(bt.shape[0])]
+        found = [x for x in roots if x is not None]
+        frac = len(found) / max(len(roots), 1)
+        ci = ([float(np.percentile(found, 2.5)),
+               float(np.percentile(found, 97.5))] if found
+              else [float("nan"), float("nan")])
+        within = (r_obs is not None and c.min() <= r_obs <= c.max())
+        return {"crossing": r_obs, "ci": ci, "frac_found": float(frac),
+                "within_range": bool(within),
+                "range": [float(c.min()), float(c.max())]}
+
+    def pack_axis(surf):
+        ai, ri = si(surf, "adaptive"), si(surf, "random")
+        fis = [si(surf, f) for f in H12_FIXED_COOP]
+
+        def ci_of(colfn):
+            arr = np.array([colfn(surf["boot"][b])
+                            for b in range(surf["boot"].shape[0])])
+            return [[float(np.percentile(arr[:, c2], 2.5)),
+                     float(np.percentile(arr[:, c2], 97.5))]
+                    for c2 in range(arr.shape[1])]
+        m_pt, m_bt = marginal(surf, "adaptive")
+        marg = slope_ci(surf["coords"], m_bt, m_pt)
+        return {
+            "coords": list(surf["coords"]),
+            "basin_adaptive": [float(x) for x in surf["point"][:, ai]],
+            "ci_adaptive": ci_of(lambda B: B[:, ai]),
+            "basin_random": [float(x) for x in surf["point"][:, ri]],
+            "ci_random": ci_of(lambda B: B[:, ri]),
+            "basin_best_fixed": [float(x) for x in surf["point"][:, fis].max(axis=1)],
+            "ci_best_fixed": ci_of(lambda B: B[:, fis].max(axis=1)),
+            "marginal_adaptive": {"curve": marg["curve"], "slope": marg["slope"],
+                                  "ci": marg["ci"], "curve_ci": marg["curve_ci"]},
+        }
+
+    # ---------------- 3) 축별 상주족 (§4.2) ----------------
+    m_def = H12_M_PROFILES[3]                 # TFT+GTFT_prob+WSLS (기본 중복 프로파일)
+    slots_core = ["adaptive", "random", "tit_for_tat", "generous_tft",
+                  "generous_tft_count", "wsls", "allc"]
+    slots_rk = slots_core + ["adaptive_imm"]
+
+    RP = [(rd, dict(rho_D=rd, rho_C=0.0, m_profile=m_def))
+          for rd in ([0.0, 0.2, 0.4] if quick else [0.0, 0.1, 0.2, 0.3, 0.4])]
+    RK = [(rc, dict(rho_D=0.2, rho_C=rc, m_profile=m_def))
+          for rc in ([0.0, 0.2] if quick else [0.0, 0.1, 0.2, 0.3])]
+    div_counts = [1, 3] if quick else [1, 2, 3, 5]
+    RD = [(dc, dict(rho_D=0.2, rho_C=0.1, m_profile=H12_M_PROFILES[dc]))
+          for dc in div_counts]
+
+    t0 = time.time()
+    surf_RP = axis_surface(raw_main, RP, slots_core, stable_seed("H12RP"))
+    surf_RK = axis_surface(raw_main, RK, slots_rk, stable_seed("H12RK"))
+    surf_RD = axis_surface(raw_main, RD, slots_core, stable_seed("H12RD"))
+    LOGGER.info("[H12] R-P/R-K/R-D 곡면 부트 %.1fs", time.time() - t0)
+
+    # R-N (env 잡음 축 — 좌표마다 다른 Π*(err) 재사용; §4.2 R-N)
+    def rn_surface(seed):
+        cs = dict(rho_D=0.2, rho_C=0.1, m_profile=m_def)
+        rng = np.random.default_rng(seed)
+        pt, boot = [], []
+        for err in env_errors:
+            raw_e = est[(err, T_main)]["raw"]
+            ps = raw_e.shape[2]
+            Pi_f = raw_e.mean(axis=2)
+            pt.append([basin_slot(Pi_f, cs["rho_D"], cs["rho_C"],
+                                  cs["m_profile"], sl) for sl in slots_core])
+            bb = np.empty((n_boot, len(slots_core)))
+            for b in range(n_boot):
+                Pi_b = raw_e[:, :, rng.integers(0, ps, ps)].mean(axis=2)
+                bb[b] = [basin_slot(Pi_b, cs["rho_D"], cs["rho_C"],
+                                    cs["m_profile"], sl) for sl in slots_core]
+            boot.append(bb)
+        return {"coords": list(env_errors), "slots": list(slots_core),
+                "point": np.array(pt), "boot": np.stack(boot, axis=1)}
+    surf_RN = rn_surface(stable_seed("H12RN")) if len(env_errors) > 1 else None
+
+    # ---------------- 4) 확증 지표 C1·C2·C3 ----------------
+    pt, bt = marginal(surf_RP, "adaptive")
+    c1 = slope_ci(surf_RP["coords"], bt, pt)
+    register_primary("H12", "[C1] 위협축(R-P ρ_D) 한계 keystone 기울기 > 0",
+                     c1["p"], c1["ci"][0] > 0,
+                     f"β={c1['slope']:+.3f} [{c1['ci'][0]:+.3f},{c1['ci'][1]:+.3f}]")
+
+    pt2, bt2 = irreplace(surf_RD, "adaptive", "tit_for_tat")
+    c2 = slope_ci(surf_RD["coords"], bt2, pt2)
+    register_primary("H12", "[C2] 중복축(R-D 다양성) 비대체성 기울기 < 0",
+                     c2["p"], c2["ci"][1] < 0,
+                     f"β={c2['slope']:+.3f} [{c2['ci'][0]:+.3f},{c2['ci'][1]:+.3f}]")
+
+    ptk, btk = keystone_delta(surf_RD)
+    c3 = crossing_ci(surf_RD["coords"], btk, ptk)
+    c3_p = float(np.clip(1.0 - c3["frac_found"], 1.0 / max(n_boot, 1), 1.0))
+    register_primary(
+        "H12", "[C3] R-D keystone 프런티어(교차 m*) 존재",
+        c3_p, bool(c3["within_range"] and c3["frac_found"] > 0.5),
+        (f"m*={c3['crossing']:.2f} CI[{c3['ci'][0]:.2f},{c3['ci'][1]:.2f}] "
+         f"(부트 교차검출 {c3['frac_found']:.0%})" if c3["within_range"]
+         else f"관측 범위 {c3['range']} 내 교차 부재 (외삽 금지, §6.3)"))
+
+    # keystone_delta 곡선(그림용) — R-D·R-P
+    def pack_keystone(surf):
+        pt_, bt_ = keystone_delta(surf)
+        return {"coords": list(surf["coords"]),
+                "curve": [float(x) for x in pt_],
+                "curve_ci": [[float(np.percentile(bt_[:, c2], 2.5)),
+                              float(np.percentile(bt_[:, c2], 97.5))]
+                             for c2 in range(bt_.shape[1])]}
+    ks_RD = pack_keystone(surf_RD)
+    ks_RP = pack_keystone(surf_RP)
+    c3_RP = crossing_ci(surf_RP["coords"], *keystone_delta(surf_RP)[::-1])
+
+    # ---------------- 5) 탐색: R-K·R-N 축 기울기 ----------------
+    ptk_rk, btk_rk = marginal(surf_RK, "adaptive")
+    c1_rk = slope_ci(surf_RK["coords"], btk_rk, ptk_rk)
+    register_exploratory("H12", "[C1보조] 위협축(R-K ρ_C) 한계 keystone 기울기",
+                         c1_rk["p"], f"β={c1_rk['slope']:+.3f} "
+                         f"CI[{c1_rk['ci'][0]:+.3f},{c1_rk['ci'][1]:+.3f}]")
+    # R-K 변덕 대응 분해: 정교(adaptive) vs 즉각(adaptive_imm) — H5 연결 (§6.2)
+    pti, bti = marginal(surf_RK, "adaptive_imm")
+    c1_rk_imm = slope_ci(surf_RK["coords"], bti, pti)
+    register_exploratory("H12", "R-K 변덕대응 정교(soph) vs 즉각(imm) 기울기 분해",
+                         1.0, f"β_soph={c1_rk['slope']:+.3f} vs "
+                         f"β_imm={c1_rk_imm['slope']:+.3f} "
+                         "(정교>즉각이면 rmPFC 정교함 기여)")
+    rn_pack = None
+    if surf_RN is not None:
+        pt_rn, bt_rn = marginal(surf_RN, "adaptive")
+        c1_rn = slope_ci(surf_RN["coords"], bt_rn, pt_rn)
+        register_exploratory("H12", "위협축(R-N env 잡음) 한계 keystone 기울기",
+                             c1_rn["p"], f"β={c1_rn['slope']:+.3f} "
+                             f"CI[{c1_rn['ci'][0]:+.3f},{c1_rn['ci'][1]:+.3f}]")
+        rn_pack = pack_axis(surf_RN)
+        rn_pack["c1_slope"] = c1_rn
+
+    # ---------------- 6) 탐색: Shapley 한계 기여 (§5.2) ----------------
+    C_set = ["adaptive", "tit_for_tat", "generous_tft", "wsls"]
+    i_cap = names.index("capricious")
+
+    def basin_coalition(Pi, coalition, rho_D=0.2, rho_C=0.1):
+        w = np.zeros(k)
+        w[i_alld] += rho_D
+        w[i_cap] += rho_C
+        budget = max(1.0 - rho_D - rho_C, 0.0)
+        if coalition:
+            for nm in coalition:
+                w[names.index(nm)] += budget / len(coalition)
+        else:
+            w[names.index("random")] += budget
+        w = w / w.sum()
+        X0 = _h12_prior_points(U0, w, blend, alld_idx=i_alld, corner=0.0)
+        return evo.coop_basin_frac(Pi, coop_idx, steps=basin_steps, X0=X0)
+
+    def shapley(Pi):
+        phi = {x: 0.0 for x in C_set}
+        n = len(C_set)
+        for x in C_set:
+            oc = [c for c in C_set if c != x]
+            for r in range(len(oc) + 1):
+                for Tsub in combinations(oc, r):
+                    wgt = (math.factorial(len(Tsub))
+                           * math.factorial(n - len(Tsub) - 1)
+                           / math.factorial(n))
+                    phi[x] += wgt * (basin_coalition(Pi, list(Tsub) + [x])
+                                     - basin_coalition(Pi, list(Tsub)))
+        return phi
+    t0 = time.time()
+    phi_pt = shapley(Pi_full_main)
+    rng_sh = np.random.default_rng(stable_seed("H12shap"))
+    phi_boot = {x: [] for x in C_set}
+    for _ in range(n_boot_s):
+        Pi_b = raw_main[:, :, rng_sh.integers(0, pi_seeds, pi_seeds)].mean(axis=2)
+        pb = shapley(Pi_b)
+        for x in C_set:
+            phi_boot[x].append(pb[x])
+    LOGGER.info("[H12] Shapley(2^4) 부트 %.1fs", time.time() - t0)
+    dphi = np.array(phi_boot["adaptive"]) - np.array(phi_boot["tit_for_tat"])
+    shap = {
+        "C_set": C_set,
+        "phi": {x: float(phi_pt[x]) for x in C_set},
+        "phi_ci": {x: [float(np.percentile(phi_boot[x], 2.5)),
+                       float(np.percentile(phi_boot[x], 97.5))] for x in C_set},
+        "adaptive_minus_tft": {
+            "delta": float(phi_pt["adaptive"] - phi_pt["tit_for_tat"]),
+            "ci": [float(np.percentile(dphi, 2.5)),
+                   float(np.percentile(dphi, 97.5))],
+            "p": float(np.clip(2 * min((dphi <= 0).mean(), (dphi >= 0).mean()),
+                               1.0 / len(dphi), 1.0))}}
+    register_exploratory(
+        "H12", "Shapley φ(adaptive) − φ(TFT) (C={ad,TFT,GTFT,WSLS}, 순서무관)",
+        shap["adaptive_minus_tft"]["p"],
+        f"Δφ={shap['adaptive_minus_tft']['delta']:+.3f} "
+        f"CI[{shap['adaptive_minus_tft']['ci'][0]:+.3f},"
+        f"{shap['adaptive_minus_tft']['ci'][1]:+.3f}]")
+
+    # ---------------- 7) 탐색: ALLD 침입장벽 치환 회계 (§5.3) ----------------
+    def barrier_family(raw_e, rho_D, rho_C, m_profile, key):
+        out = {}
+        for X in ("random", "adaptive", "tom_fixed"):
+            w = _h12_resident_mean(names, rho_D, rho_C, m_profile, X, slot_share)
+            out[X] = _growth_boot(raw_e, w, i_alld, n_boot=n_boot_g,
+                                  seed=stable_seed("H12bar", key, X))
+        # Δg = g(random 슬롯) − g(X 슬롯): 양수면 X 가 장벽 심화 (전략 효과 순수 귀속)
+        out["deepen_adaptive"] = float(out["random"]["g"] - out["adaptive"]["g"])
+        out["deepen_tom_fixed"] = float(out["random"]["g"] - out["tom_fixed"]["g"])
+        return out
+    barrier = {
+        "R-P_high(ρ_D=0.4)": barrier_family(raw_main, 0.4, 0.0, m_def, "RPhi"),
+        "R-K_high(ρ_C=0.3)": barrier_family(raw_main, 0.2, 0.3, m_def, "RKhi"),
+        "R-D_low(m=1)": barrier_family(raw_main, 0.2, 0.1, H12_M_PROFILES[1], "RDlo"),
+        "R-D_high(m=5)": barrier_family(raw_main, 0.2, 0.1, H12_M_PROFILES[5], "RDhi"),
+    }
+    register_exploratory(
+        "H12", "ALLD 침입장벽 심화 Δg(adaptive, random 앵커) — R-K 고위협",
+        1.0, f"Δg={barrier['R-K_high(ρ_C=0.3)']['deepen_adaptive']:+.3f} "
+        f"(fixedλ 대조 {barrier['R-K_high(ρ_C=0.3)']['deepen_tom_fixed']:+.3f})")
+
+    # ---------------- 8) 탐색: 구조적 사전 결론 일치 (원칙 E) ----------------
+    surf_RP_s = axis_surface(raw_main, RP, slots_core, stable_seed("H12RPs"),
+                             corner=corner_struct, bl=blend_struct, n_b=n_boot_s)
+    surf_RD_s = axis_surface(raw_main, RD, slots_core, stable_seed("H12RDs"),
+                             corner=corner_struct, bl=blend_struct, n_b=n_boot_s)
+    c1_s = slope_ci(surf_RP_s["coords"], *marginal(surf_RP_s, "adaptive")[::-1])
+    c2_s = slope_ci(surf_RD_s["coords"], *irreplace(surf_RD_s, "adaptive",
+                                                    "tit_for_tat")[::-1])
+    agree = {
+        "C1": {"interior": c1["slope"], "structural": c1_s["slope"],
+               "same_sign": bool((c1["slope"] > 0) == (c1_s["slope"] > 0))},
+        "C2": {"interior": c2["slope"], "structural": c2_s["slope"],
+               "same_sign": bool((c2["slope"] < 0) == (c2_s["slope"] < 0))}}
+    register_exploratory(
+        "H12", "사전 강건성(원칙 E): interior vs 구조적(ALLD코너) 결론 일치", 1.0,
+        f"C1 일치={agree['C1']['same_sign']} "
+        f"(구조 β={c1_s['slope']:+.3f}), C2 일치={agree['C2']['same_sign']} "
+        f"(구조 β={c2_s['slope']:+.3f})")
+
+    # ---------------- 9) 탐색: H8E·H11 좌표 정위 (§6.2) ----------------
+    def delta_at(rho_D, rho_C, m_profile):
+        b_ad = basin_slot(Pi_full_main, rho_D, rho_C, m_profile, "adaptive")
+        b_best = max(basin_slot(Pi_full_main, rho_D, rho_C, m_profile, f)
+                     for f in H12_FIXED_COOP)
+        b_rnd = basin_slot(Pi_full_main, rho_D, rho_C, m_profile, "random")
+        return {"marginal_adaptive": float(b_ad - b_rnd),
+                "keystone_delta": float(b_ad - b_best)}
+    triang = {
+        "H8E_corner(ρ_C=0.3,저중복 m=1)": delta_at(0.2, 0.3, H12_M_PROFILES[1]),
+        "H11_corner(ρ_C=0,고중복 m=5)": delta_at(0.3, 0.0, H12_M_PROFILES[5]),
+    }
+    register_exploratory(
+        "H12", "H8E/H11 좌표 정위 (곡면 위 두 점으로 재현)", 1.0,
+        f"H8E 코너 keystoneΔ={triang['H8E_corner(ρ_C=0.3,저중복 m=1)']['keystone_delta']:+.3f} "
+        f"vs H11 코너={triang['H11_corner(ρ_C=0,고중복 m=5)']['keystone_delta']:+.3f}")
+
+    # ---------------- 10) 판정·반환 ----------------
+    supported = {
+        "C1_threat_monotone": bool(c1["ci"][0] > 0),
+        "C2_redundancy_monotone": bool(c2["ci"][1] < 0),
+        "C3_frontier_exists": bool(c3["within_range"] and c3["frac_found"] > 0.5),
+        "prior_robust_C1": bool(agree["C1"]["same_sign"]),
+        "prior_robust_C2": bool(agree["C2"]["same_sign"]),
+    }
+    LOGGER.info("[H12] → %s", supported)
+    return {
+        "names": names, "config": {"pi_seeds": pi_seeds, "T_main": T_main,
+                                   "primary_err": primary_err,
+                                   "env_errors": env_errors, "Ts": Ts,
+                                   "slot_share": slot_share, "blend": blend,
+                                   "n_basin": n_basin, "n_boot": n_boot},
+        "axes": {"R-P": pack_axis(surf_RP), "R-K": pack_axis(surf_RK),
+                 "R-D": pack_axis(surf_RD),
+                 **({"R-N": rn_pack} if rn_pack else {})},
+        "confirmatory": {"C1": c1, "C2": c2, "C3": c3, "C3_p": c3_p,
+                         "C1_R-K": c1_rk, "C1_R-K_imm": c1_rk_imm},
+        "keystone_frontier": {"R-D": ks_RD, "R-D_crossing": c3,
+                              "R-P": ks_RP, "R-P_crossing": c3_RP},
+        "shapley": shap,
+        "barrier": barrier,
+        "prior_agreement": agree,
+        "triangulation": triang,
+        "supported": supported,
+        "traces": {"Pi_main": Pi_full_main.tolist()}}
+
+
 # ================================================================== GS
 def exp_GS(seeds, rounds, jobs, backend):
     """
@@ -3267,6 +3788,164 @@ def fig_H11(d, tag=""):
           f"reps={d['reps']}, N={d['n_total']}, Π seeds={d['evolution']['pi_seeds']}")
 
 
+# ==================================================================== fig H12
+def fig_H12(d, tag=""):
+    """H12 상주 조건부 Keystone 프런티어 시각화 (3×3)."""
+    _kfont()
+    fig, ax = plt.subplots(3, 3, figsize=(18, 14))
+    axes = d["axes"]
+
+    def _basin_panel(a, key, xlabel, title, c1=None):
+        if key not in axes:
+            a.set_visible(False)
+            return
+        ax_d = axes[key]
+        xs = ax_d["coords"]
+
+        def _band(vals, cis, color, lbl):
+            m = np.array(vals)
+            lo = np.array([c[0] for c in cis])
+            hi = np.array([c[1] for c in cis])
+            a.plot(xs, m, "o-", color=color, lw=1.6, ms=4, label=lbl)
+            a.fill_between(xs, lo, hi, color=color, alpha=0.15)
+        _band(ax_d["basin_adaptive"], ax_d["ci_adaptive"], "C1", "slot=adaptive")
+        _band(ax_d["basin_best_fixed"], ax_d["ci_best_fixed"], "C2",
+              "slot=best fixed coop")
+        _band(ax_d["basin_random"], ax_d["ci_random"], "0.5", "slot=random(중립)")
+        a.set_xlabel(xlabel)
+        a.set_ylabel("coop_basin_frac (Π* 고정 심플렉스)")
+        sub = ""
+        if c1 is not None:
+            sub = f"\n한계 keystone 기울기 β={c1['slope']:+.3f} " \
+                  f"[{c1['ci'][0]:+.3f},{c1['ci'][1]:+.3f}]"
+        a.set_title(title + sub, fontsize=9)
+        a.legend(fontsize=7)
+
+    conf = d["confirmatory"]
+    # (a) R-P 위협축 (ρ_D)
+    _basin_panel(ax[0, 0], "R-P", "ALLD 지분 ρ_D",
+                 "(a) R-P 위협축(착취 압력) [확증 C1]", conf["C1"])
+    # (b) R-K 변덕축 (ρ_C)
+    _basin_panel(ax[0, 1], "R-K", "capricious 지분 ρ_C",
+                 "(b) R-K 위협축(변덕) [C1 보조]", conf["C1_R-K"])
+    # (c) R-N 잡음축 (err)
+    _basin_panel(ax[0, 2], "R-N", "환경 잡음 err",
+                 "(c) R-N 위협축(환경 잡음)",
+                 axes.get("R-N", {}).get("c1_slope"))
+
+    # (d) R-D 중복축 (다양성 m) — basin 곡선
+    _basin_panel(ax[1, 0], "R-D", "협력자 다양성 m (가짓수)",
+                 "(d) R-D 중복축(협력자 다양성) [상충 해소 핵심축]")
+    # (e) R-D 비대체성: sub_widening(adaptive) − sub_widening(TFT) [확증 C2]
+    rd = axes["R-D"]
+    xs = rd["coords"]
+    c2 = conf["C2"]
+    m = np.array(c2["curve"])
+    lo = np.array([c[0] for c in c2["curve_ci"]])
+    hi = np.array([c[1] for c in c2["curve_ci"]])
+    ax[1, 1].plot(xs, m, "o-", color="C3", lw=1.8, ms=5)
+    ax[1, 1].fill_between(xs, lo, hi, color="C3", alpha=0.18)
+    ax[1, 1].axhline(0, color="0.4", ls="--", lw=1)
+    ax[1, 1].set_xlabel("협력자 다양성 m (가짓수)")
+    ax[1, 1].set_ylabel("sub_widening(adaptive) − sub_widening(TFT)")
+    ax[1, 1].set_title(f"(e) 비대체성(irreplaceability) [확증 C2]\n"
+                       f"기울기 β={c2['slope']:+.3f} "
+                       f"[{c2['ci'][0]:+.3f},{c2['ci'][1]:+.3f}] "
+                       f"(<0 = 다양성↑ → adaptive 대체)", fontsize=9)
+    # (f) Keystone 프런티어: basin(adaptive) − best_fixed vs m (교차 m*) [확증 C3]
+    kf = d["keystone_frontier"]["R-D"]
+    cr = d["keystone_frontier"]["R-D_crossing"]
+    m = np.array(kf["curve"])
+    lo = np.array([c[0] for c in kf["curve_ci"]])
+    hi = np.array([c[1] for c in kf["curve_ci"]])
+    ax[1, 2].plot(kf["coords"], m, "o-", color="C0", lw=1.8, ms=5,
+                  label="R-D: adaptive − best_fixed")
+    ax[1, 2].fill_between(kf["coords"], lo, hi, color="C0", alpha=0.16)
+    kp = d["keystone_frontier"]["R-P"]
+    ax[1, 2].plot(kp["coords"], kp["curve"], "s--", color="C4", lw=1.3, ms=4,
+                  alpha=0.8, label="R-P: (참고, ρ_D 축)")
+    ax[1, 2].axhline(0, color="r", ls="--", lw=1)
+    if cr["within_range"] and cr["crossing"] is not None:
+        ax[1, 2].axvline(cr["crossing"], color="C2", lw=1.4)
+        ax[1, 2].axvspan(cr["ci"][0], cr["ci"][1], color="C2", alpha=0.12)
+        sub = f"\nm* = {cr['crossing']:.2f} " \
+              f"CI[{cr['ci'][0]:.2f},{cr['ci'][1]:.2f}] (부트 {cr['frac_found']:.0%})"
+    else:
+        sub = f"\n관측 범위 {cr['range']} 내 교차 부재 (외삽 금지)"
+    ax[1, 2].set_xlabel("협력자 다양성 m (가짓수)")
+    ax[1, 2].set_ylabel("keystone Δ = basin(adaptive) − best_fixed")
+    ax[1, 2].set_title("(f) Keystone 프런티어 [확증 C3]" + sub, fontsize=9)
+    ax[1, 2].legend(fontsize=7)
+
+    # (g) Shapley φ (순서무관 기여)
+    sh = d["shapley"]
+    cs = sh["C_set"]
+    xx = np.arange(len(cs))
+    vals = [sh["phi"][x] for x in cs]
+    err = np.array([[sh["phi"][x] - sh["phi_ci"][x][0],
+                     sh["phi_ci"][x][1] - sh["phi"][x]] for x in cs]).T
+    cols = ["C0" if x == "adaptive" else "0.6" for x in cs]
+    ax[2, 0].bar(xx, vals, yerr=err, capsize=4, color=cols, alpha=0.85)
+    ax[2, 0].set_xticks(xx)
+    ax[2, 0].set_xticklabels(cs, rotation=20, fontsize=7, ha="right")
+    dphi = sh["adaptive_minus_tft"]
+    ax[2, 0].set_title(f"(g) Shapley φ (C={{ad,TFT,GTFT,WSLS}})\n"
+                       f"Δφ(ad−TFT)={dphi['delta']:+.3f} "
+                       f"[{dphi['ci'][0]:+.3f},{dphi['ci'][1]:+.3f}] [탐색]",
+                       fontsize=9)
+    ax[2, 0].set_ylabel("협력 유역 한계 기여 φ")
+
+    # (h) ALLD 침입장벽 심화 Δg (random 앵커) — 상주족별
+    bar = d["barrier"]
+    fams = list(bar)
+    xx = np.arange(len(fams))
+    w = 0.38
+    dg_ad = [bar[f]["deepen_adaptive"] for f in fams]
+    dg_tf = [bar[f]["deepen_tom_fixed"] for f in fams]
+    ax[2, 1].bar(xx - w / 2, dg_ad, w, color="C0", label="adaptive")
+    ax[2, 1].bar(xx + w / 2, dg_tf, w, color="C1", label="fixed-λ ToM")
+    ax[2, 1].axhline(0, color="0.4", ls="--", lw=1)
+    ax[2, 1].set_xticks(xx)
+    ax[2, 1].set_xticklabels(fams, rotation=25, fontsize=6.5, ha="right")
+    ax[2, 1].set_ylabel("Δg = g(random 슬롯) − g(X 슬롯)")
+    ax[2, 1].set_title("(h) ALLD 침입장벽 심화 Δg (random 앵커 대비)\n"
+                       "양수 = 슬롯 유형이 장벽 심화 [탐색]", fontsize=9)
+    ax[2, 1].legend(fontsize=7)
+
+    # (i) H8E/H11 좌표 정위 + 사전 강건성
+    tr = d["triangulation"]
+    keys = list(tr)
+    xx = np.arange(len(keys))
+    kd = [tr[kk]["keystone_delta"] for kk in keys]
+    ma = [tr[kk]["marginal_adaptive"] for kk in keys]
+    ax[2, 2].bar(xx - 0.2, kd, 0.38, color="C0", label="keystone Δ (ad−best_fixed)")
+    ax[2, 2].bar(xx + 0.2, ma, 0.38, color="C2", label="marginal (ad−random)")
+    ax[2, 2].axhline(0, color="r", ls="--", lw=1)
+    ax[2, 2].set_xticks(xx)
+    ax[2, 2].set_xticklabels(["H8E 코너\n(고변덕·저중복)", "H11 코너\n(무변덕·고중복)"],
+                             fontsize=7)
+    ag = d["prior_agreement"]
+    ax[2, 2].set_title("(i) H8E/H11 좌표 정위 (곡면 위 두 점)\n"
+                       f"사전 강건성: C1 일치={ag['C1']['same_sign']}, "
+                       f"C2 일치={ag['C2']['same_sign']} [탐색]", fontsize=9)
+    ax[2, 2].set_ylabel("basin 차이")
+    ax[2, 2].legend(fontsize=7)
+
+    sup = d["supported"]
+    _save(fig, "h12_keystone_frontier" + tag,
+          "H12: 상주 조건부 Keystone 프런티어. 고정 심플렉스 S*(11종)·중립 filler "
+          "대치로 차원·배경·척도 인공물을 제거한 뒤(원칙 A·B), 위협축(R-P ρ_D "
+          "[확증 C1], R-K ρ_C, R-N err)과 중복축(R-D 다양성 m)을 따라 대치 기반 "
+          "유역 확장 sub_widening 을 곡면으로 추정. [확증] C1 위협 단조성·C2 "
+          "비대체성 단조성·C3 keystone 프런티어 교차 m*. [탐색] Shapley 순서무관 "
+          "기여·ALLD 침입장벽 심화(random 앵커)·구조적 사전 일치·H8E(고변덕·저중복) "
+          "와 H11(무변덕·고중복)을 곡면 위 두 점으로 재현·정위. "
+          f"판정: C1={sup['C1_threat_monotone']}, C2={sup['C2_redundancy_monotone']}, "
+          f"C3={sup['C3_frontier_exists']}.",
+          f"Π* seeds={d['config']['pi_seeds']}, S*=11종, T={d['config']['T_main']}, "
+          f"slot_share={d['config']['slot_share']}, n_basin={d['config']['n_basin']}")
+
+
 def fig_GS(d, tag=""):
     _kfont()
     fig, ax = plt.subplots(1, 3, figsize=(15, 4))
@@ -3342,9 +4021,10 @@ EXPERIMENTS = {
     "H8E": (exp_H8E, fig_H8E),
     "H9H10": (exp_H9_H10, fig_H9_H10),
     "H11": (exp_H11, fig_H11),
+    "H12": (exp_H12, fig_H12),
     "GS": (exp_GS, fig_GS),
 }
-GLOBAL_EXPERIMENTS = {"H7H", "H8E"}   # 내부 T 스윕 — rounds 목록을 통째로 전달
+GLOBAL_EXPERIMENTS = {"H7H", "H8E", "H12"}   # 내부 err/T 스윕 — rounds 목록을 통째로 전달
 
 
 def _jsonable(o):
