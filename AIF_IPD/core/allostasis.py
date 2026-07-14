@@ -155,7 +155,7 @@ class CoreAllostaticBeliefState:
     # ---------------------------------------------------------------- 갱신
     def update(self, betrayal: bool, opp_cooperated: bool,
                inferred: dict, prediction_surprise: float,
-               opp_defected: bool = False) -> None:
+               opp_defected: bool = False, attr_gate: float = 1.0) -> None:
         """
         한 라운드 관측으로 core allostatic belief 를 갱신한다.
 
@@ -165,6 +165,10 @@ class CoreAllostaticBeliefState:
                        이것이 없으면 자기보호로 전환한 뒤 core belief 이 동결된다.
         inferred : 입자필터 posterior means {'alpha','rho','beta','lambda_j'}.
         prediction_surprise : 상대 행동에 대한 예측 서프라이즈 (-log lik), 현저성 가중.
+        attr_gate : 타인-귀인 가중치 w_other ∈ [0,1] (통제권 기반; Spiering 2025).
+            1.0 이면 종전과 동일. <1 이면 배신의 **dispositional(타인 기질)** 증거를
+            그만큼 낮추고 잔여를 transient(자기/맥락)로 재분배한다 — 자기-기인 결과가
+            타인 기질로 새는 것을 막는다.
         """
         defect_evidence = betrayal or opp_defected
         if not (defect_evidence or opp_cooperated):
@@ -188,6 +192,15 @@ class CoreAllostaticBeliefState:
             evidence[CAUSE_AXES.index("lambda_j")] = disp_lambda * precision
             evidence[CAUSE_AXES.index("rho")] = disp_rho * precision
             evidence[CAUSE_AXES.index("beta")] = (1 - precision)        # 낮은 β → 잡음
+            # 통제권 기반 자기/타인 귀인(Spiering 2025): 자기-기인 성분(1−w_other)
+            # 만큼 dispositional(타인 기질) 증거를 낮추고 transient(자기/맥락)로 이관.
+            g = float(np.clip(attr_gate, 0.0, 1.0))
+            if g < 1.0:
+                for ax in ("alpha", "lambda_j", "rho"):
+                    i = CAUSE_AXES.index(ax)
+                    moved = evidence[i] * (1.0 - g)
+                    evidence[i] -= moved
+                    evidence[CAUSE_AXES.index("transient")] += moved
         elif opp_cooperated:
             # 협력은 dispositional 원인(불균형)의 증거를 약화
             evidence[CAUSE_AXES.index("transient")] = 0.2
@@ -289,7 +302,8 @@ class LambdaRegulator:
     def step(self, betrayal: bool, opp_cooperated: bool,
              inferred: dict, pred_coop_prev: float,
              core: CoreAllostaticBeliefState,
-             regulate: bool = True, opp_defected: bool = False) -> dict:
+             regulate: bool = True, opp_defected: bool = False,
+             attr_gate: float = 1.0) -> dict:
         """
         한 라운드 λ 조절.
 
@@ -354,13 +368,18 @@ class LambdaRegulator:
         betrayal_drive = (self.tonic_weight
                           + self.acute_weight * float(pred_coop_prev)) if defect_signal else 0.0
         # κ: 개인의 dispositional 귀인 성향
-        attributed_disp = self.kappa * disposition * disp_credence * betrayal_drive
+        # attr_gate(=w_other, 통제권 기반 타인-귀인 가중치, Spiering 2025): 자기-기인
+        # 배신은 타인 기질 grievance 를 충전하지 않도록 구동을 게이팅한다.
+        g_attr = float(np.clip(attr_gate, 0.0, 1.0))
+        attributed_disp = (self.kappa * disposition * disp_credence
+                           * betrayal_drive * g_attr)
 
         # ---- 예기적(allostatic) 구동 ----
         # 실제 배신이 관측되지 않아도(예: 내가 먼저 방어해 DD 가 된 경우) 상대가
         # 기질적으로 배신할 것이라 '예측'되면 자기보호 상태를 유지한다.
         anticipated_defect = 1.0 - float(np.clip(pred_coop_prev, 0.0, 1.0))
-        anticipatory = (self.kappa * disposition * disp_credence * anticipated_defect
+        anticipatory = (self.kappa * disposition * disp_credence
+                        * anticipated_defect * g_attr
                         if self.sophisticated else 0.0)
 
         # ---- grievance g⁻ (억제) ----

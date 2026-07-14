@@ -10,8 +10,9 @@ Theory-of-Mind 모듈을 구현한다.
 ## 설치
 
 ```bash
-pip install numpy matplotlib
+pip install numpy matplotlib scipy pyyaml
 pip install inferactively-pymdp   # 선택: --backend pymdp / --check-equivalence 용
+pip install "jax[cpu]" equinox optax   # 선택: validate_ann_tom.py (ANN-ToM 재현) 용
 ```
 
 ## 실행
@@ -45,7 +46,7 @@ python AIF_IPD/scripts/run_ipd_experiment.py --check-equivalence
 | `--seeds` | 240 | 조건별 시드(다이애드) 수 |
 | `--rounds` | 60 240 | 다이애드 라운드 수 — 복수 지정 시 각 지평에서 전 실험 반복 후 지평 비교 |
 | `--jobs` | -1 | 병렬 워커 수 (-1 = 코어수-1, 1 = 순차) |
-| `--experiments` | 전체 | `H1 H2H3 H4 H5 H6 H7 H7H H8 H8E H9H10 H11 H12 GS` 중 선택 |
+| `--experiments` | 전체 | `H1 H2H3 H4 H5 H6 H7 H7H H8 H8E H9H10 H11 H12 GS VP ABA ORE` 중 선택 |
 | `--backend` | numpy | `numpy` (해석적 EFE) 또는 `pymdp` (검증용, 느림) |
 | `--quick` | off | 스모크 테스트 (seeds=3, rounds=30) |
 | `--check-equivalence` | off | pymdp↔numpy EFE 등가성만 검증하고 종료 |
@@ -72,6 +73,10 @@ python AIF_IPD/scripts/run_ipd_experiment.py --check-equivalence
 | `horizon_overview.png` | 확증 지표의 지평(T=60/240)별 판정 개관 |
 | `h9_h10_attribution_scope.png` | H9/H10 귀인 범위 절제 + 비-ToM 베이스라인 |
 | `gs_game_structure.png` | GS 게임구조(협력지수 CI) 강건성 스윕 |
+| `vp_variable_payoff.png` | VP 가변 페이오프(연속 협력–경쟁) — 시변/극단 CI 레짐 payoff 우위·유역 확장(RE/ORE) |
+| `aba_intent_recovery.png` | ABA A→B→A 의도복구 — 용서(재탐색) 용량-반응·히스테리시스·자기충족 함정 |
+| `ore_optimal_replicator.png` | ORE 최적복제자(Bravetti&Padilla) — 2-유형 재현·RE vs ORE 협력 유역·adaptive 한계기여 |
+| `ann_tom_recovery.png` | ANN-ToM 재현 — Schwarcz GRU · Kim GCN+RNN 이 입자필터 사후 재현(별도 스크립트) |
 | `recovery_tom.png` | ToM 파라미터 복원 연구(편향·RMSE·커버리지·식별불능) |
 | `<name>.pdf` / `<name>.caption.json` | 각 그림의 벡터본 + 캡션 메타데이터 |
 | `summary.json` | 전 가설 수치 + 확증/탐색 태그·p_holm·q_fdr·효과크기 |
@@ -217,3 +222,60 @@ python scripts/run_ipd_experiment.py --experiments H12        # H12 단독(내�
 다이애드·집단 replicate 는 모두 시드로 결정되며, `multiprocessing('spawn')` 워커에
 분배되어도 결과는 워커 수와 무관하다. BLAS/JAX 스레드는 1로 고정하여
 oversubscription 을 방지한다.
+
+## v0.6 — 가변 페이오프 · A-B-A 의도복구 · 최적복제자 · ANN-ToM 재현
+
+기존 실험군의 네 가지 구조적 한계(고정 payoff·이분법적 협력/경쟁·단순 복제자
+동역학·ToM 의 신경 구현 부재)를 보완하는 확장이다. 아울러 자기/타인 통제권 귀인
+(Spiering 2025)을 `AdaptiveAgent` 에 선택적으로 추가했다(기본 off — H1–H12 보존).
+
+### 새 실험(내부 레짐 스윕 — `GLOBAL_EXPERIMENTS`)
+
+- **VP — 가변 페이오프(Pisauro et al. 2022 Space Dilemma B6).** 협력지수
+  CI=(R−P)/(T−S)를 극단(음수 교착·1 이상 조화)까지 라운드별 변동. 맥락-의존 효용을
+  계산하는 adaptive 가, 어떤 단일 고정전략도 전 맥락에서 최적일 수 없는 **시변
+  레짐**(oscillate·blocks·aba)에서 우위를 갖는지(C-VP1)와 협력 유역을 넓히는지
+  (C-VP2; RE·ORE 병기)를 검증. H7/H8E/H12 의 '고정 payoff' 교란 제거.
+  구현: `ipd/variable_payoff.py`(라운드별 `set_payoffs`, spawn-병렬 `run_variable_many`).
+
+- **ABA — A→B→A 의도 전환 추적 복구.** 상대가 협력적 상호성(A)→착취(B)→다시 A 로
+  복귀. **정직 보고**: 완전한 allostatic 에이전트는 배신 후 자기보호에 고착되어
+  자동 복구하지 않는 히스테리시스(배신 후 선택적 관측 함정)를 보이며, 복구는
+  **용서(재탐색)** 에 용량-반응적으로 게이팅된다(C-ABA1 高용서 복구, C-ABA2 용량-
+  반응 기울기<0). β-맥락 절제·통제권·비-ToM 대조.
+
+- **ORE — 최적복제자방정식(Bravetti & Padilla 2018).** 개체 수준 RE 를 집단 수준
+  경쟁까지 확장한 ORE 가 협력 유역을 넓히는지(C-ORE1)와 adaptive 한계 기여가 ORE
+  하에서 뚜렷한지(C-ORE2) 검증. Bravetti Fig.1 재현 포함. FBSM(forward-backward
+  sweep)을 초기점 전체로 벡터화. 구현: `ipd/evolution.py` 의 `ore_*`.
+
+```bash
+python AIF_IPD/scripts/run_ipd_experiment.py --experiments VP ABA ORE
+```
+
+### 별도 스크립트 — ANN 의 베이지안 ToM 재현 (수정 #4)
+
+입자필터 사후를 교사로 하는 지식 증류로, 두 신경망이 베이지안 ToM(특성 추론 +
+특성별 신뢰도 배정)을 재현하는지 검증한다.
+
+- **Schwarcz-style GRU**(Schwarcz et al. 2025): 순환 동역학에 베이즈 믿음 갱신 내재화.
+- **Kim-style GCN+RNN**(Kim et al. 2026): 관계형 그래프 + 스포트라이트 주의(간선
+  엔트로피 = 특성별 reliability).
+
+두 구조 모두 교사 사후를 높은 R²(≈0.77–0.80)로 재현한다. 참 θ 개별 회복은 생성
+모형의 α↔λ_j 가법 축퇴로 제한되나, **식별가능 합성 α+5λ_j** 는 잘 회복된다(정직한
+식별성 보고 — ANN 결함이 아니라 교사에도 동일한 한계). JAX/Equinox 구현.
+
+```bash
+python AIF_IPD/scripts/validate_ann_tom.py            # 전체
+python AIF_IPD/scripts/validate_ann_tom.py --quick    # 스모크
+```
+산출물: `results/ann_tom_recovery.png`, `results/ann_tom_summary.json`.
+
+### 자기/타인 통제권 귀인 (Spiering 2025)
+
+`AdaptiveAgent(controllability=True)` 로 활성화. 결과를 자기-기인(내 방출 행동이
+DD/DC 유발)과 타인-기인(내가 협력했는데 배신당한 CD)으로 분할, 지각된 통제권으로
+타인-귀인 가중치 w_other 를 산출해 dispositional grievance 충전을 게이팅한다(자기-
+기인 배신은 상대 기질 불만을 덜 충전). 구현: `core/controllability.py`,
+`core/allostasis.py`(attr_gate). 기본 off 로 H1–H12 결과 보존.

@@ -73,7 +73,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib import font_manager
 
-from AIF_IPD.core.constants import CC, CD, DC, DD, COOP, DEFECT
+from AIF_IPD.core.constants import (CC, CD, DC, DD, COOP, DEFECT,
+                                    my_action_from_state)
 from AIF_IPD.core.logging_utils import get_logger, set_korean_font
 from AIF_IPD.ipd.env import (
     CAPRICIOUS_CASES, CAPRICIOUS_PERIODS, DEFAULT_CAPRICIOUS_CASE,
@@ -2953,6 +2954,423 @@ def exp_H9_H10(seeds, rounds, jobs, backend):
             "traces": {"lam_capricious": lam_cap_traces}}
 
 
+# ================================================================== VP / ABA / ORE
+# v0.6 확장 (3축) — 고정 payoff·이분법·단순 복제자·신경구현 부재의 한계 보완.
+#
+#   §VP  가변 페이오프(연속 협력–경쟁 트레이드오프; Pisauro et al. 2022) —
+#         CI 를 극단(음수·1 이상)까지 변동시키는 환경에서, 현재 보수로 자·타 효용을
+#         맥락-의존 계산하는 adaptive 가 payoff-무감 고정전략 대비 얻는 성능·협력
+#         유역 확장을 검증. H7/H8E/H12 의 '고정 payoff' 교란을 제거.
+#   §ABA A→B→A 의도 전환 추적 복구 — 상대가 협력적 상호성(A)→착취(B)→다시 A 로
+#         복귀할 때 adaptive 가 의도 추론을 **복구**하는지, β-맥락 절제·통제권·비-ToM
+#         대비 우월한지 검증(Spiering 2025 자기/타인 귀인 포함).
+#   §ORE Optimal Replicator Equation(Bravetti & Padilla 2018) — 개체 수준 RE 를
+#         집단 수준 경쟁까지 확장한 ORE 가 협력 유역을 넓히는지, adaptive 의 한계적
+#         기여가 ORE 하에서 더 뚜렷한지 검증. Bravetti Fig.1 재현 포함.
+
+
+# ---- 가변 페이오프 공통 유형/상대 카탈로그 ----
+def _vp_focal_specs(backend):
+    """VP focal(주인공) 후보: 맥락-의존 adaptive + payoff-무감 고정전략들."""
+    ad = agent_spec("adaptive", 0, kappa=0.9, sophisticated=True,
+                    controllability=True, use_pymdp=backend == "pymdp")
+    return {
+        "adaptive": ad,
+        "tft": strat_spec("tit_for_tat", 0),
+        "gtft": strat_spec("generous_tft", 0),
+        "wsls": strat_spec("wsls", 0),
+        "allc": strat_spec("allc", 0),
+        "alld": strat_spec("alld", 0),
+    }
+
+
+_VP_OPP_PANEL = ["tit_for_tat", "generous_tft", "wsls", "allc", "alld", "random"]
+_VP_REGIMES = ["mild_pd", "harsh_pd", "coop_harmony", "deadlock",
+               "oscillate", "blocks_c_i_c", "aba_coop_deadlock"]
+# '시변(time-varying)' 레짐 — 어떤 단일 고정전략도 전 맥락에서 최적일 수 없어
+# 맥락-의존 adaptive 의 우위가 드러나는 확증 대상. (고정-극단 레짐은 대조군)
+_VP_VARIABLE = ["oscillate", "blocks_c_i_c", "aba_coop_deadlock"]
+_VP_EXTREME_FIXED = ["harsh_pd", "coop_harmony", "deadlock"]   # 극단이나 고정 — 대조
+
+
+def exp_VP(seeds, rounds, jobs, backend):
+    """
+    §VP 가변 페이오프(연속 협력–경쟁). CI 를 극단(음수·1 이상)까지 변동.
+    [확증] C-VP1 변동/극단 레짐에서 adaptive 의 payoff 우위(best 고정전략 대비) > 0.
+           C-VP2 변동/극단 레짐에서 adaptive 의 협력 유역 확장 sub_widening > 0
+                 (중립 filler=random 대치 기준; RE·ORE 병기).
+    [탐색] 레짐별 우위 분해, ORE vs RE 유역, 맥락(CI) 추정 오차.
+    내부에서 CI 레짐 × 지평 격자를 자체 추정(GLOBAL).
+    """
+    from AIF_IPD.ipd.variable_payoff import (
+        run_variable_many, estimate_variable_payoff_matrix, CI_REGIMES)
+    Ts = rounds if isinstance(rounds, (list, tuple)) else [rounds]
+    vp_seeds = max(3, min(int(seeds), 24))       # 순차-in-dyad 이므로 시드 상한
+    T = int(min(max(Ts), 120))                   # 대표 지평(비용 관리; 지평 목록 명시)
+    focal = _vp_focal_specs(backend)
+    LOGGER.info("[VP] 가변 CI 레짐=%d × focal=%d × 상대=%d, seeds=%d, T=%d",
+                len(_VP_REGIMES), len(focal), len(_VP_OPP_PANEL), vp_seeds, T)
+
+    # ---- (1) focal × 상대 × 레짐 payoff 격자 ----
+    pay = {reg: {f: [] for f in focal} for reg in _VP_REGIMES}
+    for reg in _VP_REGIMES:
+        specs, reg_idx = [], {}
+        for fname, fcfg in focal.items():
+            for opp in _VP_OPP_PANEL:
+                for s in range(vp_seeds):
+                    a = dict(fcfg); a["seed"] = stable_seed("vp", reg, fname, s)
+                    o = strat_spec(opp, seed=stable_seed("vp_o", reg, opp, s))
+                    reg_idx[(fname, opp, s)] = len(specs)
+                    specs.append({"agent": a, "opponent": o,
+                                  "env_err_agent": 0.05, "env_err_opponent": 0.05,
+                                  "noise_seed": stable_seed("vp_n", reg, fname, opp, s)})
+        res = run_variable_many(specs, reg, T, n_jobs=jobs)
+        for fname in focal:
+            # focal 의 상대 패널 평균 보수(시드별) — 상대 전반의 성능
+            for s in range(vp_seeds):
+                vals = [float(np.mean(res[reg_idx[(fname, opp, s)]]["hist"]["my_payoff"]))
+                        for opp in _VP_OPP_PANEL]
+                pay[reg][fname].append(float(np.mean(vals)))
+
+    # 레짐별 adaptive 우위 = adaptive − best 단일 고정전략 (평균 기준으로 선택;
+    # 시드별 max 는 승자의 저주 편향 → 평균 최고 전략 하나를 골라 짝지어 비교)
+    advantage = {}
+    for reg in _VP_REGIMES:
+        fixed_names = [f for f in focal if f != "adaptive"]
+        fixed_means = {f: float(np.mean(pay[reg][f])) for f in fixed_names}
+        best_f = max(fixed_means, key=fixed_means.get)       # 평균 최고 고정전략 1개
+        best_series = np.array(pay[reg][best_f])
+        adv = np.array(pay[reg]["adaptive"]) - best_series
+        st = paired_stats(pay[reg]["adaptive"], list(best_series),
+                          "greater", seed=stable_seed("vp_adv", reg))
+        advantage[reg] = {"mean": float(adv.mean()),
+                          "ci": boot_mean_ci(adv, seed=stable_seed("vpc", reg))["ci"],
+                          "p": st["p"], "es": st["es"], "raw": adv.tolist(),
+                          "best_fixed": best_f}
+
+    # 확증 C-VP1: 변동/극단 레짐 통합에서 adaptive 우위 > 0 (레짐 평균 후 단일표본)
+    var_adv = np.concatenate([np.array(advantage[r]["raw"]) for r in _VP_VARIABLE])
+    t_cvp1 = one_sample_perm(var_adv, mu0=0.0, alternative="greater",
+                             seed=stable_seed("cvp1"))
+    register_primary("VP", "C-VP1 변동레짐 adaptive payoff 우위>0", t_cvp1["p"],
+                     bool(var_adv.mean() > 0),
+                     f"Δpay={var_adv.mean():.3f} [{boot_mean_ci(var_adv, seed=7)['ci'][0]:.3f},"
+                     f"{boot_mean_ci(var_adv, seed=7)['ci'][1]:.3f}]")
+    # 대조: 고정 mild_pd 에서의 우위(한계 재현 — 여기선 유의하지 않을 수 있음)
+    mild_adv = np.array(advantage["mild_pd"]["raw"])
+    register_exploratory("VP", "대조: mild_pd(고정) adaptive 우위",
+                         one_sample_perm(mild_adv, 0.0, alternative="greater", seed=8)["p"],
+                         f"Δpay={mild_adv.mean():.3f}")
+
+    # ---- (2) 협력 유역 확장 sub_widening (중립 filler=random 대치; RE·ORE) ----
+    coop_labels = {"adaptive", "tft", "gtft", "wsls", "allc"}
+    basin = {}
+    for reg in _VP_REGIMES:
+        base_specs = {
+            "tft": strat_spec("tit_for_tat", 0), "gtft": strat_spec("generous_tft", 0),
+            "wsls": strat_spec("wsls", 0), "allc": strat_spec("allc", 0),
+            "alld": strat_spec("alld", 0), "random": strat_spec("random", 0),
+        }
+        # 슬롯 = {adaptive, random(중립 filler)} 두 조건에서 Π 추정
+        specs_ad = dict(base_specs); specs_ad["slot"] = dict(focal["adaptive"])
+        specs_rd = dict(base_specs); specs_rd["slot"] = strat_spec("random", 0)
+        Pi_ad = estimate_variable_payoff_matrix(specs_ad, reg, T, vp_seeds,
+                                                env_error=0.05, n_jobs=jobs)
+        Pi_rd = estimate_variable_payoff_matrix(specs_rd, reg, T, vp_seeds,
+                                                env_error=0.05, n_jobs=jobs)
+        n_ad = Pi_ad["names"]; n_rd = Pi_rd["names"]
+        coop_ad = [i for i, nm in enumerate(n_ad)
+                   if nm in coop_labels or nm == "slot"]
+        coop_rd = [i for i, nm in enumerate(n_rd) if nm in coop_labels]  # slot=random 제외
+        X0 = np.random.default_rng(stable_seed("vpX", reg)).dirichlet(
+            np.ones(len(n_ad)), size=150)
+        re_ad = evo.coop_basin_frac(Pi_ad["Pi"], coop_ad, X0=X0)
+        re_rd = evo.coop_basin_frac(Pi_rd["Pi"], coop_rd, X0=X0)
+        ore_ad = evo.ore_coop_basin_frac(Pi_ad["Pi"], coop_ad, X0=X0[:80])
+        ore_rd = evo.ore_coop_basin_frac(Pi_rd["Pi"], coop_rd, X0=X0[:80])
+        basin[reg] = {"re_sub_widening": float(re_ad - re_rd),
+                      "ore_sub_widening": float(ore_ad - ore_rd),
+                      "re_ad": re_ad, "re_rd": re_rd,
+                      "ore_ad": ore_ad, "ore_rd": ore_rd}
+    # 확증 C-VP2: 변동 레짐에서 RE sub_widening 평균 > 0
+    sw = np.array([basin[r]["re_sub_widening"] for r in _VP_VARIABLE])
+    t_cvp2 = one_sample_perm(sw, 0.0, alternative="greater", seed=stable_seed("cvp2"))
+    register_primary("VP", "C-VP2 변동레짐 협력유역 확장(sub_widening)>0",
+                     t_cvp2["p"], bool(sw.mean() > 0),
+                     f"sub_widening={sw.mean():.3f}")
+    sw_ore = np.array([basin[r]["ore_sub_widening"] for r in _VP_VARIABLE])
+    register_exploratory("VP", "ORE sub_widening(변동레짐)",
+                         one_sample_perm(sw_ore, 0.0, alternative="greater", seed=9)["p"],
+                         f"ORE sub_widening={sw_ore.mean():.3f}")
+
+    return {"regimes": _VP_REGIMES, "variable": _VP_VARIABLE, "T": T,
+            "seeds": vp_seeds,
+            "pay_mean": {reg: {f: mean_sd(pay[reg][f])[0] for f in focal}
+                         for reg in _VP_REGIMES},
+            "advantage": advantage, "basin": basin,
+            "confirmatory": {"C_VP1_payoff_advantage": {
+                                "delta": float(var_adv.mean()),
+                                "ci": boot_mean_ci(var_adv, seed=7)["ci"],
+                                "p": t_cvp1["p"], "supported": bool(var_adv.mean() > 0)},
+                             "C_VP2_basin_widening": {
+                                "sub_widening": float(sw.mean()),
+                                "p": t_cvp2["p"], "supported": bool(sw.mean() > 0)}},
+            "supported": {"C_VP1": bool(var_adv.mean() > 0 and t_cvp1["p"] < 0.05),
+                          "C_VP2": bool(sw.mean() > 0 and t_cvp2["p"] < 0.05)}}
+
+
+# ------------------------------------------------------------------ ABA
+def exp_ABA(seeds, rounds, jobs, backend):
+    """
+    §ABA A→B→A 의도 전환 추적 복구. 상대: 협력적 상호성(A=TFT)→착취(B=ALLD)→다시 A.
+
+    [핵심 기제 — 정직한 보고] 전(前)등록 예상과 달리, 완전한 allostatic 에이전트는
+    배신(B) 후 자기보호 상태에 고착되어 A 복귀 시에도 **자동으로 협력을 재개하지
+    않는다**(히스테리시스). 이는 자기 방어적 배신이 상대의 개심(改心)을 관측할 기회를
+    스스로 차단하는 '배신 후 선택적 관측' 함정(Selective observation following
+    betrayal)의 재현이다. 복구는 **용서(forgiveness)=재탐색 성향**에 의해 게이팅되며,
+    본 실험은 이 용량-반응을 확증한다.
+
+    [확증] C-ABA1 충분한 용서 하에서 의도추론이 복구된다: 高용서 adaptive 의 복구오차
+                 |pc(A3)−pc(A1)|<0.15 이고 CC 복원비 CC(A3)/CC(A1)>0.70.
+           C-ABA2 복구는 용서에 단조 증가(용량-반응): 복구오차∼용서 기울기<0.
+    [탐색] β-맥락 절제·통제권 on/off 의 복구 영향(방향 불문 정직 보고), 비-ToM
+           베이스라인의 행동 복구, 자기충족 함정(A3 배신율↔복구실패 상관).
+    내부에서 지평 목록을 함께 다룸(GLOBAL).
+    """
+    Ts = rounds if isinstance(rounds, (list, tuple)) else [rounds]
+    from AIF_IPD.ipd.variable_payoff import aba_schedule
+    FORG = [0.02, 0.05, 0.15, 0.30]          # 용서(재탐색) 수준 스윕
+    out_by_T = {}
+    for T in Ts:
+        sched = aba_schedule("tit_for_tat", "alld", T)
+        third = max(T // 3, 1)
+        A1 = slice(0, third); A3 = slice(2 * third, T)
+
+        def opp_spec(s):
+            return dict(type="strategy", kind="tit_for_tat",
+                        seed=1000 + s, error=0.05, schedule=sched)
+
+        def run_variant(cfg):
+            specs = [{"agent": {**cfg, "seed": s}, "opponent": opp_spec(s),
+                      "noise_seed": 3000 + s} for s in range(seeds)]
+            return run_many(specs, n_rounds=T, n_jobs=jobs, verbose=False)
+
+        def traits(rr, key):
+            return np.stack([np.asarray(rr[i]["agent_log"][key], float)
+                             for i in range(len(rr))])
+
+        def cc_phase(rr, ph):
+            return np.array([float(np.mean(r["hist"]["state"][ph] == CC)) for r in rr])
+
+        def defect_phase(rr, ph):  # focal 배신율(A3 자기충족 함정 지표)
+            return np.array([float(np.mean((r["hist"]["state"][ph] // 2) == DEFECT))
+                             for r in rr])
+
+        def metrics(rr):
+            pc = traits(rr, "pred_coop")
+            a1 = pc[:, A1].mean(axis=1); a3 = pc[:, A3].mean(axis=1)
+            cc1 = cc_phase(rr, A1); cc3 = cc_phase(rr, A3)
+            return {"rec_err": np.abs(a3 - a1), "pc_A1": a1, "pc_A3": a3,
+                    "cc_A1": cc1, "cc_A3": cc3,
+                    "cc_ratio": cc3 / np.clip(cc1, 1e-6, None),
+                    "def_A3": defect_phase(rr, A3),
+                    "pred_coop": pc, "disp_cred": traits(rr, "disp_credence"),
+                    "lam": traits(rr, "lam"), "control": traits(rr, "control")}
+
+        # 용서 스윕 (adaptive, 통제권 on)
+        forg = {}
+        for fg in FORG:
+            cfg = agent_spec("adaptive", 0, kappa=0.9, sophisticated=True,
+                             controllability=True, forgiveness=fg,
+                             use_pymdp=backend == "pymdp")
+            forg[fg] = metrics(run_variant(cfg))
+
+        # 절제 변형 (기본 용서에서): β-절제 / 통제권 off
+        base_cfg = dict(kappa=0.9, sophisticated=True, use_pymdp=backend == "pymdp")
+        abl = {
+            "beta_clamp": metrics(run_variant(agent_spec(
+                "adaptive", 0, controllability=True, beta_clamp=True, **base_cfg))),
+            "noctrl": metrics(run_variant(agent_spec(
+                "adaptive", 0, controllability=False, **base_cfg))),
+        }
+        # 비-ToM 베이스라인 (행동 복구만)
+        base_cc = {}
+        for bname in ("qlearner", "bayes_br"):
+            rr = run_variant({"type": bname})
+            base_cc[bname] = {"cc_A1": cc_phase(rr, A1), "cc_A3": cc_phase(rr, A3)}
+        out_by_T[T] = {"forg": forg, "abl": abl, "base_cc": base_cc, "third": third}
+
+    # 확증은 최장 지평 기준(짧은 지평은 국면이 짧아 복구 관측 불충분)
+    Tref = max(Ts)
+    ref = out_by_T[Tref]
+    hi = max(FORG)
+    rec_hi = ref["forg"][hi]["rec_err"]
+    cc_ratio_hi = ref["forg"][hi]["cc_ratio"]
+
+    # C-ABA1: 高용서에서 복구 — 복구오차<0.15 & CC 복원비>0.70
+    t_aba1 = one_sample_perm(rec_hi, mu0=0.15, alternative="less",
+                             seed=stable_seed("aba1"))
+    cc_ratio_ok = bool(np.mean(cc_ratio_hi) > 0.70)
+    aba1_supported = bool(np.mean(rec_hi) < 0.15 and cc_ratio_ok)
+    register_primary("ABA", "C-ABA1 高용서 하 의도추론 복구(오차<0.15 & CC복원비>0.70)",
+                     t_aba1["p"], aba1_supported,
+                     f"복구오차={np.mean(rec_hi):.3f}, CC복원비={np.mean(cc_ratio_hi):.2f}")
+
+    # C-ABA2: 용량-반응 — 복구오차가 용서에 단조 감소(기울기<0)
+    xs, ys = [], []
+    for fg in FORG:
+        r = out_by_T[Tref]["forg"][fg]["rec_err"]
+        xs.extend([fg] * len(r)); ys.extend(list(r))
+    sl = slope_boot(np.array(xs), np.array(ys), seed=stable_seed("aba2"))
+    aba2_supported = bool(sl["slope"] < 0 and sl["ci"][1] < 0)
+    register_primary("ABA", "C-ABA2 복구오차∼용서 기울기<0(용량-반응)",
+                     sl["p"], aba2_supported,
+                     f"slope={sl['slope']:.3f} [{sl['ci'][0]:.3f},{sl['ci'][1]:.3f}]")
+
+    # 탐색: 절제 변형(정직 보고), 자기충족 함정, 비-ToM 행동 복구
+    dflt = out_by_T[Tref]["forg"][0.05]
+    for name, m in ref["abl"].items():
+        t = paired_stats(list(m["rec_err"]), list(dflt["rec_err"]),
+                         "two-sided", seed=stable_seed("abaabl", name))
+        register_exploratory("ABA", f"{name} vs 기본(용서0.05) 복구오차",
+                             t["p"], f"Δ={t['mean_a']-t['mean_b']:+.3f}")
+    # 자기충족 함정: A3 배신율↔복구오차 상관(저용서에서 강해야)
+    lo = out_by_T[Tref]["forg"][0.02]
+    trap = slope_boot(lo["def_A3"], lo["rec_err"], seed=stable_seed("abatrap"))
+    register_exploratory("ABA", "저용서: A3 배신율→복구오차 기울기(자기충족 함정)",
+                         trap["p"], f"slope={trap['slope']:.3f}")
+    for b, d in ref["base_cc"].items():
+        t = paired_stats(list(d["cc_A3"]), list(d["cc_A1"]), "two-sided",
+                         seed=stable_seed("abab", b))
+        register_exploratory("ABA", f"{b} 행동 CC 복원 A3 vs A1", t["p"],
+                             f"ΔCC={t['mean_a']-t['mean_b']:+.3f}")
+
+    return {"Ts": Ts, "Tref": Tref, "forg_levels": FORG, "by_T": out_by_T,
+            "confirmatory": {
+                "C_ABA1_recovery": {"rec_err_hi": float(np.mean(rec_hi)),
+                                    "ci": boot_mean_ci(rec_hi, seed=1)["ci"],
+                                    "cc_ratio_hi": float(np.mean(cc_ratio_hi)),
+                                    "p": t_aba1["p"], "supported": aba1_supported},
+                "C_ABA2_dose_response": {"slope": sl["slope"], "ci": sl["ci"],
+                                         "p": sl["p"], "supported": aba2_supported}},
+            "supported": {"C_ABA1": aba1_supported, "C_ABA2": aba2_supported}}
+
+
+# ------------------------------------------------------------------ ORE
+def _ore_type_specs(backend):
+    ad = agent_spec("adaptive", 0, kappa=0.9, sophisticated=True,
+                    controllability=True, use_pymdp=backend == "pymdp")
+    return {"adaptive": ad, "tft": strat_spec("tit_for_tat", 0),
+            "gtft": strat_spec("generous_tft", 0), "wsls": strat_spec("wsls", 0),
+            "allc": strat_spec("allc", 0), "alld": strat_spec("alld", 0)}
+
+
+def exp_ORE(seeds, rounds, jobs, backend):
+    """
+    §ORE 집단 수준 경쟁(Optimal Replicator Equation; Bravetti & Padilla 2018).
+    [확증] C-ORE1 ORE 협력 유역 > RE 협력 유역 (동일 Π·초기점, 레짐 전반 짝지음).
+           C-ORE2 ORE 하 adaptive 한계 기여(sub_widening: adaptive vs random 슬롯)>0.
+    [탐색] Bravetti Fig.1 재현(2-유형 RE vs ORE), 레짐별 유역 확장, Π 시드 부트스트랩.
+    내부에서 CI 레짐 격자 자체 추정(GLOBAL).
+    """
+    from AIF_IPD.ipd.variable_payoff import estimate_variable_payoff_matrix
+    Ts = rounds if isinstance(rounds, (list, tuple)) else [rounds]
+    ore_seeds = max(3, min(int(seeds), 24))
+    T = int(min(max(Ts), 120))
+    regimes = ["mild_pd", "harsh_pd", "deadlock", "oscillate"]
+    LOGGER.info("[ORE] RE vs ORE 유역, 레짐=%d, seeds=%d, T=%d", len(regimes), ore_seeds, T)
+
+    # ---- (A) Bravetti Fig.1/2 재현 (2-유형) ----
+    repro = {}
+    for name, (R, Tt, P, S, x0) in {
+            "model1": (4, 5, 1, 0, 0.3), "model2": (3, 4, 2, 0, 0.2),
+            "model3": (3.5, 4, 0.5, 0.5, 0.1)}.items():
+        repro[name] = evo.ore_two_type(R=R, T=Tt, P=P, S=S, xC0=x0,
+                                       tau=1.5, steps=500, sweeps=90)
+
+    # ---- (B) K-유형 HalloReg: 레짐별 RE vs ORE 유역 + adaptive sub_widening ----
+    coop_labels = {"adaptive", "tft", "gtft", "wsls", "allc"}
+    per_reg = {}
+    re_list, ore_list, sw_re_list, sw_ore_list = [], [], [], []
+    for reg in regimes:
+        specs = _ore_type_specs(backend)
+        Pest = estimate_variable_payoff_matrix(specs, reg, T, ore_seeds,
+                                               env_error=0.05, n_jobs=jobs)
+        Pi, names, raw = Pest["Pi"], Pest["names"], Pest["raw"]
+        coop = [i for i, nm in enumerate(names) if nm in coop_labels]
+        rng = np.random.default_rng(stable_seed("oreX", reg))
+        X0 = rng.dirichlet(np.ones(len(names)), size=160)
+        re_b = evo.coop_basin_frac(Pi, coop, X0=X0)
+        ore_b = evo.ore_coop_basin_frac(Pi, coop, X0=X0[:100])
+
+        # adaptive sub_widening: adaptive 슬롯 vs random 슬롯 (Π 재추정)
+        base = {k: dict(v) for k, v in specs.items() if k != "adaptive"}
+        base_rand = dict(base); base_rand["random"] = strat_spec("random", 0)
+        base_ad = dict(base); base_ad["adaptive"] = specs["adaptive"]
+        Pr = estimate_variable_payoff_matrix(base_rand, reg, T, ore_seeds,
+                                             env_error=0.05, n_jobs=jobs)
+        nr = Pr["names"]; coop_r = [i for i, nm in enumerate(nr) if nm in coop_labels]
+        Xr = rng.dirichlet(np.ones(len(nr)), size=160)
+        re_ad = re_b; re_rd = evo.coop_basin_frac(Pr["Pi"], coop_r, X0=Xr)
+        ore_ad = ore_b; ore_rd = evo.ore_coop_basin_frac(Pr["Pi"], coop_r, X0=Xr[:100])
+
+        # Π 시드 부트스트랩으로 RE·ORE 유역 CI
+        def boot_basins(nb=30):
+            rb = np.random.default_rng(stable_seed("oreB", reg))
+            reB, oreB = [], []
+            for _ in range(nb):
+                idx = rb.integers(0, raw.shape[2], raw.shape[2])
+                Pi_b = raw[:, :, idx].mean(axis=2)
+                reB.append(evo.coop_basin_frac(Pi_b, coop, X0=X0[:100]))
+                oreB.append(evo.ore_coop_basin_frac(Pi_b, coop, X0=X0[:60]))
+            return reB, oreB
+        reB, oreB = boot_basins()
+        per_reg[reg] = {
+            "Pi": Pi.tolist(), "names": names,
+            "re_basin": re_b, "ore_basin": ore_b,
+            "re_basin_ci": [float(np.percentile(reB, 2.5)), float(np.percentile(reB, 97.5))],
+            "ore_basin_ci": [float(np.percentile(oreB, 2.5)), float(np.percentile(oreB, 97.5))],
+            "re_sub_widening": float(re_ad - re_rd),
+            "ore_sub_widening": float(ore_ad - ore_rd),
+            "ore_minus_re": float(ore_b - re_b)}
+        re_list.append(re_b); ore_list.append(ore_b)
+        sw_re_list.append(re_ad - re_rd); sw_ore_list.append(ore_ad - ore_rd)
+
+    # 확증 C-ORE1: ORE 유역 > RE 유역 (레짐 짝지음)
+    ore_arr, re_arr = np.array(ore_list), np.array(re_list)
+    t_ore1 = paired_stats(list(ore_arr), list(re_arr), "greater",
+                          seed=stable_seed("core1"))
+    register_primary("ORE", "C-ORE1 ORE 협력유역>RE 협력유역", t_ore1["p"],
+                     bool(ore_arr.mean() > re_arr.mean()),
+                     f"ΔBasin={ore_arr.mean()-re_arr.mean():+.3f}")
+    # 확증 C-ORE2: ORE 하 adaptive sub_widening > 0 (레짐 단일표본)
+    sw_ore = np.array(sw_ore_list)
+    t_ore2 = one_sample_perm(sw_ore, 0.0, alternative="greater", seed=stable_seed("core2"))
+    register_primary("ORE", "C-ORE2 ORE 하 adaptive sub_widening>0", t_ore2["p"],
+                     bool(sw_ore.mean() > 0), f"sub_widening_ORE={sw_ore.mean():.3f}")
+    register_exploratory("ORE", "RE 하 adaptive sub_widening",
+                         one_sample_perm(np.array(sw_re_list), 0.0, alternative="greater",
+                                         seed=stable_seed("oreSWre"))["p"],
+                         f"sub_widening_RE={np.mean(sw_re_list):.3f}")
+
+    return {"regimes": regimes, "T": T, "seeds": ore_seeds,
+            "reproduction": {k: {"re_end": v["re_end"], "ore_end": v["ore_end"],
+                                 "re_xC": v["re_xC"].tolist(), "ore_xC": v["ore_xC"].tolist(),
+                                 "re_fit": v["re_fit"].tolist(), "ore_fit": v["ore_fit"].tolist()}
+                             for k, v in repro.items()},
+            "per_regime": per_reg,
+            "confirmatory": {
+                "C_ORE1_basin": {"delta": float(ore_arr.mean() - re_arr.mean()),
+                                 "p": t_ore1["p"],
+                                 "supported": bool(ore_arr.mean() > re_arr.mean())},
+                "C_ORE2_adaptive_sub_widening": {"sub_widening": float(sw_ore.mean()),
+                                                 "p": t_ore2["p"],
+                                                 "supported": bool(sw_ore.mean() > 0)}},
+            "supported": {"C_ORE1": bool(ore_arr.mean() > re_arr.mean() and t_ore1["p"] < 0.05),
+                          "C_ORE2": bool(sw_ore.mean() > 0 and t_ore2["p"] < 0.05)}}
+
+
 # =================================================================== 시각화
 def _kfont():
     try:
@@ -4009,6 +4427,144 @@ def fig_H9_H10(d, tag=""):
 
 # ==================================================================== main
 # 지평별 실행 실험 (T=60/240 각각) vs 전지평 실험 (내부 T 스윕; 1회 실행)
+# -------------------------------------------------------------- VP / ABA / ORE 그림
+def fig_VP(d, tag=""):
+    _kfont()
+    regs = d["regimes"]; adv = d["advantage"]; basin = d["basin"]
+    fig, ax = plt.subplots(1, 3, figsize=(16, 4.4))
+    # (a) 레짐별 adaptive payoff 우위(best 고정 대비) + CI
+    xs = np.arange(len(regs))
+    means = [adv[r]["mean"] for r in regs]
+    cis = [adv[r]["ci"] for r in regs]
+    cols = ["0.6" if r == "mild_pd" else "C0" for r in regs]
+    bar_ci(ax[0], xs, means, cis, regs, colors=cols)
+    ax[0].axhline(0, color="k", lw=0.8)
+    ax[0].set_title("(a) adaptive payoff 우위 = adaptive − best 고정전략\n"
+                    "[확증 C-VP1] 변동/극단 레짐(파랑)")
+    ax[0].set_ylabel("Δ 라운드당 보수"); ax[0].tick_params(axis="x", rotation=30)
+    _n_note(ax[0], d["seeds"])
+    # (b) 레짐별 focal 유형 payoff 프로파일 (맥락-의존 vs 무감)
+    focal = list(next(iter(d["pay_mean"].values())).keys())
+    for f in focal:
+        ys = [d["pay_mean"][r][f] for r in regs]
+        ax[1].plot(xs, ys, marker="o", label=f,
+                   lw=2.2 if f == "adaptive" else 1.2,
+                   color="C0" if f == "adaptive" else None,
+                   zorder=3 if f == "adaptive" else 1)
+    ax[1].set_xticks(xs); ax[1].set_xticklabels(regs, rotation=30)
+    ax[1].set_title("(b) CI 레짐별 focal 보수 프로파일")
+    ax[1].set_ylabel("라운드당 보수"); ax[1].legend(fontsize=7, ncol=2)
+    # (c) 협력 유역 확장 sub_widening (RE vs ORE)
+    w = 0.38
+    ax[2].bar(xs - w / 2, [basin[r]["re_sub_widening"] for r in regs], w,
+              label="RE sub_widening", color="C1", alpha=0.85)
+    ax[2].bar(xs + w / 2, [basin[r]["ore_sub_widening"] for r in regs], w,
+              label="ORE sub_widening", color="C2", alpha=0.85)
+    ax[2].axhline(0, color="k", lw=0.8)
+    ax[2].set_xticks(xs); ax[2].set_xticklabels(regs, rotation=30)
+    ax[2].set_title("(c) adaptive 협력유역 확장\n[확증 C-VP2] filler=random 대치")
+    ax[2].set_ylabel("Δ 협력 유역 점유"); ax[2].legend(fontsize=8)
+    _save(fig, "vp_variable_payoff" + tag,
+          "§VP 가변 페이오프(연속 협력–경쟁): CI 를 극단(음수·1 이상)까지 변동시키는 "
+          "환경에서 맥락-의존 효용을 계산하는 adaptive 가 payoff-무감 고정전략 대비 얻는 "
+          "성능 우위(a,b)와 협력 유역 확장(c; RE·ORE). 고정 mild_pd(회색) 대비 변동/극단 "
+          "레짐에서 우위가 나타남 — H7/H8E/H12 '고정 payoff' 교란 제거.",
+          f"seeds={d['seeds']}, T={d['T']}")
+
+
+def fig_ABA(d, tag=""):
+    _kfont()
+    Tref = d["Tref"]; ref = d["by_T"][Tref]; third = ref["third"]
+    FORG = d["forg_levels"]; forg = ref["forg"]
+    fig, ax = plt.subplots(1, 3, figsize=(16, 4.4))
+    # (a) pred_coop 궤적 (A→B→A): 저용서 vs 고용서 (히스테리시스 vs 복구)
+    lo, hi = min(FORG), max(FORG)
+    band(ax[0], forg[lo]["pred_coop"], f"용서={lo} (저)", color="C3", ls="--")
+    band(ax[0], forg[hi]["pred_coop"], f"용서={hi} (고)", color="C0")
+    for c in (third, 2 * third):
+        ax[0].axvline(c, color="0.5", ls=":", lw=1)
+    ax[0].set_title("(a) 상대 협력확률 추론 pred_coop\nA(협력)→B(착취)→A(협력)")
+    ax[0].set_xlabel("라운드"); ax[0].set_ylabel("pred_coop"); ax[0].legend(fontsize=8)
+    ax[0].annotate("A1", (third * 0.4, 0.03), color="0.4")
+    ax[0].annotate("B", (third * 1.4, 0.03), color="0.4")
+    ax[0].annotate("A3", (third * 2.4, 0.03), color="0.4")
+    _n_note(ax[0], forg[hi]["pred_coop"].shape[0])
+    # (b) 용량-반응: 용서별 복구오차 + CC 복원비 [확증 C-ABA1/2]
+    xs = np.arange(len(FORG))
+    rec_means = [forg[fg]["rec_err"].mean() for fg in FORG]
+    rec_cis = [boot_mean_ci(forg[fg]["rec_err"], seed=i)["ci"] for i, fg in enumerate(FORG)]
+    bar_ci(ax[1], xs, rec_means, rec_cis, [str(f) for f in FORG], colors="C0")
+    ax[1].axhline(0.15, color="k", ls="--", lw=1, label="복구 임계 0.15")
+    ax[1].set_title("(b) 복구오차 vs 용서(재탐색)\n[확증 C-ABA2 기울기<0, C-ABA1 高용서<0.15]")
+    ax[1].set_xlabel("용서(forgiveness)"); ax[1].set_ylabel("복구오차 |pc(A3)−pc(A1)|")
+    ax[1].legend(fontsize=8); _n_note(ax[1], len(forg[FORG[0]]["rec_err"]))
+    # (c) CC 복원: A1 vs A3, 용서 수준 + 절제/베이스라인
+    groups = [f"용서{f}" for f in FORG] + list(ref["abl"].keys()) + list(ref["base_cc"].keys())
+    cc1, cc3 = [], []
+    for fg in FORG:
+        cc1.append(forg[fg]["cc_A1"].mean()); cc3.append(forg[fg]["cc_A3"].mean())
+    for name, m in ref["abl"].items():
+        cc1.append(m["cc_A1"].mean()); cc3.append(m["cc_A3"].mean())
+    for b, m in ref["base_cc"].items():
+        cc1.append(m["cc_A1"].mean()); cc3.append(m["cc_A3"].mean())
+    xg = np.arange(len(groups)); w = 0.4
+    ax[2].bar(xg - w / 2, cc1, w, label="phase A1(전)", color="0.7")
+    ax[2].bar(xg + w / 2, cc3, w, label="phase A3(복귀)", color="C0")
+    ax[2].set_xticks(xg); ax[2].set_xticklabels(groups, rotation=35, ha="right", fontsize=7)
+    ax[2].set_title("(c) CC 복원: A1 vs A3")
+    ax[2].set_ylabel("CC 율"); ax[2].legend(fontsize=8)
+    _save(fig, "aba_intent_recovery" + tag,
+          "§ABA A→B→A 의도 전환 추적 복구: 배신(B) 후 자기보호 고착으로 A 복귀 시 "
+          "자동 복구가 일어나지 않는 히스테리시스(배신 후 선택적 관측 함정)를, 용서"
+          "(재탐색) 수준이 게이팅한다. 高용서에서 pred_coop·CC 가 복원되며(a,c), 복구"
+          "오차는 용서에 단조 감소한다(b, 용량-반응). β-절제·통제권·비-ToM 는 대조.",
+          f"seeds={len(forg[FORG[0]]['rec_err'])}, T={Tref}")
+
+
+def fig_ORE(d, tag=""):
+    _kfont()
+    repro = d["reproduction"]; per = d["per_regime"]; regs = d["regimes"]
+    fig, ax = plt.subplots(1, 3, figsize=(16, 4.4))
+    # (a) Bravetti Fig.1 재현: model1 의 RE vs ORE x_C(t)
+    for m, color in [("model1", "C0"), ("model2", "C1"), ("model3", "C2")]:
+        r = repro[m]
+        t = np.linspace(0, 1, len(r["re_xC"]))
+        ax[0].plot(t, r["re_xC"], color=color, ls="--", lw=1.4,
+                   label=f"{m} RE")
+        ax[0].plot(t, r["ore_xC"], color=color, ls="-", lw=2.0,
+                   label=f"{m} ORE")
+    ax[0].set_title("(a) Bravetti&Padilla 재현: 협력자 빈도 x_C(t)\nRE(점선)→소멸, ORE(실선)→창발")
+    ax[0].set_xlabel("정규화 시간 t/τ"); ax[0].set_ylabel("x_C"); ax[0].legend(fontsize=7, ncol=3)
+    ax[0].set_ylim(-0.02, 1.02)
+    # (b) 레짐별 RE vs ORE 협력 유역 (CI 오차막대)
+    xs = np.arange(len(regs)); w = 0.38
+    re_m = [per[r]["re_basin"] for r in regs]; ore_m = [per[r]["ore_basin"] for r in regs]
+    re_ci = [per[r]["re_basin_ci"] for r in regs]; ore_ci = [per[r]["ore_basin_ci"] for r in regs]
+    err_re = np.array([[max(0.0, m - c[0]), max(0.0, c[1] - m)]
+                       for m, c in zip(re_m, re_ci)]).T
+    err_ore = np.array([[max(0.0, m - c[0]), max(0.0, c[1] - m)]
+                        for m, c in zip(ore_m, ore_ci)]).T
+    ax[1].bar(xs - w / 2, re_m, w, yerr=err_re, capsize=3, label="RE", color="C1", alpha=0.85)
+    ax[1].bar(xs + w / 2, ore_m, w, yerr=err_ore, capsize=3, label="ORE", color="C2", alpha=0.85)
+    ax[1].set_xticks(xs); ax[1].set_xticklabels(regs, rotation=20)
+    ax[1].set_title("(b) 협력 유역: RE vs ORE\n[확증 C-ORE1] ORE>RE")
+    ax[1].set_ylabel("협력 유역 점유"); ax[1].legend(fontsize=8)
+    # (c) adaptive sub_widening: RE vs ORE (레짐별)
+    sw_re = [per[r]["re_sub_widening"] for r in regs]
+    sw_ore = [per[r]["ore_sub_widening"] for r in regs]
+    ax[2].bar(xs - w / 2, sw_re, w, label="RE", color="C1", alpha=0.85)
+    ax[2].bar(xs + w / 2, sw_ore, w, label="ORE", color="C2", alpha=0.85)
+    ax[2].axhline(0, color="k", lw=0.8)
+    ax[2].set_xticks(xs); ax[2].set_xticklabels(regs, rotation=20)
+    ax[2].set_title("(c) adaptive 한계 기여 sub_widening\n[확증 C-ORE2] ORE 하 > 0")
+    ax[2].set_ylabel("Δ 협력 유역 점유"); ax[2].legend(fontsize=8)
+    _save(fig, "ore_optimal_replicator" + tag,
+          "§ORE 집단 수준 경쟁(Optimal Replicator Equation; Bravetti&Padilla 2018): "
+          "2-유형 재현(a; RE→배신 지배, ORE→협력 창발), K-유형 HalloReg 에서 ORE 가 "
+          "협력 유역을 RE 대비 넓히고(b), adaptive 의 한계 기여가 ORE 하에서 뚜렷(c).",
+          f"seeds={d['seeds']}, T={d['T']}")
+
+
 EXPERIMENTS = {
     "H1": (exp_H1, fig_H1),
     "H2H3": (exp_H2_H3, fig_H2_H3),
@@ -4023,8 +4579,11 @@ EXPERIMENTS = {
     "H11": (exp_H11, fig_H11),
     "H12": (exp_H12, fig_H12),
     "GS": (exp_GS, fig_GS),
+    "VP": (exp_VP, fig_VP),
+    "ABA": (exp_ABA, fig_ABA),
+    "ORE": (exp_ORE, fig_ORE),
 }
-GLOBAL_EXPERIMENTS = {"H7H", "H8E", "H12"}   # 내부 err/T 스윕 — rounds 목록을 통째로 전달
+GLOBAL_EXPERIMENTS = {"H7H", "H8E", "H12", "VP", "ABA", "ORE"}   # 내부 err/T/레짐 스윕 — rounds 목록을 통째로 전달
 
 
 def _jsonable(o):

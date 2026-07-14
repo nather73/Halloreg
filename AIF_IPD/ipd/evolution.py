@@ -33,6 +33,160 @@ from AIF_IPD.ipd.sim import run_many
 LOGGER = get_logger("HalloReg.evolution")
 
 
+# ------------------------------------------------- Optimal Replicator Equation
+# Bravetti & Padilla (2018), "An optimal strategy to solve the Prisoner's Dilemma"
+# (Sci. Rep. 8:1948). 표준 RE 는 **개체 수준** 선택만 담고, T>R>P>S 인 한 항상
+# 배신자가 협력자를 지배한다. ORE 는 진화가 개체 수준(빠른 시간척도)뿐 아니라
+# **경쟁하는 집단 수준**(느린 시간척도)에서도 작동한다는 가정 하에, 최종 평균
+# 적합도 g(x(τ))=xᵀΠx 를 최대화하는 최적제어 문제로 RE 를 확장한다. 그 결과
+# 적합도(=제어변수)를 공상태(co-state) p 로 갖는 확장계가 얻어진다:
+#
+#     forward   ẋ_a = x_a (p_a − ⟨p⟩)                    x(0)=x0                (개체 선택)
+#     backward  ṗ_a = ⟨p⟩ p_a − ½ p_a²                    p(τ)=∇g(x(τ))          (집단 선택)
+#     terminal  p_a(τ) = ∂g/∂x_a = ((Π+Πᵀ) x(τ))_a
+#
+# 협력은 p_C>p_D 일 때 창발하며, 이 공상태가 '집단이 최종적으로 나눌 큰 보상'을
+# 시간의 역방향으로 실어나른다 → 이기적 개체도 협력을 택한다. 2-유형 PD 에서
+# 조건 2R≥T, 2P≥T 하에 협력 고정점 x_C=1 이 점근 안정.
+#
+# 본 구현은 최적제어 경계값문제(BVP)를 forward-backward sweep(FBSM)으로 푼다.
+# K-유형으로 자연 일반화하여, 동일 Π 위에서 RE 유역과 ORE 유역을 짝지어 비교한다
+# (§ORE: 집단 수준 경쟁이 협력 유역을 넓히는가).
+
+def _grad_g(Pi: np.ndarray, x: np.ndarray) -> np.ndarray:
+    """최종 평균적합도 g(x)=xᵀΠx 의 기울기 ∇g = (Π+Πᵀ)x (터미널 공상태)."""
+    return (Pi + Pi.T) @ x
+
+
+def ore_trajectory(Pi: np.ndarray, x0: Sequence[float], tau: float = 1.0,
+                   steps: int = 400, sweeps: int = 60, relax: float = 0.5,
+                   tol: float = 1e-7) -> Dict:
+    """
+    K-유형 ORE 궤적을 FBSM 으로 계산. 반환:
+      x     : (steps+1, k)   개체 조성 궤적
+      p     : (steps+1, k)   공상태 궤적
+      x_end : (k,)           종착 조성 x(τ)
+      converged, sweeps_used, resid
+    """
+    x0 = np.clip(np.asarray(x0, float), 1e-12, None); x0 = x0 / x0.sum()
+    k = len(x0)
+    dt = tau / steps
+    # 공상태 발산(Riccati형 ṗ=⟨p⟩p−½p² 는 유한시간 폭발 가능) 방지용 클램프 범위:
+    # 보수 규모의 배수로 상한. 유역 판정은 종착 조성 부호에만 의존하므로 클램프는
+    # 정성적 결론을 바꾸지 않되 수치 안정성을 확보한다.
+    p_bound = 20.0 * max(1.0, float(np.max(np.abs(_grad_g(Pi, np.ones(k) / k)))),
+                         float(np.max(np.abs(Pi))))
+    x = np.tile(x0, (steps + 1, 1))
+    # 공상태 초기 추정: 모든 시점에서 x0 기준 터미널값
+    p = np.tile(_grad_g(Pi, x0), (steps + 1, 1))
+    prev = None
+    used = sweeps
+    resid = np.inf
+    for it in range(sweeps):
+        # --- forward: x ---
+        x[0] = x0
+        for n in range(steps):
+            pm = float(x[n] @ p[n])                         # ⟨p⟩
+            dx = x[n] * (p[n] - pm)
+            xn = np.clip(x[n] + dt * dx, 1e-12, None)
+            x[n + 1] = xn / xn.sum()
+        # --- backward: p (terminal at n=steps) ---
+        p_new = p.copy()
+        p_new[steps] = np.clip(_grad_g(Pi, x[steps]), -p_bound, p_bound)
+        for n in range(steps, 0, -1):
+            pm = float(x[n] @ p_new[n])                     # ⟨p⟩
+            dpdt = pm * p_new[n] - 0.5 * p_new[n] ** 2       # ṗ_a
+            p_new[n - 1] = np.clip(p_new[n] - dt * dpdt,
+                                   -p_bound, p_bound)         # 역방향 오일러 + 클램프
+        # --- 완화(relaxation) ---
+        p = (1 - relax) * p + relax * p_new
+        if prev is not None:
+            resid = float(np.max(np.abs(p - prev)))
+            if resid < tol:
+                used = it + 1
+                break
+        prev = p.copy()
+    return {"x": x, "p": p, "x_end": x[steps].copy(),
+            "converged": resid < tol, "sweeps_used": used, "resid": resid}
+
+
+def ore_ends_batch(Pi: np.ndarray, X0: np.ndarray, tau: float = 1.0,
+                   steps: int = 220, sweeps: int = 30, relax: float = 0.5) -> np.ndarray:
+    """
+    다수 초기점의 ORE 종착 조성만 반환 (N, k) — 유역 부트스트랩용.
+
+    **초기점 전체를 벡터화**한 FBSM: 상태 x·공상태 p 를 (steps+1, N, k) 텐서로 두고
+    시간에 대한 순차 적분만 남긴다(초기점 축은 완전 병렬). 초기점 N 개 각각을 별도
+    호출하던 방식 대비 ~N× 가속.
+    """
+    X0 = np.clip(np.asarray(X0, float), 1e-12, None)
+    X0 = X0 / X0.sum(axis=1, keepdims=True)
+    N, k = X0.shape
+    dt = tau / steps
+    G = Pi + Pi.T                                            # 대칭 (∇g = G x)
+    p_bound = 20.0 * max(1.0, float(np.max(np.abs(G @ (np.ones(k) / k)))),
+                         float(np.max(np.abs(Pi))))
+    x = np.tile(X0, (steps + 1, 1, 1))                      # (S+1, N, k)
+    p = np.tile(X0 @ G.T, (steps + 1, 1, 1))               # 터미널값으로 초기화
+    prev = None
+    for _ in range(sweeps):
+        # forward: x
+        x[0] = X0
+        for n in range(steps):
+            pm = np.einsum("nk,nk->n", x[n], p[n])[:, None]  # ⟨p⟩ (N,1)
+            xn = np.clip(x[n] + dt * (x[n] * (p[n] - pm)), 1e-12, None)
+            x[n + 1] = xn / xn.sum(axis=1, keepdims=True)
+        # backward: p (terminal at steps)
+        p_new = p.copy()
+        p_new[steps] = np.clip(x[steps] @ G.T, -p_bound, p_bound)
+        for n in range(steps, 0, -1):
+            pm = np.einsum("nk,nk->n", x[n], p_new[n])[:, None]
+            dpdt = pm * p_new[n] - 0.5 * p_new[n] ** 2
+            p_new[n - 1] = np.clip(p_new[n] - dt * dpdt, -p_bound, p_bound)
+        p = (1 - relax) * p + relax * p_new
+        if prev is not None and float(np.max(np.abs(p - prev))) < 1e-6:
+            break
+        prev = p.copy()
+    return x[steps].copy()
+
+
+def ore_coop_basin_frac(Pi: np.ndarray, coop_idx: Sequence[int],
+                        n_samples: int = 200, tau: float = 1.0, steps: int = 220,
+                        sweeps: int = 30, seed: int = 0,
+                        X0: Optional[np.ndarray] = None) -> float:
+    """
+    ORE 하 협력 유역 점유율: Dirichlet(1) 초기점(또는 주어진 X0)에서 ORE 종착
+    조성의 협력 점유(coop_idx 합) > 0.5 인 비율. 동일 X0 를 RE 유역과 공유하면
+    '집단 수준 경쟁 도입이 협력 유역을 얼마나 넓히는가'를 짝지어 비교할 수 있다.
+    """
+    k = Pi.shape[0]
+    if X0 is None:
+        rng = np.random.default_rng(seed)
+        X0 = rng.dirichlet(np.ones(k), size=n_samples)
+    ends = ore_ends_batch(Pi, X0, tau=tau, steps=steps, sweeps=sweeps)
+    return float(np.mean(ends[:, list(coop_idx)].sum(axis=1) > 0.5))
+
+
+def ore_two_type(R: float, T: float, P: float, S: float, xC0: float,
+                 tau: float = 1.0, steps: int = 400, sweeps: int = 80) -> Dict:
+    """
+    2-유형(C,D) PD 의 RE vs ORE 궤적 (Bravetti & Padilla Fig.1/2 재현).
+    Π=[[R,S],[T,P]]. 반환: RE·ORE 의 x_C(t)·평균적합도(t).
+    """
+    Pi = np.array([[R, S], [T, P]], float)
+    x0 = np.array([xC0, 1 - xC0])
+    # RE
+    re = replicator_trajectory(Pi, x0, steps=steps)
+    re_fit = np.einsum("ti,ij,tj->t", re, Pi, re)
+    # ORE
+    o = ore_trajectory(Pi, x0, tau=tau, steps=steps, sweeps=sweeps)
+    ore_x = o["x"]
+    ore_fit = np.einsum("ti,ij,tj->t", ore_x, Pi, ore_x)
+    return {"Pi": Pi, "re_xC": re[:, 0], "ore_xC": ore_x[:, 0],
+            "re_fit": re_fit, "ore_fit": ore_fit,
+            "re_end": float(re[-1, 0]), "ore_end": float(ore_x[-1, 0])}
+
+
 # ---------------------------------------------------------------- Π 추정
 def estimate_payoff_matrix(type_specs: Dict[str, dict], n_rounds: int,
                            seeds: int, n_jobs: int,

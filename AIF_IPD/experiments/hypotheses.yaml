@@ -169,3 +169,66 @@ hypotheses:
       2^4 연립)·ALLD 침입장벽 심화 Δg(random 앵커 대비 치환 회계)·R-K 변덕
       대응의 정교(adaptive) vs 즉각(adaptive_imm) 분해(H5 연결)·H8E(고변덕·
       저중복)와 H11(무변덕·고중복)을 곡면 위 두 점으로 재현·정위.
+
+  # ===========================================================================
+  # v0.6 확장 (가변 페이오프 · A-B-A 의도복구 · 최적복제자) — §VP/§ABA/§ORE
+  # ===========================================================================
+  VP:
+    primary: variable_payoff_advantage   # 결합가설 — C-VP1 AND C-VP2
+    test: one_sample_perm                # 시변 레짐 통합 단일표본(부호뒤집기)
+    direction: cvp1_pos_and_cvp2_pos
+    confirm_C_VP1: payoff_advantage_variable   # 시변 레짐에서 adaptive − best 고정전략 > 0
+    confirm_C_VP2: basin_widening_variable     # 시변 레짐에서 협력 유역 sub_widening(RE) > 0
+    rationale: >
+      가변 페이오프(연속 협력–경쟁; Pisauro et al. 2022 Space Dilemma B6). H7·H8E·
+      H12 의 '고정 payoff·이분법' 교란을 제거하기 위해 협력지수 CI=(R−P)/(T−S)를
+      극단(음수 교착·1 이상 조화)까지 라운드별 변동시킨다. 맥락-의존 효용을 계산하는
+      adaptive 는, 어떤 단일 고정전략도 전 맥락에서 최적일 수 없는 **시변(time-
+      varying) 레짐**(oscillate·blocks·aba)에서 우위를 가져야 한다(고정-극단 레짐은
+      대조군). '최고 고정전략' 은 시드별 max(승자의 저주 편향)가 아니라 평균 최고
+      전략 1개를 골라 짝짓는다. 협력 유역은 제거가 아니라 중립 filler(random) 대치로
+      측정(H12 원칙 B): sub_widening = coop_basin(슬롯=adaptive) − coop_basin(슬롯=
+      random). RE·ORE 유역을 병기한다. 확증: C-VP1 시변 레짐 payoff 우위>0(단일표본
+      순열, 부트 CI 0 배제), C-VP2 시변 레짐 RE sub_widening>0. 정직 보고: 고정-극단
+      레짐(harsh/harmony/deadlock)에서는 최적 고정전략과 대등할 수 있으며(우위 없음이
+      정상), 이는 adaptive 의 이점이 '맥락 변동에 대한 강건성' 임을 보인다.
+      탐색: 레짐별 우위 분해·ORE sub_widening·맥락(CI) 베이지안 추정.
+  ABA:
+    primary: intent_recovery              # 결합가설 — C-ABA1 AND C-ABA2
+    test: dose_response_slope             # 용서 스윕 회귀 기울기 + 高용서 단일표본
+    direction: caba1_recovered_and_caba2_neg_slope
+    confirm_C_ABA1: high_forgiveness_recovery   # 高용서: 복구오차<0.15 & CC복원비>0.70
+    confirm_C_ABA2: forgiveness_dose_response   # 복구오차∼용서 기울기<0 (부트 CI 상한<0)
+    rationale: >
+      A→B→A 의도 전환 추적 복구(상대: 협력적 상호성 A=TFT → 착취 B=ALLD → 다시 A).
+      **정직 보고 — 사전 예상과 상반된 기제**: 완전한 allostatic 에이전트는 배신(B)
+      후 자기보호 상태에 고착되어 A 복귀 시 자동으로 협력을 재개하지 **않는다**
+      (히스테리시스). 자기 방어적 배신이 상대의 개심을 관측할 기회를 스스로 차단하는
+      '배신 후 선택적 관측' 함정(Selective observation following betrayal)의 재현이다.
+      복구는 **용서(forgiveness)=재탐색 성향**에 의해 게이팅된다. 따라서 확증을
+      '복구가 무조건 일어난다'가 아니라 '복구가 용서에 의해 용량-반응적으로
+      가능해진다'로 조작화한다. C-ABA1: 충분한 용서(0.30)에서 pred_coop 복구오차<0.15
+      이고 CC 복원비 CC(A3)/CC(A1)>0.70. C-ABA2: 복구오차가 용서 수준에 단조 감소
+      (기울기<0, replicate-수준 부트 CI 상한<0). 확증은 최장 지평에서 판정(짧은
+      지평은 국면이 짧아 복구 관측 불충분). 탐색: β-맥락 절제(복구의 β-귀인 필요성)·
+      통제권 on/off·비-ToM 베이스라인 행동 복구·자기충족 함정(A3 배신율→복구실패
+      기울기, 저용서에서 강함).
+  ORE:
+    primary: ore_basin_expansion          # 결합가설 — C-ORE1 AND C-ORE2
+    test: paired_perm_and_one_sample      # 레짐 짝지음 + 단일표본
+    direction: core1_ore_gt_re_and_core2_pos
+    confirm_C_ORE1: ore_basin_gt_re        # ORE 협력 유역 > RE 협력 유역 (레짐 짝지음)
+    confirm_C_ORE2: adaptive_sub_widening_ore  # ORE 하 adaptive sub_widening > 0
+    rationale: >
+      최적복제자방정식(Optimal Replicator Equation; Bravetti & Padilla 2018). 표준
+      RE 는 개체 수준 선택만 담아 T>R>P>S 하 항상 배신자가 지배하나, ORE 는 진화가
+      집단 수준 경쟁(느린 시간척도)에서도 작동한다는 가정으로 최종 평균적합도
+      g(x(τ))=xᵀΠx 최대화 최적제어 문제로 RE 를 확장한다(공상태 p 가 '집단이 최종
+      나눌 보상'을 역방향으로 실어나름 → 이기적 개체도 협력). 확증: C-ORE1 동일 Π·
+      초기점에서 ORE 협력 유역 > RE 협력 유역(CI 레짐 전반 짝지은 순열), C-ORE2 ORE
+      하 adaptive 의 한계 기여 sub_widening(슬롯=adaptive vs random)>0. 재현 검증
+      (탐색): Bravetti Fig.1 2-유형(RE→배신 지배, ORE→협력 창발). FBSM(forward-
+      backward sweep)으로 경계값문제를 풀되 공상태 폭발(Riccati형)은 보수 규모 배수로
+      클램프(유역 판정은 종착 조성 부호에만 의존해 정성 결론 불변). 초기점 전체를
+      벡터화해 N× 가속. 정직 보고: deadlock(CI<0) 레짐은 RE 유역=0 이나 ORE 유역>0 —
+      집단 수준 경쟁이 교착에서도 협력을 구제함을 보이는 강한 사례.

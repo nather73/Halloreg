@@ -74,6 +74,35 @@ def set_coop_index(ci: float | None):
                        (DEFECT, COOP): (T, S), (DEFECT, DEFECT): (P, P)})
 
 
+def set_payoffs(ci: float, strict: bool = False) -> tuple:
+    """
+    협력지수 CI=(R−P)/(T−S) 로 보수를 재설정하되, **극단 영역(CI<0, CI≥1)까지
+    허용**한다 (가변 페이오프 환경용; §VP).
+
+    T=5, S=0, P=1 고정, R = P + CI·(T−S) = 1 + 5·CI.
+      · CI<0    : R<P — 상호협력이 상호배신보다 나쁨(교착/deadlock 류 게임).
+      · CI=0.4  : 현행 PD (2R=6>T+S=5).
+      · CI=1    : R=6>T=5 — 협력이 우월(조화/harmony 게임).
+      · CI>1    : 더 강한 협력 우월.
+    strict=True 이면 유효 PD 조건(T>R>P>S)을 강제(set_coop_index 와 동일).
+
+    **in-place** 로 PAYOFF_SELF/PAYOFF_OTHER/PD_PAYOFFS 를 갱신하므로, 라운드마다
+    호출하면 에이전트의 EFE 가 **현재 맥락의 효용**을 반영한다(맥락-의존 효용).
+    반환: (R, T, S, P).
+    """
+    global R, P
+    ci = float(ci)
+    R_new = 1.0 + ci * (T - S)
+    if strict and not (T > R_new > P > S):
+        raise ValueError(f"유효하지 않은 협력지수 {ci}")
+    R = R_new
+    PAYOFF_SELF[:] = [R, S, T, P]
+    PAYOFF_OTHER[:] = [R, T, S, P]
+    PD_PAYOFFS.update({(COOP, COOP): (R, R), (COOP, DEFECT): (S, T),
+                       (DEFECT, COOP): (T, S), (DEFECT, DEFECT): (P, P)})
+    return (R, T, S, P)
+
+
 def joint_index(my_act: int, opp_act: int) -> int:
     """(내 행동, 상대 행동) -> joint-outcome 상태 인덱스."""
     return int(my_act) * 2 + int(opp_act)

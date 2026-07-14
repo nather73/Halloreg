@@ -27,9 +27,10 @@ import numpy as np
 
 from AIF_IPD.core.constants import (
     CC, CD, DC, DD, COOP, DEFECT,
-    opponent_action_from_state,
+    opponent_action_from_state, my_action_from_state,
 )
 from AIF_IPD.core.allostasis import CoreAllostaticBeliefState, LambdaRegulator
+from AIF_IPD.core.controllability import ControllabilityAttribution
 from AIF_IPD.core.logging_utils import get_logger
 from .tom import (
     OpponentInversion, ObservationContext, TheoryOfMind, GatedToM,
@@ -88,6 +89,7 @@ class ToMEmpathicAgent:
             "E_alpha": [], "E_rho": [], "E_beta": [], "E_lambda_j": [],
             "grievance": [], "trust": [], "belief_update": [],
             "disp_credence": [], "ctx_credence": [],
+            "control": [], "w_other": [], "sPE": [], "oPE": [],
         }
 
     # ------------------------------------------------------------ 조절 훅
@@ -166,6 +168,10 @@ class ToMEmpathicAgent:
         self.log["belief_update"].append(bu)
         self.log["disp_credence"].append(reg_info.get("disp_credence", 0.0))
         self.log["ctx_credence"].append(reg_info.get("ctx_credence", 0.0))
+        self.log["control"].append(reg_info.get("control", 1.0))
+        self.log["w_other"].append(reg_info.get("w_other", 1.0))
+        self.log["sPE"].append(reg_info.get("sPE", 0.0))
+        self.log["oPE"].append(reg_info.get("oPE", 0.0))
         return action
 
     def _plan_action(self, ctx: ObservationContext, lam: float) -> int:
@@ -203,6 +209,8 @@ class AdaptiveAgent(ToMEmpathicAgent):
                  dd_charges_grievance: Optional[bool] = None,
                  grievance_decay: Optional[float] = None,
                  beta_clamp: bool = False,
+                 controllability: bool = False,
+                 controllability_kwargs: Optional[dict] = None,
                  name: str = "Adaptive", **kwargs):
         super().__init__(lam_base=lam_base, name=name, **kwargs)
         self.regulate_lambda = regulate_lambda
@@ -213,6 +221,11 @@ class AdaptiveAgent(ToMEmpathicAgent):
             prior_reliability=prior_reliability)
         # 초기 신뢰도 가중치를 입자필터에 반영(사전 재표집: 귀인 성향이 사전을 조형)
         self.inversion.set_reliability(self.core.reliability_weights(), reinit=True)
+
+        # 자기/타인 통제권 귀인 (Spiering 2025; 선택적 — 기본 off 로 H1–H12 보존)
+        self.controllability = (
+            ControllabilityAttribution(**(controllability_kwargs or {}))
+            if controllability else None)
 
         # λ 조절기 (vmPFC/rmPFC/dmPFC 통합)
         reg_kw = dict(lam_base=lam_base, lam_max=lam_max,
@@ -240,16 +253,30 @@ class AdaptiveAgent(ToMEmpathicAgent):
             self.pred_coop_prev if opp_action == COOP else (1 - self.pred_coop_prev),
             1e-6))
 
+        # (a0) 자기/타인 통제권 귀인 (Spiering 2025): 결과가 자기-기인인지 타인-기인인지
+        #      분할해 타인-귀인 가중치 w_other 를 산출. intended=직전 선택 행동,
+        #      emitted=관측 상태에 인코딩된 실제 방출 행동(환경오류 반영).
+        attr_gate = 1.0
+        ctrl_info = {"control": 1.0, "w_other": 1.0, "sPE": 0.0, "oPE": 0.0,
+                     "self_caused": 0.0}
+        if self.controllability is not None:
+            emitted = my_action_from_state(observed_state)
+            ctrl_info = self.controllability.update(
+                intended_action=self.my_last, emitted_action=emitted,
+                observed_state=observed_state, total_pe=surprise)
+            attr_gate = ctrl_info["w_other"]
+
         # (a) core allostatic belief 갱신 (원인 귀인 분포)
         self.core.update(betrayal, opp_cooperated, inferred, surprise,
-                         opp_defected=opp_defected)
+                         opp_defected=opp_defected, attr_gate=attr_gate)
         # (b) 갱신된 신뢰도 가중치를 입자필터 jitter 에 반영(온라인; 재표집 없음)
         self.inversion.set_reliability(self.core.reliability_weights())
 
         # (c) λ 위계적 조절 (즉각형은 DD 도 기질 증거로 충전 — H5 조작화)
         out = self.regulator.step(
             betrayal, opp_cooperated, inferred, self.pred_coop_prev,
-            self.core, regulate=self.regulate_lambda, opp_defected=opp_defected)
+            self.core, regulate=self.regulate_lambda, opp_defected=opp_defected,
+            attr_gate=attr_gate)
         self.lam = out["lam"]
 
         return {
@@ -257,4 +284,8 @@ class AdaptiveAgent(ToMEmpathicAgent):
             "trust": out["trust"],
             "disp_credence": self.core.dispositional_credence(),
             "ctx_credence": self.core.contextual_credence(),
+            "control": ctrl_info["control"],
+            "w_other": ctrl_info["w_other"],
+            "sPE": ctrl_info["sPE"],
+            "oPE": ctrl_info["oPE"],
         }
