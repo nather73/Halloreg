@@ -1733,39 +1733,43 @@ def exp_H8E(seeds, rounds, jobs, backend):
     x0s["alld_heavy"] = x_alld
     trajs, attractors, basins = {}, {}, {}
     n_basin = 40 if quick else 400
+    n_attr = 150 if quick else 1500       # [v0.6.3] 끌개 구성: 층화 표집, n=1500
     for T in Ts:
         Pi = est[(primary_err, T)]["Pi"]
         trajs[T] = {lbl: evo.replicator_trajectory(Pi, x0, steps=500)
                     for lbl, x0 in x0s.items()}
         attractors[T] = evo.attractor_analysis(
-            Pi, names, n_samples=n_basin, steps=800,
+            Pi, names, n_samples=n_attr, steps=800,
             seed=stable_seed("attr", T))
         top = attractors[T]["attractors"][:3]
         register_exploratory(
-            "H8E", f"끌개 구조 (T={T})", 1.0,
-            "; ".join(f"유역 {a['basin_frac']:.2f} → " + ", ".join(
+            "H8E", f"끌개 구조 (T={T}; 층화 n={n_attr})", 1.0,
+            "; ".join(f"균등유역 {a['basin_frac']:.2f}/코너유입 {a['corner_frac_conv']:.2f}"
+                      " → " + ", ".join(
                 f"{names[i]}={c:.2f}" for i, c in enumerate(a["composition"])
                 if c > 0.05) for a in top))
+        # 코너 강건성: 유형별 지배 초기 집단이 1위 끌개로 흡수되는 비율
+        cc_conv = attractors[T]["corner_convergence"]
+        register_exploratory(
+            "H8E", f"코너 강건성 (T={T})", 1.0,
+            "; ".join(f"{nm}→A0:{d.get(0, 0.0):.2f}"
+                      for nm, d in sorted(cc_conv.items())))
     for (err, T), e in est.items():
-        Pi = e["Pi"]
-        bw = evo.basin_analysis(Pi, names, n_samples=n_basin,
-                                seed=802, coop_types=coop_idx)
+        Pi = e["Pi"]; CCm = e["CC"]
         keep = [i for i in range(k) if i not in (i_ad, i_imm)]
-        names_wo = [names[i] for i in keep]
-        coop_wo = [names_wo.index(t) for t in
-                   ("tit_for_tat", "generous_tft", "generous_tft_count",
-                    "wsls", "allc")]
-        bo = evo.basin_analysis(Pi[np.ix_(keep, keep)], names_wo,
-                                n_samples=n_basin, seed=802,
-                                coop_types=coop_wo)
-        basins[(err, T)] = {"with": bw["coop_basin_frac"],
-                            "without": bo["coop_basin_frac"],
-                            "widening": float(bw["coop_basin_frac"]
-                                              - bo["coop_basin_frac"])}
+        rng_b = np.random.default_rng(802)
+        X0 = rng_b.dirichlet(np.ones(k), size=n_basin)
+        X0k = rng_b.dirichlet(np.ones(len(keep)), size=n_basin)
+        # [지표 개정 A] 이분 유역 → 종착 조성의 행동적 CC율 xᵀ·CCm·x.
+        cc_with = evo.re_terminal_cc(Pi, CCm, X0)
+        cc_without = evo.re_terminal_cc(Pi[np.ix_(keep, keep)],
+                                        CCm[np.ix_(keep, keep)], X0k)
+        basins[(err, T)] = {"with": cc_with, "without": cc_without,
+                            "widening": float(cc_with - cc_without)}
     for T in Ts:
         b = basins[(primary_err, T)]
-        register_exploratory("H8E", f"협력 유역 확장 (T={T}, adaptive 유−무)",
-                             1.0, f"Δbasin={b['widening']:+.3f} "
+        register_exploratory("H8E", f"협력 CC-widening (T={T}, adaptive 유−무)",
+                             1.0, f"ΔCC={b['widening']:+.3f} "
                              f"({b['with']:.2f} vs {b['without']:.2f})")
 
     # 3-유형 부분계 상태공간: (adaptive, alld, tit_for_tat) / (adaptive, alld, allc)
@@ -1814,7 +1818,7 @@ def exp_H8E(seeds, rounds, jobs, backend):
         "reverse_alld_repelled": {
             f"T{T}": bool(reverse[(primary_err, T)]["alld"]["pure"]["ci"][1] < 0)
             for T in Ts},
-        "basin_widening_positive": {
+        "cc_widening_positive": {
             f"T{T}": bool(basins[(primary_err, T)]["widening"] > 0) for T in Ts},
     }
     LOGGER.info("[H8E] → %s", supported)
@@ -2115,7 +2119,7 @@ def exp_H11(seeds, rounds, jobs, backend):
                                      env_error=0.10, symmetric=True,
                                      seed_offset=41_000)
     LOGGER.info("[H11] Π(9유형, T=%d) 추정 %.1fs", rounds, time.time() - t0)
-    names = est["names"]; raw = est["raw"]; k = len(names)
+    names = est["names"]; raw = est["raw"]; cc_raw = est["CC_raw"]; k = len(names)
     i_alld = names.index("alld")
 
     coop_mix = {"tit_for_tat": .30, "generous_tft": .15,
@@ -2186,32 +2190,30 @@ def exp_H11(seeds, rounds, jobs, backend):
         f"g(only)={cluster_inv['coop_only']['g']:+.3f} vs "
         f"g(+adaptive)={cluster_inv['coop+adaptive']['g']:+.3f}")
 
-    # (c) 후보 유형별 협력 유역 확장: adaptive vs 고정전략들 (벡터화 부트)
+    # (c) 후보 유형별 협력 CC-widening: adaptive vs 고정전략들 (벡터화 부트)
+    # [지표 개정 A] 이분 유역 → 종착 조성의 행동적 CC율 xᵀ·CCm·x.
     candidates = ["adaptive", "tom_fixed", "tit_for_tat", "generous_tft",
                   "generous_tft_count", "wsls"]
-    noncoop = {"alld", "random"}
-    def _widening_all(Pi_full, rng):
-        """공통 초기점으로 후보별 widening(X) = basin(S) − basin(S∖X)."""
-        coop_full = [i for i, nm in enumerate(names) if nm not in noncoop]
+    def _widening_all(Pi_full, CC_full, rng):
+        """공통 초기점으로 후보별 CC-widening(X) = CC(S) − CC(S∖X) (행동적 CC율)."""
         X0_full = rng.dirichlet(np.ones(k), size=n_basin)
-        b_full = evo.coop_basin_frac(Pi_full, coop_full, steps=basin_steps,
-                                     X0=X0_full)
+        b_full = evo.re_terminal_cc(Pi_full, CC_full, X0_full, steps=basin_steps)
         X0_red = rng.dirichlet(np.ones(k - 1), size=n_basin)
         wid = {}
         for cand in candidates:
             keep = [i for i in range(k) if names[i] != cand]
-            nm_r = [names[i] for i in keep]
-            coop_r = [i for i, nm in enumerate(nm_r) if nm not in noncoop]
-            b_wo = evo.coop_basin_frac(Pi_full[np.ix_(keep, keep)], coop_r,
-                                       steps=basin_steps, X0=X0_red)
+            b_wo = evo.re_terminal_cc(Pi_full[np.ix_(keep, keep)],
+                                      CC_full[np.ix_(keep, keep)], X0_red,
+                                      steps=basin_steps)
             wid[cand] = b_full - b_wo
         return wid
     rng_w = np.random.default_rng(stable_seed("H11wid"))
-    wid_pt = _widening_all(raw.mean(axis=2), rng_w)
+    wid_pt = _widening_all(raw.mean(axis=2), cc_raw.mean(axis=2), rng_w)
     wid_boot = {c: [] for c in candidates}
     for _ in range(n_boot_basin):
         idx = rng_w.integers(0, pi_seeds, pi_seeds)
-        wb = _widening_all(raw[:, :, idx].mean(axis=2), rng_w)
+        wb = _widening_all(raw[:, :, idx].mean(axis=2),
+                           cc_raw[:, :, idx].mean(axis=2), rng_w)
         for c in candidates:
             wid_boot[c].append(wb[c])
     widening = {}
@@ -2232,7 +2234,7 @@ def exp_H11(seeds, rounds, jobs, backend):
                    float(np.percentile(db, 97.5))],
             "p": pv}
         register_exploratory(
-            "H11", f"협력 유역 확장: adaptive vs {c}", pv,
+            "H11", f"협력 CC-widening: adaptive vs {c}", pv,
             f"Δ={wid_vs_fixed[c]['delta']:+.3f} "
             f"CI[{wid_vs_fixed[c]['ci'][0]:.3f},{wid_vs_fixed[c]['ci'][1]:.3f}]")
 
@@ -2390,8 +2392,9 @@ def exp_H12(seeds, rounds, jobs, backend):
     Π* 격자 : env_error ∈ {0,.05,.10,.15,.20} × T ∈ {60,240}, 정준 지지집합
               S*(11종), 대칭 재사용, pi_seeds≥30 (원칙 A — 1회 캐시·전 상주 공유).
 
-    지표 재정의 (§5.1): sub_widening(X | 배경 B, 슬롯 s)
-        = coop_basin_frac(Π*, P_B, 슬롯=X) − coop_basin_frac(Π*, P_B, 슬롯=random)
+    지표 재정의 (§5.1, v0.6.1): CC-widening(X | 배경 B, 슬롯 s)
+        = re_terminal_cc(Π*, CCm, P_B, 슬롯=X) − re_terminal_cc(Π*, CCm, P_B, 슬롯=random)
+      종착 조성의 행동적 CC율 CC(x)=xᵀ·CCm·x (이분 유역 폐기; 라벨-행동 괴리 제거).
       지지집합은 항상 S*(11종) 불변 — 슬롯 유형만 X↔random. 슬롯은 초기점 사전
       P_B 의 평균 성분으로 인코딩되어 차원·척도가 완전히 고정된다(2.1–2.3 제거).
 
@@ -2438,36 +2441,40 @@ def exp_H12(seeds, rounds, jobs, backend):
     coop_idx = [i for i, nm in enumerate(names) if nm not in H12_NONCOOP]
     i_alld = names.index("alld")
     raw_main = est[(primary_err, T_main)]["raw"]
+    cc_raw_main = est[(primary_err, T_main)]["CC_raw"]
     Pi_full_main = raw_main.mean(axis=2)
+    CC_full_main = cc_raw_main.mean(axis=2)
 
     # 공통 초기점 U0 (원칙 D·5.4 — 전 상주·슬롯·부트 공유)
     U0 = np.random.default_rng(stable_seed("H12U0")).dirichlet(np.ones(k),
                                                                size=n_basin)
 
-    def basin_slot(Pi, rho_D, rho_C, m_profile, slot, corner=0.0, bl=None):
+    def basin_slot(Pi, CCm, rho_D, rho_C, m_profile, slot, corner=0.0, bl=None):
+        # [지표 개정 A] 이분 유역 → 종착 조성의 행동적 CC율 xᵀ·CCm·x.
         rm = _h12_resident_mean(names, rho_D, rho_C, m_profile, slot, slot_share)
         X0 = _h12_prior_points(U0, rm, blend if bl is None else bl,
                                alld_idx=i_alld, corner=corner)
-        return evo.coop_basin_frac(Pi, coop_idx, steps=basin_steps, X0=X0)
+        return evo.re_terminal_cc(Pi, CCm, X0, steps=basin_steps)
 
     # ---------------- 2) 축 곡면 부트 엔진 (Π-시드 CRN) ----------------
-    def axis_surface(raw, coord_specs, slots, seed, corner=0.0, bl=None,
+    def axis_surface(raw, cc_raw, coord_specs, slots, seed, corner=0.0, bl=None,
                      n_b=n_boot):
         coords = [c for c, _ in coord_specs]
         S = len(slots)
-        Pi_f = raw.mean(axis=2)
-        pt = np.array([[basin_slot(Pi_f, cs["rho_D"], cs["rho_C"],
+        Pi_f = raw.mean(axis=2); CC_f = cc_raw.mean(axis=2)
+        pt = np.array([[basin_slot(Pi_f, CC_f, cs["rho_D"], cs["rho_C"],
                                    cs["m_profile"], sl, corner, bl)
                         for sl in slots] for _, cs in coord_specs])   # (C,S)
         rng = np.random.default_rng(seed)
         ps = raw.shape[2]
         boot = np.empty((n_b, len(coords), S))
         for b in range(n_b):
-            idx = rng.integers(0, ps, ps)
+            idx = rng.integers(0, ps, ps)               # Π·CCm 공통 시드(CRN)
             Pi_b = raw[:, :, idx].mean(axis=2)
+            CC_b = cc_raw[:, :, idx].mean(axis=2)
             for cidx, (_, cs) in enumerate(coord_specs):
                 for si, sl in enumerate(slots):
-                    boot[b, cidx, si] = basin_slot(Pi_b, cs["rho_D"], cs["rho_C"],
+                    boot[b, cidx, si] = basin_slot(Pi_b, CC_b, cs["rho_D"], cs["rho_C"],
                                                    cs["m_profile"], sl, corner, bl)
         return {"coords": coords, "slots": list(slots), "point": pt, "boot": boot}
 
@@ -2566,9 +2573,9 @@ def exp_H12(seeds, rounds, jobs, backend):
           for dc in div_counts]
 
     t0 = time.time()
-    surf_RP = axis_surface(raw_main, RP, slots_core, stable_seed("H12RP"))
-    surf_RK = axis_surface(raw_main, RK, slots_rk, stable_seed("H12RK"))
-    surf_RD = axis_surface(raw_main, RD, slots_core, stable_seed("H12RD"))
+    surf_RP = axis_surface(raw_main, cc_raw_main, RP, slots_core, stable_seed("H12RP"))
+    surf_RK = axis_surface(raw_main, cc_raw_main, RK, slots_rk, stable_seed("H12RK"))
+    surf_RD = axis_surface(raw_main, cc_raw_main, RD, slots_core, stable_seed("H12RD"))
     LOGGER.info("[H12] R-P/R-K/R-D 곡면 부트 %.1fs", time.time() - t0)
 
     # R-N (env 잡음 축 — 좌표마다 다른 Π*(err) 재사용; §4.2 R-N)
@@ -2578,14 +2585,17 @@ def exp_H12(seeds, rounds, jobs, backend):
         pt, boot = [], []
         for err in env_errors:
             raw_e = est[(err, T_main)]["raw"]
+            cc_raw_e = est[(err, T_main)]["CC_raw"]
             ps = raw_e.shape[2]
-            Pi_f = raw_e.mean(axis=2)
-            pt.append([basin_slot(Pi_f, cs["rho_D"], cs["rho_C"],
+            Pi_f = raw_e.mean(axis=2); CC_f = cc_raw_e.mean(axis=2)
+            pt.append([basin_slot(Pi_f, CC_f, cs["rho_D"], cs["rho_C"],
                                   cs["m_profile"], sl) for sl in slots_core])
             bb = np.empty((n_boot, len(slots_core)))
             for b in range(n_boot):
-                Pi_b = raw_e[:, :, rng.integers(0, ps, ps)].mean(axis=2)
-                bb[b] = [basin_slot(Pi_b, cs["rho_D"], cs["rho_C"],
+                idx = rng.integers(0, ps, ps)
+                Pi_b = raw_e[:, :, idx].mean(axis=2)
+                CC_b = cc_raw_e[:, :, idx].mean(axis=2)
+                bb[b] = [basin_slot(Pi_b, CC_b, cs["rho_D"], cs["rho_C"],
                                     cs["m_profile"], sl) for sl in slots_core]
             boot.append(bb)
         return {"coords": list(env_errors), "slots": list(slots_core),
@@ -2654,7 +2664,7 @@ def exp_H12(seeds, rounds, jobs, backend):
     C_set = ["adaptive", "tit_for_tat", "generous_tft", "wsls"]
     i_cap = names.index("capricious")
 
-    def basin_coalition(Pi, coalition, rho_D=0.2, rho_C=0.1):
+    def basin_coalition(Pi, CCm, coalition, rho_D=0.2, rho_C=0.1):
         w = np.zeros(k)
         w[i_alld] += rho_D
         w[i_cap] += rho_C
@@ -2666,9 +2676,9 @@ def exp_H12(seeds, rounds, jobs, backend):
             w[names.index("random")] += budget
         w = w / w.sum()
         X0 = _h12_prior_points(U0, w, blend, alld_idx=i_alld, corner=0.0)
-        return evo.coop_basin_frac(Pi, coop_idx, steps=basin_steps, X0=X0)
+        return evo.re_terminal_cc(Pi, CCm, X0, steps=basin_steps)
 
-    def shapley(Pi):
+    def shapley(Pi, CCm):
         phi = {x: 0.0 for x in C_set}
         n = len(C_set)
         for x in C_set:
@@ -2678,16 +2688,18 @@ def exp_H12(seeds, rounds, jobs, backend):
                     wgt = (math.factorial(len(Tsub))
                            * math.factorial(n - len(Tsub) - 1)
                            / math.factorial(n))
-                    phi[x] += wgt * (basin_coalition(Pi, list(Tsub) + [x])
-                                     - basin_coalition(Pi, list(Tsub)))
+                    phi[x] += wgt * (basin_coalition(Pi, CCm, list(Tsub) + [x])
+                                     - basin_coalition(Pi, CCm, list(Tsub)))
         return phi
     t0 = time.time()
-    phi_pt = shapley(Pi_full_main)
+    phi_pt = shapley(Pi_full_main, CC_full_main)
     rng_sh = np.random.default_rng(stable_seed("H12shap"))
     phi_boot = {x: [] for x in C_set}
     for _ in range(n_boot_s):
-        Pi_b = raw_main[:, :, rng_sh.integers(0, pi_seeds, pi_seeds)].mean(axis=2)
-        pb = shapley(Pi_b)
+        idx = rng_sh.integers(0, pi_seeds, pi_seeds)
+        Pi_b = raw_main[:, :, idx].mean(axis=2)
+        CC_b = cc_raw_main[:, :, idx].mean(axis=2)
+        pb = shapley(Pi_b, CC_b)
         for x in C_set:
             phi_boot[x].append(pb[x])
     LOGGER.info("[H12] Shapley(2^4) 부트 %.1fs", time.time() - t0)
@@ -2733,9 +2745,9 @@ def exp_H12(seeds, rounds, jobs, backend):
         f"(fixedλ 대조 {barrier['R-K_high(ρ_C=0.3)']['deepen_tom_fixed']:+.3f})")
 
     # ---------------- 8) 탐색: 구조적 사전 결론 일치 (원칙 E) ----------------
-    surf_RP_s = axis_surface(raw_main, RP, slots_core, stable_seed("H12RPs"),
+    surf_RP_s = axis_surface(raw_main, cc_raw_main, RP, slots_core, stable_seed("H12RPs"),
                              corner=corner_struct, bl=blend_struct, n_b=n_boot_s)
-    surf_RD_s = axis_surface(raw_main, RD, slots_core, stable_seed("H12RDs"),
+    surf_RD_s = axis_surface(raw_main, cc_raw_main, RD, slots_core, stable_seed("H12RDs"),
                              corner=corner_struct, bl=blend_struct, n_b=n_boot_s)
     c1_s = slope_ci(surf_RP_s["coords"], *marginal(surf_RP_s, "adaptive")[::-1])
     c2_s = slope_ci(surf_RD_s["coords"], *irreplace(surf_RD_s, "adaptive",
@@ -2753,10 +2765,10 @@ def exp_H12(seeds, rounds, jobs, backend):
 
     # ---------------- 9) 탐색: H8E·H11 좌표 정위 (§6.2) ----------------
     def delta_at(rho_D, rho_C, m_profile):
-        b_ad = basin_slot(Pi_full_main, rho_D, rho_C, m_profile, "adaptive")
-        b_best = max(basin_slot(Pi_full_main, rho_D, rho_C, m_profile, f)
+        b_ad = basin_slot(Pi_full_main, CC_full_main, rho_D, rho_C, m_profile, "adaptive")
+        b_best = max(basin_slot(Pi_full_main, CC_full_main, rho_D, rho_C, m_profile, f)
                      for f in H12_FIXED_COOP)
-        b_rnd = basin_slot(Pi_full_main, rho_D, rho_C, m_profile, "random")
+        b_rnd = basin_slot(Pi_full_main, CC_full_main, rho_D, rho_C, m_profile, "random")
         return {"marginal_adaptive": float(b_ad - b_rnd),
                 "keystone_delta": float(b_ad - b_best)}
     triang = {
@@ -3062,49 +3074,62 @@ def exp_VP(seeds, rounds, jobs, backend):
                          one_sample_perm(mild_adv, 0.0, alternative="greater", seed=8)["p"],
                          f"Δpay={mild_adv.mean():.3f}")
 
-    # ---- (2) 협력 유역 확장 sub_widening (중립 filler=random 대치; RE·ORE) ----
-    coop_labels = {"adaptive", "tft", "gtft", "wsls", "allc"}
+    # ---- (2) 협력 확장 CC-widening (종착 행동적 CC율; 중립 filler=random 대치) ----
+    # [지표 개정 v0.6.1] 이분 유역 폐기 → 종착 조성의 행동적 CC율 xᵀ·CCm·x.
+    # [검정 구성 개정 v0.6.2] 확증 replicate 단위 = **시드**(레짐 아님) — 레짐 수준
+    # 집계(n=3)는 검정력이 구조적으로 부족(순열 p 하한 ~0.125).
     basin = {}
+    seed_sw_re, seed_sw_ore = [], []
     for reg in _VP_REGIMES:
         base_specs = {
             "tft": strat_spec("tit_for_tat", 0), "gtft": strat_spec("generous_tft", 0),
             "wsls": strat_spec("wsls", 0), "allc": strat_spec("allc", 0),
             "alld": strat_spec("alld", 0), "random": strat_spec("random", 0),
         }
-        # 슬롯 = {adaptive, random(중립 filler)} 두 조건에서 Π 추정
+        # 슬롯 = {adaptive, random(중립 filler)} 두 조건에서 Π·CCm 추정
         specs_ad = dict(base_specs); specs_ad["slot"] = dict(focal["adaptive"])
         specs_rd = dict(base_specs); specs_rd["slot"] = strat_spec("random", 0)
         Pi_ad = estimate_variable_payoff_matrix(specs_ad, reg, T, vp_seeds,
                                                 env_error=0.05, n_jobs=jobs)
         Pi_rd = estimate_variable_payoff_matrix(specs_rd, reg, T, vp_seeds,
                                                 env_error=0.05, n_jobs=jobs)
-        n_ad = Pi_ad["names"]; n_rd = Pi_rd["names"]
-        coop_ad = [i for i, nm in enumerate(n_ad)
-                   if nm in coop_labels or nm == "slot"]
-        coop_rd = [i for i, nm in enumerate(n_rd) if nm in coop_labels]  # slot=random 제외
         X0 = np.random.default_rng(stable_seed("vpX", reg)).dirichlet(
-            np.ones(len(n_ad)), size=150)
-        re_ad = evo.coop_basin_frac(Pi_ad["Pi"], coop_ad, X0=X0)
-        re_rd = evo.coop_basin_frac(Pi_rd["Pi"], coop_rd, X0=X0)
-        ore_ad = evo.ore_coop_basin_frac(Pi_ad["Pi"], coop_ad, X0=X0[:80])
-        ore_rd = evo.ore_coop_basin_frac(Pi_rd["Pi"], coop_rd, X0=X0[:80])
-        basin[reg] = {"re_sub_widening": float(re_ad - re_rd),
-                      "ore_sub_widening": float(ore_ad - ore_rd),
+            np.ones(len(Pi_ad["names"])), size=150)
+        re_ad = evo.re_terminal_cc(Pi_ad["Pi"], Pi_ad["CC"], X0)
+        re_rd = evo.re_terminal_cc(Pi_rd["Pi"], Pi_rd["CC"], X0)
+        ore_ad = evo.ore_terminal_cc(Pi_ad["Pi"], Pi_ad["CC"], X0[:80])
+        ore_rd = evo.ore_terminal_cc(Pi_rd["Pi"], Pi_rd["CC"], X0[:80])
+        # 시드 수준 replicate (확증 기반; 동일 X0·동일 시드 인덱스로 짝지음)
+        s_ad = evo.per_seed_terminal_cc(Pi_ad["raw"], Pi_ad["CC_raw"], X0[:80])
+        s_rd = evo.per_seed_terminal_cc(Pi_rd["raw"], Pi_rd["CC_raw"], X0[:80])
+        if reg in _VP_VARIABLE:
+            seed_sw_re.append(s_ad["re"] - s_rd["re"])
+            seed_sw_ore.append(s_ad["ore"] - s_rd["ore"])
+        basin[reg] = {"re_cc_widening": float(re_ad - re_rd),
+                      "ore_cc_widening": float(ore_ad - ore_rd),
                       "re_ad": re_ad, "re_rd": re_rd,
-                      "ore_ad": ore_ad, "ore_rd": ore_rd}
-    # 확증 C-VP2: 변동 레짐에서 RE sub_widening 평균 > 0
-    sw = np.array([basin[r]["re_sub_widening"] for r in _VP_VARIABLE])
+                      "ore_ad": ore_ad, "ore_rd": ore_rd,
+                      "seed_re_widening_mean": float((s_ad["re"] - s_rd["re"]).mean()),
+                      "seed_ore_widening_mean": float((s_ad["ore"] - s_rd["ore"]).mean())}
+    # 확증 C-VP2: 변동 레짐에서 RE CC-widening > 0 (시드×레짐 단일표본)
+    sw = np.concatenate(seed_sw_re)
     t_cvp2 = one_sample_perm(sw, 0.0, alternative="greater", seed=stable_seed("cvp2"))
-    register_primary("VP", "C-VP2 변동레짐 협력유역 확장(sub_widening)>0",
+    ci_v2 = boot_mean_ci(sw, seed=stable_seed("cvp2ci"))["ci"]
+    register_primary("VP", "C-VP2 변동레짐 협력 CC-widening>0",
                      t_cvp2["p"], bool(sw.mean() > 0),
-                     f"sub_widening={sw.mean():.3f}")
-    sw_ore = np.array([basin[r]["ore_sub_widening"] for r in _VP_VARIABLE])
-    register_exploratory("VP", "ORE sub_widening(변동레짐)",
+                     f"CC_widening={sw.mean():.3f} [{ci_v2[0]:.3f},{ci_v2[1]:.3f}] "
+                     f"(n={len(sw)} 시드×레짐)")
+    sw_ore = np.concatenate(seed_sw_ore)
+    register_exploratory("VP", "ORE CC-widening(변동레짐)",
                          one_sample_perm(sw_ore, 0.0, alternative="greater", seed=9)["p"],
-                         f"ORE sub_widening={sw_ore.mean():.3f}")
+                         f"ORE CC_widening={sw_ore.mean():.3f}")
 
     return {"regimes": _VP_REGIMES, "variable": _VP_VARIABLE, "T": T,
-            "seeds": vp_seeds,
+            "seeds": vp_seeds, "metric": "behavioral_CC_rate",
+            "replicate_unit": "seed_x_regime",
+            "cvp1_replicates": var_adv.tolist(), "cvp1_p": t_cvp1["p"],
+            "cvp2_replicates": sw.tolist(), "cvp2_p": t_cvp2["p"],
+            "cvp2_ci": ci_v2,
             "pay_mean": {reg: {f: mean_sd(pay[reg][f])[0] for f in focal}
                          for reg in _VP_REGIMES},
             "advantage": advantage, "basin": basin,
@@ -3112,9 +3137,10 @@ def exp_VP(seeds, rounds, jobs, backend):
                                 "delta": float(var_adv.mean()),
                                 "ci": boot_mean_ci(var_adv, seed=7)["ci"],
                                 "p": t_cvp1["p"], "supported": bool(var_adv.mean() > 0)},
-                             "C_VP2_basin_widening": {
-                                "sub_widening": float(sw.mean()),
-                                "p": t_cvp2["p"], "supported": bool(sw.mean() > 0)}},
+                             "C_VP2_cc_widening": {
+                                "cc_widening": float(sw.mean()), "ci": ci_v2,
+                                "p": t_cvp2["p"], "n": int(len(sw)),
+                                "supported": bool(sw.mean() > 0 and t_cvp2["p"] < 0.05)}},
             "supported": {"C_VP1": bool(var_adv.mean() > 0 and t_cvp1["p"] < 0.05),
                           "C_VP2": bool(sw.mean() > 0 and t_cvp2["p"] < 0.05)}}
 
@@ -3269,9 +3295,17 @@ def _ore_type_specs(backend):
 def exp_ORE(seeds, rounds, jobs, backend):
     """
     §ORE 집단 수준 경쟁(Optimal Replicator Equation; Bravetti & Padilla 2018).
-    [확증] C-ORE1 ORE 협력 유역 > RE 협력 유역 (동일 Π·초기점, 레짐 전반 짝지음).
-           C-ORE2 ORE 하 adaptive 한계 기여(sub_widening: adaptive vs random 슬롯)>0.
-    [탐색] Bravetti Fig.1 재현(2-유형 RE vs ORE), 레짐별 유역 확장, Π 시드 부트스트랩.
+
+    [지표 개정] 이분 협력 유역(협력-라벨 점유>0.5)은 (i) 임의 임계 이분화, (ii) 협력
+    '라벨'과 실제 '행동'의 괴리(deadlock 에서 협력-라벨 유형이 실제로는 배신)라는 두
+    결함이 있어 **폐기**한다. 대신 종착 조성의 **행동적 CC율** CC(x)=xᵀ·CCm·x (연속,
+    관측된 상호협력에서 직접 유도)를 확증·시각화 지표로 병기한다.
+
+    [확증] C-ORE1 ORE 종착 CC율 > RE 종착 CC율 (동일 Π·CCm·초기점, 레짐 전반 짝지음).
+           C-ORE2 ORE 하 adaptive 한계 기여(CC-widening: adaptive vs random 슬롯 종착
+                  CC율 차)>0.
+    [탐색] Bravetti Fig.1 재현(2-유형 RE vs ORE), 레짐별 ΔCC, RE 하 CC-widening,
+           Π·CCm 시드 부트스트랩.
     내부에서 CI 레짐 격자 자체 추정(GLOBAL).
     """
     from AIF_IPD.ipd.variable_payoff import estimate_variable_payoff_matrix
@@ -3279,7 +3313,8 @@ def exp_ORE(seeds, rounds, jobs, backend):
     ore_seeds = max(3, min(int(seeds), 24))
     T = int(min(max(Ts), 120))
     regimes = ["mild_pd", "harsh_pd", "deadlock", "oscillate"]
-    LOGGER.info("[ORE] RE vs ORE 유역, 레짐=%d, seeds=%d, T=%d", len(regimes), ore_seeds, T)
+    LOGGER.info("[ORE] RE vs ORE 종착 CC율, 레짐=%d, seeds=%d, T=%d",
+                len(regimes), ore_seeds, T)
 
     # ---- (A) Bravetti Fig.1/2 재현 (2-유형) ----
     repro = {}
@@ -3289,86 +3324,110 @@ def exp_ORE(seeds, rounds, jobs, backend):
         repro[name] = evo.ore_two_type(R=R, T=Tt, P=P, S=S, xC0=x0,
                                        tau=1.5, steps=500, sweeps=90)
 
-    # ---- (B) K-유형 HalloReg: 레짐별 RE vs ORE 유역 + adaptive sub_widening ----
-    coop_labels = {"adaptive", "tft", "gtft", "wsls", "allc"}
+    # ---- (B) K-유형 HalloReg: 레짐별 RE vs ORE 종착 CC율 + adaptive CC-widening ----
+    # [검정 구성 개정 v0.6.2] 확증 replicate 단위 = **시드**(레짐이 아님). 레짐 수준
+    # 짝지음(n=3~4)은 순열 p 하한이 ~1/2^n(예: n=4 → 0.0625)이라 효과가 전 레짐에서
+    # 일관되게 양수여도 유의에 도달할 수 없다(구조적 검정력 결손). 시드 s 마다
+    # Π_s·CCm_s 로 CC율을 계산하면 (레짐×시드) 관측이 생겨 올바른 검정력을 얻는다.
     per_reg = {}
     re_list, ore_list, sw_re_list, sw_ore_list = [], [], [], []
+    seed_re, seed_ore, seed_sw_re, seed_sw_ore = [], [], [], []   # 시드 수준 pooled
     for reg in regimes:
         specs = _ore_type_specs(backend)
         Pest = estimate_variable_payoff_matrix(specs, reg, T, ore_seeds,
                                                env_error=0.05, n_jobs=jobs)
-        Pi, names, raw = Pest["Pi"], Pest["names"], Pest["raw"]
-        coop = [i for i, nm in enumerate(names) if nm in coop_labels]
+        Pi, CCm, names = Pest["Pi"], Pest["CC"], Pest["names"]
+        pi_raw, cc_raw = Pest["raw"], Pest["CC_raw"]
         rng = np.random.default_rng(stable_seed("oreX", reg))
         X0 = rng.dirichlet(np.ones(len(names)), size=160)
-        re_b = evo.coop_basin_frac(Pi, coop, X0=X0)
-        ore_b = evo.ore_coop_basin_frac(Pi, coop, X0=X0[:100])
+        re_cc = evo.re_terminal_cc(Pi, CCm, X0)
+        ore_cc = evo.ore_terminal_cc(Pi, CCm, X0[:100])
 
-        # adaptive sub_widening: adaptive 슬롯 vs random 슬롯 (Π 재추정)
+        # adaptive CC-widening: adaptive 슬롯 vs random 슬롯 (Π·CCm 재추정)
         base = {k: dict(v) for k, v in specs.items() if k != "adaptive"}
         base_rand = dict(base); base_rand["random"] = strat_spec("random", 0)
-        base_ad = dict(base); base_ad["adaptive"] = specs["adaptive"]
         Pr = estimate_variable_payoff_matrix(base_rand, reg, T, ore_seeds,
                                              env_error=0.05, n_jobs=jobs)
-        nr = Pr["names"]; coop_r = [i for i, nm in enumerate(nr) if nm in coop_labels]
-        Xr = rng.dirichlet(np.ones(len(nr)), size=160)
-        re_ad = re_b; re_rd = evo.coop_basin_frac(Pr["Pi"], coop_r, X0=Xr)
-        ore_ad = ore_b; ore_rd = evo.ore_coop_basin_frac(Pr["Pi"], coop_r, X0=Xr[:100])
+        Xr = rng.dirichlet(np.ones(len(Pr["names"])), size=160)
+        re_ad, ore_ad = re_cc, ore_cc
+        re_rd = evo.re_terminal_cc(Pr["Pi"], Pr["CC"], Xr)
+        ore_rd = evo.ore_terminal_cc(Pr["Pi"], Pr["CC"], Xr[:100])
 
-        # Π 시드 부트스트랩으로 RE·ORE 유역 CI
-        def boot_basins(nb=30):
-            rb = np.random.default_rng(stable_seed("oreB", reg))
-            reB, oreB = [], []
-            for _ in range(nb):
-                idx = rb.integers(0, raw.shape[2], raw.shape[2])
-                Pi_b = raw[:, :, idx].mean(axis=2)
-                reB.append(evo.coop_basin_frac(Pi_b, coop, X0=X0[:100]))
-                oreB.append(evo.ore_coop_basin_frac(Pi_b, coop, X0=X0[:60]))
-            return reB, oreB
-        reB, oreB = boot_basins()
+        # --- 시드 수준 replicate (확증의 기반) ---
+        s_ad = evo.per_seed_terminal_cc(pi_raw, cc_raw, X0[:100])
+        s_rd = evo.per_seed_terminal_cc(Pr["raw"], Pr["CC_raw"], Xr[:100])
+        seed_re.append(s_ad["re"]); seed_ore.append(s_ad["ore"])
+        seed_sw_re.append(s_ad["re"] - s_rd["re"])       # 시드 짝지음(동일 시드 인덱스)
+        seed_sw_ore.append(s_ad["ore"] - s_rd["ore"])
+
         per_reg[reg] = {
-            "Pi": Pi.tolist(), "names": names,
-            "re_basin": re_b, "ore_basin": ore_b,
-            "re_basin_ci": [float(np.percentile(reB, 2.5)), float(np.percentile(reB, 97.5))],
-            "ore_basin_ci": [float(np.percentile(oreB, 2.5)), float(np.percentile(oreB, 97.5))],
-            "re_sub_widening": float(re_ad - re_rd),
-            "ore_sub_widening": float(ore_ad - ore_rd),
-            "ore_minus_re": float(ore_b - re_b)}
-        re_list.append(re_b); ore_list.append(ore_b)
+            "names": names, "cc_self": np.diag(CCm).tolist(),
+            "re_cc": re_cc, "ore_cc": ore_cc,
+            "re_cc_ci": boot_mean_ci(s_ad["re"], seed=stable_seed("oreCIre", reg))["ci"],
+            "ore_cc_ci": boot_mean_ci(s_ad["ore"], seed=stable_seed("oreCIore", reg))["ci"],
+            "re_cc_widening": float(re_ad - re_rd),
+            "ore_cc_widening": float(ore_ad - ore_rd),
+            "seed_re_mean": float(s_ad["re"].mean()),
+            "seed_ore_mean": float(s_ad["ore"].mean()),
+            "seed_re": s_ad["re"].tolist(), "seed_ore": s_ad["ore"].tolist(),
+            "seed_sw_ore": (s_ad["ore"] - s_rd["ore"]).tolist(),
+            "seed_sw_re": (s_ad["re"] - s_rd["re"]).tolist(),
+            "ore_minus_re_cc": float(ore_cc - re_cc)}
+        re_list.append(re_cc); ore_list.append(ore_cc)
         sw_re_list.append(re_ad - re_rd); sw_ore_list.append(ore_ad - ore_rd)
 
-    # 확증 C-ORE1: ORE 유역 > RE 유역 (레짐 짝지음)
-    ore_arr, re_arr = np.array(ore_list), np.array(re_list)
-    t_ore1 = paired_stats(list(ore_arr), list(re_arr), "greater",
-                          seed=stable_seed("core1"))
-    register_primary("ORE", "C-ORE1 ORE 협력유역>RE 협력유역", t_ore1["p"],
-                     bool(ore_arr.mean() > re_arr.mean()),
-                     f"ΔBasin={ore_arr.mean()-re_arr.mean():+.3f}")
-    # 확증 C-ORE2: ORE 하 adaptive sub_widening > 0 (레짐 단일표본)
-    sw_ore = np.array(sw_ore_list)
-    t_ore2 = one_sample_perm(sw_ore, 0.0, alternative="greater", seed=stable_seed("core2"))
-    register_primary("ORE", "C-ORE2 ORE 하 adaptive sub_widening>0", t_ore2["p"],
-                     bool(sw_ore.mean() > 0), f"sub_widening_ORE={sw_ore.mean():.3f}")
-    register_exploratory("ORE", "RE 하 adaptive sub_widening",
-                         one_sample_perm(np.array(sw_re_list), 0.0, alternative="greater",
-                                         seed=stable_seed("oreSWre"))["p"],
-                         f"sub_widening_RE={np.mean(sw_re_list):.3f}")
+    # 시드×레짐 pooled replicate (레짐 내 시드 짝지음 유지)
+    pooled_re = np.concatenate(seed_re); pooled_ore = np.concatenate(seed_ore)
+    pooled_sw_ore = np.concatenate(seed_sw_ore)
+    pooled_sw_re = np.concatenate(seed_sw_re)
 
-    return {"regimes": regimes, "T": T, "seeds": ore_seeds,
+    # 확증 C-ORE1: ORE 종착 CC율 > RE 종착 CC율 (시드×레짐 짝지음)
+    t_ore1 = paired_stats(list(pooled_ore), list(pooled_re), "greater",
+                          seed=stable_seed("core1"))
+    d_ore1 = float(pooled_ore.mean() - pooled_re.mean())
+    ci1 = boot_mean_ci(pooled_ore - pooled_re, seed=stable_seed("core1ci"))["ci"]
+    register_primary("ORE", "C-ORE1 ORE 종착 CC율>RE 종착 CC율", t_ore1["p"],
+                     bool(d_ore1 > 0),
+                     f"ΔCC={d_ore1:+.3f} [{ci1[0]:.3f},{ci1[1]:.3f}] "
+                     f"(n={len(pooled_re)} 시드×레짐)")
+    # 확증 C-ORE2: ORE 하 adaptive CC-widening > 0 (시드×레짐 단일표본)
+    t_ore2 = one_sample_perm(pooled_sw_ore, 0.0, alternative="greater",
+                             seed=stable_seed("core2"))
+    ci2 = boot_mean_ci(pooled_sw_ore, seed=stable_seed("core2ci"))["ci"]
+    register_primary("ORE", "C-ORE2 ORE 하 adaptive CC-widening>0", t_ore2["p"],
+                     bool(pooled_sw_ore.mean() > 0),
+                     f"CC_widening_ORE={pooled_sw_ore.mean():.3f} "
+                     f"[{ci2[0]:.3f},{ci2[1]:.3f}] (n={len(pooled_sw_ore)})")
+    register_exploratory("ORE", "RE 하 adaptive CC-widening",
+                         one_sample_perm(pooled_sw_re, 0.0, alternative="greater",
+                                         seed=stable_seed("oreSWre"))["p"],
+                         f"CC_widening_RE={pooled_sw_re.mean():.3f}")
+    # 탐색: 레짐 수준 일관성(전 레짐 부호 일치 여부 — 효과의 강건성)
+    register_exploratory("ORE", "레짐 수준 ΔCC 부호 일관성",
+                         1.0, f"{int(np.sum(np.array(ore_list) > np.array(re_list)))}"
+                              f"/{len(regimes)} 레짐에서 ORE>RE")
+
+    ore_arr, re_arr = np.array(ore_list), np.array(re_list)
+    sw_ore = np.array(sw_ore_list)
+
+    return {"regimes": regimes, "T": T, "seeds": ore_seeds, "metric": "behavioral_CC_rate",
+            "replicate_unit": "seed_x_regime",
             "reproduction": {k: {"re_end": v["re_end"], "ore_end": v["ore_end"],
                                  "re_xC": v["re_xC"].tolist(), "ore_xC": v["ore_xC"].tolist(),
                                  "re_fit": v["re_fit"].tolist(), "ore_fit": v["ore_fit"].tolist()}
                              for k, v in repro.items()},
             "per_regime": per_reg,
             "confirmatory": {
-                "C_ORE1_basin": {"delta": float(ore_arr.mean() - re_arr.mean()),
-                                 "p": t_ore1["p"],
-                                 "supported": bool(ore_arr.mean() > re_arr.mean())},
-                "C_ORE2_adaptive_sub_widening": {"sub_widening": float(sw_ore.mean()),
-                                                 "p": t_ore2["p"],
-                                                 "supported": bool(sw_ore.mean() > 0)}},
-            "supported": {"C_ORE1": bool(ore_arr.mean() > re_arr.mean() and t_ore1["p"] < 0.05),
-                          "C_ORE2": bool(sw_ore.mean() > 0 and t_ore2["p"] < 0.05)}}
+                "C_ORE1_cc_rate": {"delta": d_ore1, "ci": ci1, "p": t_ore1["p"],
+                                   "n": int(len(pooled_re)),
+                                   "supported": bool(d_ore1 > 0 and t_ore1["p"] < 0.05)},
+                "C_ORE2_adaptive_cc_widening": {"cc_widening": float(pooled_sw_ore.mean()),
+                                                "ci": ci2, "p": t_ore2["p"],
+                                                "n": int(len(pooled_sw_ore)),
+                                                "supported": bool(pooled_sw_ore.mean() > 0
+                                                                  and t_ore2["p"] < 0.05)}},
+            "supported": {"C_ORE1": bool(d_ore1 > 0 and t_ore1["p"] < 0.05),
+                          "C_ORE2": bool(pooled_sw_ore.mean() > 0 and t_ore2["p"] < 0.05)}}
 
 
 # =================================================================== 시각화
@@ -4026,9 +4085,9 @@ def fig_H8E(d, tag=""):
     if len(Ts) < 2:
         ax[0, 1].axis("off")
     _tern_panel(ax[0, 2], t["ternary"][(key_a, Tmain)],
-                f"협력 유역 지도 (adaptive–alld–TFT, T={Tmain})", mode="basin")
+                f"끌개 유역 위상도 (adaptive–alld–TFT, T={Tmain})", mode="basin")
     _tern_panel(ax[1, 0], t["ternary"][(key_b, Tmain)],
-                f"협력 유역 지도 (adaptive–alld–ALLC, T={Tmain})", mode="basin")
+                f"끌개 유역 위상도 (adaptive–alld–ALLC, T={Tmain})", mode="basin")
     # 협력 유역 비율 히트맵 (adaptive 포함, 전 격자)
     BW = np.array([[d["basins"][f"err{e}|T{T}"]["with"] for T in Ts]
                    for e in errs])
@@ -4041,7 +4100,7 @@ def fig_H8E(d, tag=""):
         for j in range(len(Ts)):
             ax[1, 1].text(j, i, f"{BW[i, j]:.2f}", ha="center", va="center",
                           fontsize=8)
-    ax[1, 1].set_title("협력 유역 비율 (9유형 전체, adaptive 포함)")
+    ax[1, 1].set_title("협력-지배 끌개 유역 비율 (9유형; 위상 구조)")
     fig.colorbar(im, ax=ax[1, 1], fraction=0.046)
     # 유역 확장 (with − without adaptive)
     DW = np.array([[d["basins"][f"err{e}|T{T}"]["widening"] for T in Ts]
@@ -4057,7 +4116,7 @@ def fig_H8E(d, tag=""):
         for j in range(len(Ts)):
             ax[1, 2].text(j, i, f"{DW[i, j]:+.2f}", ha="center", va="center",
                           fontsize=8)
-    ax[1, 2].set_title("협력 유역 확장 Δ (adaptive 유 − 무)")
+    ax[1, 2].set_title("협력 CC-widening Δ (adaptive 유 − 무)\n종착 행동적 CC율")
     fig.colorbar(im, ax=ax[1, 2], fraction=0.046)
     _save(fig, "h8e_state_space_basins" + tag,
           "H8E-3: Replicator 상태 공간(3-유형 위상 초상 + 끌개), cooperation "
@@ -4194,9 +4253,9 @@ def fig_H11(d, tag=""):
     ax[2, 2].axvline(0, color="r", ls="--", lw=1)
     ax[2, 2].set_yticks(range(len(wk))); ax[2, 2].set_yticklabels(wk, fontsize=8)
     ok = d["supported"]["widening_gt_all_fixed"]
-    ax[2, 2].set_title("(i) 유형별 협력 유역 확장 widening(X)\n"
+    ax[2, 2].set_title("(i) 유형별 협력 CC-widening(X)\n"
                        f"adaptive > 전 고정전략: {'성립' if ok else '미성립'} [탐색]")
-    ax[2, 2].set_xlabel("Δ coop basin (부트 95% CI)")
+    ax[2, 2].set_xlabel("Δ 종착 CC율 (부트 95% CI)")
     _save(fig, "h11_keystone" + tag,
           "H11: Keystone 검정 — 치환 설계(비-swap 구성·ALLD 30% 고정, dose0 "
           "전 arm 공유)에서 ΔCC·Δgap(treat−fixedλ) dose 기울기[확증 2]. "
@@ -4231,7 +4290,7 @@ def fig_H12(d, tag=""):
               "slot=best fixed coop")
         _band(ax_d["basin_random"], ax_d["ci_random"], "0.5", "slot=random(중립)")
         a.set_xlabel(xlabel)
-        a.set_ylabel("coop_basin_frac (Π* 고정 심플렉스)")
+        a.set_ylabel("종착 행동적 CC율 xᵀ·CCm·x")
         sub = ""
         if c1 is not None:
             sub = f"\n한계 keystone 기울기 β={c1['slope']:+.3f} " \
@@ -4265,7 +4324,7 @@ def fig_H12(d, tag=""):
     ax[1, 1].fill_between(xs, lo, hi, color="C3", alpha=0.18)
     ax[1, 1].axhline(0, color="0.4", ls="--", lw=1)
     ax[1, 1].set_xlabel("협력자 다양성 m (가짓수)")
-    ax[1, 1].set_ylabel("sub_widening(adaptive) − sub_widening(TFT)")
+    ax[1, 1].set_ylabel("CC-widening(adaptive) − CC-widening(TFT)")
     ax[1, 1].set_title(f"(e) 비대체성(irreplaceability) [확증 C2]\n"
                        f"기울기 β={c2['slope']:+.3f} "
                        f"[{c2['ci'][0]:+.3f},{c2['ci'][1]:+.3f}] "
@@ -4291,7 +4350,7 @@ def fig_H12(d, tag=""):
     else:
         sub = f"\n관측 범위 {cr['range']} 내 교차 부재 (외삽 금지)"
     ax[1, 2].set_xlabel("협력자 다양성 m (가짓수)")
-    ax[1, 2].set_ylabel("keystone Δ = basin(adaptive) − best_fixed")
+    ax[1, 2].set_ylabel("keystone Δ = CC율(adaptive) − best_fixed")
     ax[1, 2].set_title("(f) Keystone 프런티어 [확증 C3]" + sub, fontsize=9)
     ax[1, 2].legend(fontsize=7)
 
@@ -4311,7 +4370,7 @@ def fig_H12(d, tag=""):
                        f"Δφ(ad−TFT)={dphi['delta']:+.3f} "
                        f"[{dphi['ci'][0]:+.3f},{dphi['ci'][1]:+.3f}] [탐색]",
                        fontsize=9)
-    ax[2, 0].set_ylabel("협력 유역 한계 기여 φ")
+    ax[2, 0].set_ylabel("협력 CC율 한계 기여 φ (Shapley)")
 
     # (h) ALLD 침입장벽 심화 Δg (random 앵커) — 상주족별
     bar = d["barrier"]
@@ -4346,7 +4405,7 @@ def fig_H12(d, tag=""):
     ax[2, 2].set_title("(i) H8E/H11 좌표 정위 (곡면 위 두 점)\n"
                        f"사전 강건성: C1 일치={ag['C1']['same_sign']}, "
                        f"C2 일치={ag['C2']['same_sign']} [탐색]", fontsize=9)
-    ax[2, 2].set_ylabel("basin 차이")
+    ax[2, 2].set_ylabel("CC율 차이")
     ax[2, 2].legend(fontsize=7)
 
     sup = d["supported"]
@@ -4354,7 +4413,7 @@ def fig_H12(d, tag=""):
           "H12: 상주 조건부 Keystone 프런티어. 고정 심플렉스 S*(11종)·중립 filler "
           "대치로 차원·배경·척도 인공물을 제거한 뒤(원칙 A·B), 위협축(R-P ρ_D "
           "[확증 C1], R-K ρ_C, R-N err)과 중복축(R-D 다양성 m)을 따라 대치 기반 "
-          "유역 확장 sub_widening 을 곡면으로 추정. [확증] C1 위협 단조성·C2 "
+          "협력 CC-widening 을 곡면으로 추정(행동적 CC율). [확증] C1 위협 단조성·C2 "
           "비대체성 단조성·C3 keystone 프런티어 교차 m*. [탐색] Shapley 순서무관 "
           "기여·ALLD 침입장벽 심화(random 앵커)·구조적 사전 일치·H8E(고변덕·저중복) "
           "와 H11(무변덕·고중복)을 곡면 위 두 점으로 재현·정위. "
@@ -4428,6 +4487,74 @@ def fig_H9_H10(d, tag=""):
 # ==================================================================== main
 # 지평별 실행 실험 (T=60/240 각각) vs 전지평 실험 (내부 T 스윕; 1회 실행)
 # -------------------------------------------------------------- VP / ABA / ORE 그림
+def _conf_panel(ax, groups, labels, threshold, direction, stats_txt, title,
+                ylabel, colors=None, thr_label=None):
+    """
+    확증 replicate 패널: 그룹별 지터 산점 + 그룹/전체 평균±부트95%CI + 임계선 +
+    통계 주석. direction: 'greater'(임계 초과 지지) / 'less'(임계 미만 지지).
+    """
+    rng = np.random.default_rng(0)
+    pooled = np.concatenate([np.asarray(g, float) for g in groups])
+    for gi, g in enumerate(groups):
+        g = np.asarray(g, float)
+        xj = gi + rng.uniform(-0.16, 0.16, len(g))
+        ax.scatter(xj, g, s=14, alpha=0.45,
+                   color=(colors[gi] if colors else "C0"), zorder=2)
+        ci = boot_mean_ci(g, seed=101 + gi)["ci"]
+        ax.errorbar([gi], [g.mean()], yerr=[[g.mean() - ci[0]], [ci[1] - g.mean()]],
+                    fmt="o", color="k", capsize=4, ms=6, zorder=3)
+    # pooled 평균 CI (우측 별도 위치)
+    xp = len(groups) - 0.5 + 0.9
+    cip = boot_mean_ci(pooled, seed=7)["ci"]
+    ax.errorbar([xp], [pooled.mean()],
+                yerr=[[pooled.mean() - cip[0]], [cip[1] - pooled.mean()]],
+                fmt="D", color="C3", capsize=5, ms=8, zorder=4, label="전체 평균±95%CI")
+    ax.axhline(threshold, color="k", ls="--", lw=1.2,
+               label=thr_label or f"판정 임계 {threshold:g}")
+    ax.set_xticks(list(range(len(groups))) + [xp])
+    ax.set_xticklabels(list(labels) + ["pooled"], rotation=20, fontsize=8)
+    ok = (pooled.mean() > threshold) if direction == "greater" else (pooled.mean() < threshold)
+    ax.set_title(title + ("  [방향 성립 ✓]" if ok else "  [방향 불성립 ✗]"), fontsize=10)
+    ax.set_ylabel(ylabel)
+    ax.legend(fontsize=7, loc="best")
+    ax.annotate(stats_txt, xy=(0.02, 0.02), xycoords="axes fraction",
+                fontsize=8, va="bottom",
+                bbox=dict(boxstyle="round", fc="white", ec="0.6", alpha=0.9))
+
+
+def fig_VP_confirmatory(d, tag=""):
+    """[확증 전용] C-VP1 / C-VP2 replicate 분포·CI·p 를 명시적으로 시각화."""
+    _kfont()
+    fig, ax = plt.subplots(1, 2, figsize=(12.5, 4.6))
+    vs = d["seeds"]
+    # C-VP1: 시변 레짐별 per-seed payoff 우위 (레짐 순서로 분할)
+    rep1 = np.asarray(d["cvp1_replicates"], float)
+    g1 = [rep1[i * vs:(i + 1) * vs] for i in range(len(d["variable"]))]
+    ci1 = boot_mean_ci(rep1, seed=7)["ci"]
+    _conf_panel(ax[0], g1, d["variable"], 0.0, "greater",
+                f"Δpay={rep1.mean():+.3f} [{ci1[0]:.3f},{ci1[1]:.3f}]\n"
+                f"p_raw={d['cvp1_p']:.4g}, n={len(rep1)} (시드×레짐)\n"
+                f"Holm 보정은 요약 로그 참조",
+                "[확증 C-VP1] 시변 레짐 adaptive payoff 우위 > 0",
+                "Δ 라운드당 보수 (adaptive − best 고정)",
+                colors=["C0", "C1", "C2"], thr_label="0 (우위 없음)")
+    # C-VP2: 시변 레짐별 per-seed CC-widening
+    rep2 = np.asarray(d["cvp2_replicates"], float)
+    g2 = [rep2[i * vs:(i + 1) * vs] for i in range(len(d["variable"]))]
+    _conf_panel(ax[1], g2, d["variable"], 0.0, "greater",
+                f"CC-widening={rep2.mean():+.3f} "
+                f"[{d['cvp2_ci'][0]:.3f},{d['cvp2_ci'][1]:.3f}]\n"
+                f"p_raw={d['cvp2_p']:.4g}, n={len(rep2)} (시드×레짐)",
+                "[확증 C-VP2] 시변 레짐 협력 CC-widening > 0",
+                "Δ 종착 행동적 CC율 (adaptive − random 슬롯)",
+                colors=["C0", "C1", "C2"], thr_label="0 (확장 없음)")
+    _save(fig, "vp_confirmatory" + tag,
+          "§VP 확증 전용 시각화: C-VP1(좌) 시변 레짐 payoff 우위와 C-VP2(우) 협력 "
+          "CC-widening 의 시드×레짐 replicate 분포·그룹/전체 평균±부트95%CI·판정 "
+          "임계(0)·순열 p. 전체 평균 CI 가 0 을 배제하고 p<0.05(Holm) 면 지지.",
+          f"seeds={vs}, T={d['T']}, replicate=시드×레짐")
+
+
 def fig_VP(d, tag=""):
     _kfont()
     regs = d["regimes"]; adv = d["advantage"]; basin = d["basin"]
@@ -4454,22 +4581,24 @@ def fig_VP(d, tag=""):
     ax[1].set_xticks(xs); ax[1].set_xticklabels(regs, rotation=30)
     ax[1].set_title("(b) CI 레짐별 focal 보수 프로파일")
     ax[1].set_ylabel("라운드당 보수"); ax[1].legend(fontsize=7, ncol=2)
-    # (c) 협력 유역 확장 sub_widening (RE vs ORE)
+    # (c) 협력 CC-widening (종착 행동적 CC율; RE vs ORE)
     w = 0.38
-    ax[2].bar(xs - w / 2, [basin[r]["re_sub_widening"] for r in regs], w,
-              label="RE sub_widening", color="C1", alpha=0.85)
-    ax[2].bar(xs + w / 2, [basin[r]["ore_sub_widening"] for r in regs], w,
-              label="ORE sub_widening", color="C2", alpha=0.85)
+    ax[2].bar(xs - w / 2, [basin[r]["re_cc_widening"] for r in regs], w,
+              label="RE CC-widening", color="C1", alpha=0.85)
+    ax[2].bar(xs + w / 2, [basin[r]["ore_cc_widening"] for r in regs], w,
+              label="ORE CC-widening", color="C2", alpha=0.85)
     ax[2].axhline(0, color="k", lw=0.8)
     ax[2].set_xticks(xs); ax[2].set_xticklabels(regs, rotation=30)
-    ax[2].set_title("(c) adaptive 협력유역 확장\n[확증 C-VP2] filler=random 대치")
-    ax[2].set_ylabel("Δ 협력 유역 점유"); ax[2].legend(fontsize=8)
+    ax[2].set_title("(c) adaptive 협력 CC-widening\n[확증 C-VP2] filler=random 대치")
+    ax[2].set_ylabel("Δ 종착 행동적 CC율"); ax[2].legend(fontsize=8)
     _save(fig, "vp_variable_payoff" + tag,
           "§VP 가변 페이오프(연속 협력–경쟁): CI 를 극단(음수·1 이상)까지 변동시키는 "
           "환경에서 맥락-의존 효용을 계산하는 adaptive 가 payoff-무감 고정전략 대비 얻는 "
-          "성능 우위(a,b)와 협력 유역 확장(c; RE·ORE). 고정 mild_pd(회색) 대비 변동/극단 "
+          "성능 우위(a,b)와 협력 확장(c). 지표는 이분 유역을 폐기하고 종착 조성의 "
+          "행동적 CC율 xᵀ·CCm·x(연속·라벨무관)로 개정. 고정 mild_pd(회색) 대비 변동/극단 "
           "레짐에서 우위가 나타남 — H7/H8E/H12 '고정 payoff' 교란 제거.",
-          f"seeds={d['seeds']}, T={d['T']}")
+          f"seeds={d['seeds']}, T={d['T']}, 지표=행동적 CC율")
+    fig_VP_confirmatory(d, tag)
 
 
 def fig_ABA(d, tag=""):
@@ -4519,6 +4648,62 @@ def fig_ABA(d, tag=""):
           "(재탐색) 수준이 게이팅한다. 高용서에서 pred_coop·CC 가 복원되며(a,c), 복구"
           "오차는 용서에 단조 감소한다(b, 용량-반응). β-절제·통제권·비-ToM 는 대조.",
           f"seeds={len(forg[FORG[0]]['rec_err'])}, T={Tref}")
+    fig_ABA_confirmatory(d, tag)
+
+
+def fig_ABA_confirmatory(d, tag=""):
+    """[확증 전용] C-ABA1 / C-ABA2 를 명시적으로 시각화."""
+    _kfont()
+    Tref = d["Tref"]; forg = d["by_T"][Tref]["forg"]; FORG = d["forg_levels"]
+    hi = max(FORG)
+    fig, ax = plt.subplots(1, 3, figsize=(16, 4.6))
+    conf = d["confirmatory"]
+    # (a) C-ABA1a: 高용서 복구오차 < 0.15
+    rec = np.asarray(forg[hi]["rec_err"], float)
+    _conf_panel(ax[0], [rec], [f"용서={hi}"], 0.15, "less",
+                f"복구오차={rec.mean():.3f} "
+                f"[{conf['C_ABA1_recovery']['ci'][0]:.3f},"
+                f"{conf['C_ABA1_recovery']['ci'][1]:.3f}]" + "\n"
+                f"p_raw={conf['C_ABA1_recovery']['p']:.4g}, n={len(rec)}, T={Tref}",
+                "[확증 C-ABA1a] 高용서 의도추론 복구오차 < 0.15",
+                "복구오차 |pc(A3)−pc(A1)|", thr_label="복구 임계 0.15")
+    # (b) C-ABA1b: 高용서 CC 복원비 > 0.70
+    ccr = np.asarray(forg[hi]["cc_ratio"], float)
+    _conf_panel(ax[1], [ccr], [f"용서={hi}"], 0.70, "greater",
+                f"CC복원비={ccr.mean():.2f}, n={len(ccr)}, T={Tref}" + "\n"
+                "(C-ABA1 은 (a)AND(b) 결합 판정)",
+                "[확증 C-ABA1b] 高용서 CC 복원비 CC(A3)/CC(A1) > 0.70",
+                "CC 복원비", thr_label="복원 임계 0.70")
+    # (c) C-ABA2: 용량-반응 산점 + 기울기 CI 밴드
+    rng = np.random.default_rng(1)
+    xs_all, ys_all = [], []
+    for fg in FORG:
+        r = np.asarray(forg[fg]["rec_err"], float)
+        ax[2].scatter(fg + rng.uniform(-0.008, 0.008, len(r)), r,
+                      s=14, alpha=0.45, color="C0")
+        xs_all.extend([fg] * len(r)); ys_all.extend(r.tolist())
+    xs_all = np.asarray(xs_all); ys_all = np.asarray(ys_all)
+    sl = conf["C_ABA2_dose_response"]
+    xg = np.linspace(min(FORG), max(FORG), 50)
+    b0 = ys_all.mean() - sl["slope"] * xs_all.mean()
+    ax[2].plot(xg, b0 + sl["slope"] * xg, color="C3", lw=2,
+               label=f"기울기={sl['slope']:.3f}")
+    ax[2].fill_between(xg, b0 + sl["ci"][0] * (xg - xs_all.mean()) + sl["slope"] * xs_all.mean(),
+                       b0 + sl["ci"][1] * (xg - xs_all.mean()) + sl["slope"] * xs_all.mean(),
+                       color="C3", alpha=0.15, label="기울기 95%CI 밴드")
+    ax[2].set_title("[확증 C-ABA2] 복구오차∼용서 기울기 < 0"
+                    + ("  [방향 성립 ✓]" if sl["slope"] < 0 else "  [✗]"), fontsize=10)
+    ax[2].set_xlabel("용서(forgiveness)"); ax[2].set_ylabel("복구오차")
+    ax[2].legend(fontsize=8)
+    ax[2].annotate(f"slope={sl['slope']:.3f} [{sl['ci'][0]:.3f},{sl['ci'][1]:.3f}]\n"
+                   f"p_raw={sl['p']:.4g}",
+                   xy=(0.02, 0.02), xycoords="axes fraction", fontsize=8, va="bottom",
+                   bbox=dict(boxstyle="round", fc="white", ec="0.6", alpha=0.9))
+    _save(fig, "aba_confirmatory" + tag,
+          "§ABA 확증 전용 시각화: C-ABA1(a·b 결합 — 高용서 복구오차<0.15 AND CC복원비"
+          ">0.70)과 C-ABA2(c — 복구오차∼용서 용량-반응 기울기<0, 부트 CI 상한<0). "
+          "replicate=시드, 판정은 최장 지평 기준.",
+          f"seeds={len(rec)}, Tref={Tref}")
 
 
 def fig_ORE(d, tag=""):
@@ -4536,10 +4721,10 @@ def fig_ORE(d, tag=""):
     ax[0].set_title("(a) Bravetti&Padilla 재현: 협력자 빈도 x_C(t)\nRE(점선)→소멸, ORE(실선)→창발")
     ax[0].set_xlabel("정규화 시간 t/τ"); ax[0].set_ylabel("x_C"); ax[0].legend(fontsize=7, ncol=3)
     ax[0].set_ylim(-0.02, 1.02)
-    # (b) 레짐별 RE vs ORE 협력 유역 (CI 오차막대)
+    # (b) 레짐별 RE vs ORE 종착 행동적 CC율 (CI 오차막대)
     xs = np.arange(len(regs)); w = 0.38
-    re_m = [per[r]["re_basin"] for r in regs]; ore_m = [per[r]["ore_basin"] for r in regs]
-    re_ci = [per[r]["re_basin_ci"] for r in regs]; ore_ci = [per[r]["ore_basin_ci"] for r in regs]
+    re_m = [per[r]["re_cc"] for r in regs]; ore_m = [per[r]["ore_cc"] for r in regs]
+    re_ci = [per[r]["re_cc_ci"] for r in regs]; ore_ci = [per[r]["ore_cc_ci"] for r in regs]
     err_re = np.array([[max(0.0, m - c[0]), max(0.0, c[1] - m)]
                        for m, c in zip(re_m, re_ci)]).T
     err_ore = np.array([[max(0.0, m - c[0]), max(0.0, c[1] - m)]
@@ -4547,22 +4732,67 @@ def fig_ORE(d, tag=""):
     ax[1].bar(xs - w / 2, re_m, w, yerr=err_re, capsize=3, label="RE", color="C1", alpha=0.85)
     ax[1].bar(xs + w / 2, ore_m, w, yerr=err_ore, capsize=3, label="ORE", color="C2", alpha=0.85)
     ax[1].set_xticks(xs); ax[1].set_xticklabels(regs, rotation=20)
-    ax[1].set_title("(b) 협력 유역: RE vs ORE\n[확증 C-ORE1] ORE>RE")
-    ax[1].set_ylabel("협력 유역 점유"); ax[1].legend(fontsize=8)
-    # (c) adaptive sub_widening: RE vs ORE (레짐별)
-    sw_re = [per[r]["re_sub_widening"] for r in regs]
-    sw_ore = [per[r]["ore_sub_widening"] for r in regs]
+    ax[1].set_title("(b) 종착 행동적 CC율: RE vs ORE\n[확증 C-ORE1] ORE>RE")
+    ax[1].set_ylabel("종착 CC율  xᵀ·CCm·x"); ax[1].legend(fontsize=8)
+    # (c) adaptive CC-widening: RE vs ORE (레짐별)
+    sw_re = [per[r]["re_cc_widening"] for r in regs]
+    sw_ore = [per[r]["ore_cc_widening"] for r in regs]
     ax[2].bar(xs - w / 2, sw_re, w, label="RE", color="C1", alpha=0.85)
     ax[2].bar(xs + w / 2, sw_ore, w, label="ORE", color="C2", alpha=0.85)
     ax[2].axhline(0, color="k", lw=0.8)
     ax[2].set_xticks(xs); ax[2].set_xticklabels(regs, rotation=20)
-    ax[2].set_title("(c) adaptive 한계 기여 sub_widening\n[확증 C-ORE2] ORE 하 > 0")
-    ax[2].set_ylabel("Δ 협력 유역 점유"); ax[2].legend(fontsize=8)
+    ax[2].set_title("(c) adaptive 한계 기여 CC-widening\n[확증 C-ORE2] ORE 하 > 0")
+    ax[2].set_ylabel("Δ 종착 CC율 (adaptive−random)"); ax[2].legend(fontsize=8)
     _save(fig, "ore_optimal_replicator" + tag,
           "§ORE 집단 수준 경쟁(Optimal Replicator Equation; Bravetti&Padilla 2018): "
-          "2-유형 재현(a; RE→배신 지배, ORE→협력 창발), K-유형 HalloReg 에서 ORE 가 "
-          "협력 유역을 RE 대비 넓히고(b), adaptive 의 한계 기여가 ORE 하에서 뚜렷(c).",
-          f"seeds={d['seeds']}, T={d['T']}")
+          "2-유형 재현(a; RE→배신 지배, ORE→협력 창발). 지표는 이분 유역을 폐기하고 "
+          "종착 조성의 **행동적 CC율** xᵀ·CCm·x(연속·라벨무관)로 개정: ORE 가 실제 "
+          "상호협력을 RE 대비 높이고(b), adaptive 의 한계 기여가 뚜렷(c). deadlock 은 "
+          "CC율이 낮게 유지되어(라벨이 아닌 행동 반영) 과거 이분 유역의 인공적 고점이 제거됨.",
+          f"seeds={d['seeds']}, T={d['T']}, 지표=행동적 CC율")
+    fig_ORE_confirmatory(d, tag)
+
+
+def fig_ORE_confirmatory(d, tag=""):
+    """[확증 전용] C-ORE1 / C-ORE2 를 명시적으로 시각화."""
+    _kfont()
+    regs = d["regimes"]; per = d["per_regime"]; conf = d["confirmatory"]
+    cols = [f"C{i}" for i in range(len(regs))]
+    fig, ax = plt.subplots(1, 2, figsize=(12.5, 4.6))
+    # (a) C-ORE1: 시드×레짐 짝지은 RE vs ORE 산점 (y=x 위 = ORE 우위)
+    lo, hi_v = 1.0, 0.0
+    for ci_, reg in enumerate(regs):
+        re_s = np.asarray(per[reg]["seed_re"], float)
+        ore_s = np.asarray(per[reg]["seed_ore"], float)
+        ax[0].scatter(re_s, ore_s, s=18, alpha=0.6, color=cols[ci_], label=reg)
+        lo = min(lo, re_s.min(), ore_s.min()); hi_v = max(hi_v, re_s.max(), ore_s.max())
+    pad = 0.03 * (hi_v - lo + 1e-9)
+    ax[0].plot([lo - pad, hi_v + pad], [lo - pad, hi_v + pad], "k--", lw=1.2,
+               label="y=x (효과 없음)")
+    c1 = conf["C_ORE1_cc_rate"]
+    ax[0].set_title("[확증 C-ORE1] ORE 종착 CC율 > RE 종착 CC율"
+                    + ("  [방향 성립 ✓]" if c1["delta"] > 0 else "  [✗]"), fontsize=10)
+    ax[0].set_xlabel("RE 종착 CC율 (시드별)"); ax[0].set_ylabel("ORE 종착 CC율 (시드별)")
+    ax[0].legend(fontsize=7)
+    ax[0].annotate(f"ΔCC={c1['delta']:+.3f} [{c1['ci'][0]:.3f},{c1['ci'][1]:.3f}]" + "\n"
+                   + f"p_raw={c1['p']:.4g}, n={c1['n']} (시드×레짐 짝지음)",
+                   xy=(0.02, 0.98), xycoords="axes fraction", fontsize=8, va="top",
+                   bbox=dict(boxstyle="round", fc="white", ec="0.6", alpha=0.9))
+    # (b) C-ORE2: 레짐별 시드 CC-widening replicate + pooled CI
+    g2 = [np.asarray(per[reg]["seed_sw_ore"], float) for reg in regs]
+    c2 = conf["C_ORE2_adaptive_cc_widening"]
+    _conf_panel(ax[1], g2, regs, 0.0, "greater",
+                f"CC-widening={c2['cc_widening']:+.3f} "
+                f"[{c2['ci'][0]:.3f},{c2['ci'][1]:.3f}]" + "\n"
+                + f"p_raw={c2['p']:.4g}, n={c2['n']} (시드×레짐)",
+                "[확증 C-ORE2] ORE 하 adaptive CC-widening > 0",
+                "Δ 종착 CC율 (adaptive − random 슬롯)",
+                colors=cols, thr_label="0 (기여 없음)")
+    _save(fig, "ore_confirmatory" + tag,
+          "§ORE 확증 전용 시각화: C-ORE1(좌) 시드×레짐 짝지은 RE vs ORE 종착 CC율 "
+          "산점(y=x 위 = ORE 우위)과 C-ORE2(우) ORE 하 adaptive CC-widening 의 "
+          "레짐별 replicate 분포·평균±부트95%CI·판정 임계(0)·순열 p.",
+          f"seeds={d['seeds']}, T={d['T']}, replicate=시드×레짐")
 
 
 EXPERIMENTS = {

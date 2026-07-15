@@ -108,6 +108,29 @@ def joint_index(my_act: int, opp_act: int) -> int:
     return int(my_act) * 2 + int(opp_act)
 
 
+def empathy_shift(lam, my_coop_rate):
+    """
+    상대(공감 가중치 λ)의 협력–배신 효용 격차 ΔU(λ)=U(C,λ)−U(D,λ) 중 **보수 유도부**
+    를 현재 보수 구성 (R,T,S,P) 로부터 계산해 로짓 스케일에 더하는 항 (v0.6.3).
+
+    유도: 내(focal) 협력확률을 p 라 할 때, 상대의
+      자기 이득부  Δself(p)  = p·(R−T) + (1−p)·(S−P)
+      공감 이득부  λ·(T−S)   — 내 협력이 상대에게 전달하는 보수 범위(T−S)에 λ 가중
+    합계를 p 에 대해 정리하면:
+        empathy_shift(λ, p) = (T−S)·λ + (R−T+P−S)·p + (S−P)
+
+    기본 PD 보수 (R=3, T=5, S=0, P=1) 에서 계수가 (5, −1, −1) 이 되어 레거시 상수식
+        5·λ − p − 1
+    과 **비트 단위로 동일**하다(H1–H12 재현성 보존). `set_payoffs`/`set_coop_index`
+    로 보수가 라운드마다 바뀌는 가변 페이오프 환경(§VP)에서는 모듈 전역 R 을 호출
+    시점에 읽어 ToM 공감항이 **현재 맥락의 효용**을 반영한다(예: 조화 R=7 이면
+    p 계수가 +1 로 반전 — 상대가 협력할수록 협력이 더 유리).
+
+    lam, my_coop_rate 는 스칼라 또는 ndarray (입자필터 벡터화 지원).
+    """
+    return (T - S) * lam + (R - T + P - S) * my_coop_rate + (S - P)
+
+
 def split_joint(state: int) -> tuple[int, int]:
     """joint-outcome 상태 -> (내 행동, 상대 행동)."""
     my_a, opp_a = divmod(int(state), 2)

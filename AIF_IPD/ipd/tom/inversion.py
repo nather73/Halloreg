@@ -34,7 +34,7 @@ from typing import Optional, List, Dict
 
 import numpy as np
 
-from AIF_IPD.core.constants import COOP, DEFECT
+from AIF_IPD.core.constants import COOP, empathy_shift as C_empathy_shift, DEFECT
 
 _EPS = 1e-10
 
@@ -140,8 +140,10 @@ class OpponentInversion:
 
     # ------------------------------------------------------------ 우도
     def _empathy_shift(self) -> np.ndarray:
-        """상대 공감 λ_j 가 협력에 주는 이득 (PD 보수 유도: 5λ_j − p − 1)."""
-        return 5.0 * self.lambda_j - self.my_cooperation_rate - 1.0
+        """상대 공감 λ_j 가 협력에 주는 이득 — 현재 보수 (R,T,S,P) 유도 (v0.6.3).
+        기본 PD 보수에서 레거시 5λ_j − p − 1 과 비트 단위 동일; 가변 페이오프
+        환경(§VP)에서는 호출 시점의 보수를 반영(맥락-의존 ToM 공감항)."""
+        return C_empathy_shift(self.lambda_j, self.my_cooperation_rate)
 
     def _pC(self, f: float) -> np.ndarray:
         """각 입자의 상대 협력확률."""

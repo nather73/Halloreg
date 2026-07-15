@@ -27,6 +27,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from AIF_IPD.core.constants import CC
 from AIF_IPD.core.logging_utils import get_logger
 from AIF_IPD.ipd.sim import run_many
 
@@ -167,6 +168,62 @@ def ore_coop_basin_frac(Pi: np.ndarray, coop_idx: Sequence[int],
     return float(np.mean(ends[:, list(coop_idx)].sum(axis=1) > 0.5))
 
 
+# ------------------------------------------------ 행동적 CC율(연속·라벨 무관)
+# 이분 유역(협력-라벨 점유>0.5)의 두 결함 — (i) 임의 임계에 의한 이분화,
+# (ii) 협력 '라벨'과 실제 협력 '행동'의 괴리(예: deadlock 에서 협력-라벨 유형이
+# 실제로는 배신) — 를 동시에 제거하는 대체 지표. 종착 조성의 **기대 상호협력율**:
+#     CC(x) = xᵀ CCm x        (CCm[i,j] = i·j 다이애드의 실제 CC 발생률)
+# 짝을 조성 x 에 따라 뽑을 때 두 개체가 모두 협력할 확률. 연속값이며 유형 라벨이
+# 아니라 관측된 CC 행동에서 직접 유도된다.
+
+def population_cc_rate(CCm: np.ndarray, x: np.ndarray) -> float:
+    """집단 조성 x 의 기대 행동적 CC율 = xᵀ CCm x."""
+    x = np.asarray(x, float)
+    return float(x @ CCm @ x)
+
+
+def re_terminal_cc(Pi: np.ndarray, CCm: np.ndarray, X0: np.ndarray,
+                   steps: int = 600) -> float:
+    """RE 종착 조성들의 평균 행동적 CC율 (초기점 X0 공유)."""
+    ends = replicator_ends_batch(Pi, X0, steps=steps)
+    return float(np.mean(np.einsum("ni,ij,nj->n", ends, CCm, ends)))
+
+
+def ore_terminal_cc(Pi: np.ndarray, CCm: np.ndarray, X0: np.ndarray,
+                    tau: float = 1.0, steps: int = 220, sweeps: int = 30) -> float:
+    """ORE 종착 조성들의 평균 행동적 CC율 (초기점 X0 공유)."""
+    ends = ore_ends_batch(Pi, X0, tau=tau, steps=steps, sweeps=sweeps)
+    return float(np.mean(np.einsum("ni,ij,nj->n", ends, CCm, ends)))
+
+
+def per_seed_terminal_cc(pi_raw: np.ndarray, cc_raw: np.ndarray, X0: np.ndarray,
+                         which: str = "both", steps: int = 600,
+                         tau: float = 1.0, ore_steps: int = 220,
+                         ore_sweeps: int = 30) -> Dict[str, np.ndarray]:
+    """
+    **시드 수준 replicate** 의 종착 CC율. 시드 s 마다 그 시드의 다이애드만으로
+    구성된 Π_s·CCm_s 를 써서 RE·ORE 종착 CC율을 계산한다.
+
+    확증 검정의 replicate 단위를 '레짐'(n=3~4, 순열 p 하한이 ~1/2^n 로 막힘)이
+    아니라 '시드'(n=16~240)로 두기 위한 함수. 동일 X0 를 전 시드·전 조건에서
+    공유(CRN)하므로 시드 간 비교가 짝지어진다.
+
+    반환: {"re": (S,), "ore": (S,)} — 시드별 종착 CC율.
+    """
+    S = pi_raw.shape[2]
+    out = {}
+    if which in ("re", "both"):
+        out["re"] = np.array([
+            re_terminal_cc(pi_raw[:, :, s], cc_raw[:, :, s], X0, steps=steps)
+            for s in range(S)])
+    if which in ("ore", "both"):
+        out["ore"] = np.array([
+            ore_terminal_cc(pi_raw[:, :, s], cc_raw[:, :, s], X0,
+                            tau=tau, steps=ore_steps, sweeps=ore_sweeps)
+            for s in range(S)])
+    return out
+
+
 def ore_two_type(R: float, T: float, P: float, S: float, xC0: float,
                  tau: float = 1.0, steps: int = 400, sweeps: int = 80) -> Dict:
     """
@@ -224,9 +281,15 @@ def estimate_payoff_matrix(type_specs: Dict[str, dict], n_rounds: int,
     res = run_many(specs, n_rounds=n_rounds, n_jobs=n_jobs, verbose=False)
     Pi = np.zeros((k, k)); Pi_sd = np.zeros((k, k))
     raw = np.zeros((k, k, seeds))               # 시드 원자료 (침입 부트스트랩용)
+    # 행동적 상호협력(CC) 발생률 행렬 — 관점 무관 대칭(CC=joint(0,0)).
+    # CCm[i,j] = 유형 i·j 다이애드에서 실제 CC 로 끝난 라운드 비율.
+    ccm_raw = np.zeros((k, k, seeds))
     for (i, j) in pair_iter:
         my = np.array([float(np.mean(res[registry[(i, j, sd)]]
                                      ["hist"]["my_payoff"]))
+                       for sd in range(seeds)])
+        cc = np.array([float(np.mean(res[registry[(i, j, sd)]]
+                                     ["hist"]["state"] == CC))
                        for sd in range(seeds)])
         if symmetric:
             op = np.array([float(np.mean(res[registry[(i, j, sd)]]
@@ -237,13 +300,18 @@ def estimate_payoff_matrix(type_specs: Dict[str, dict], n_rounds: int,
             else:
                 raw[i, j] = my
                 raw[j, i] = op
+            ccm_raw[i, j] = cc
+            ccm_raw[j, i] = cc                    # CC 는 대칭
         else:
             raw[i, j] = my
+            ccm_raw[i, j] = cc
     for i in range(k):
         for j in range(k):
             Pi[i, j] = raw[i, j].mean()
             Pi_sd[i, j] = raw[i, j].std(ddof=1) if seeds > 1 else 0.0
+    CCm = ccm_raw.mean(axis=2)
     return {"names": names, "Pi": Pi, "Pi_sd": Pi_sd, "raw": raw,
+            "CC": CCm, "CC_raw": ccm_raw,
             "n_rounds": n_rounds, "seeds": seeds, "env_error": env_error}
 
 
@@ -354,32 +422,92 @@ def basin_analysis(Pi: np.ndarray, names: List[str], n_samples: int = 300,
 
 
 # ------------------------------------------------------- 끌개(attractor)
-def attractor_analysis(Pi: np.ndarray, names: List[str], n_samples: int = 400,
-                       steps: int = 800, seed: int = 0,
-                       round_to: float = 0.02) -> Dict:
+def stratified_simplex_points(k: int, n_total: int, rng,
+                              corner_frac: float = 0.3,
+                              corner_weight: float = 0.8):
     """
-    Dirichlet(1) 초기점 n_samples 개에서 복제자 궤적을 적분해 종착점을
-    `round_to` 격자로 양자화·군집화한다. 반환: 끌개 목록(평균 조성, 유역
-    비율)과 원 종착점 배열 — Replicator 상태 공간의 끌개 구조 시각화용.
+    단체 초기점 층화 표집 (v0.6.3): 균등층 + 코너층.
+
+    고차원(k≥6) Dirichlet(1) 균등표집은 중심 편향이 있어(표본이 무게중심 1/k 주변에
+    집중, 예: k=9 에서 '한 유형 과반' 초기점 비율 ≈3%), 코너 영역(한 유형 지배 —
+    침입/고착 시나리오가 사는 곳)의 끌개를 놓칠 수 있다. 이를 보완하기 위해:
+      · 균등층 (1−corner_frac)·n : Dirichlet(1) — 균등 측도 유역 추정용
+      · 코너층 corner_frac·n     : 유형 i 마다 x = corner_weight·e_i +
+                                    (1−corner_weight)·Dirichlet(1) — 유형별 지배
+                                    영역을 명시적으로 훑음(발견·강건성용)
+    반환: (X_uniform (n_u,k), X_corner (n_c,k), corner_type (n_c,) — 각 코너점의
+    지배 유형 인덱스).
+    """
+    n_corner = int(round(n_total * corner_frac))
+    per_type = max(1, n_corner // k)
+    n_corner = per_type * k
+    n_uniform = max(1, n_total - n_corner)
+    X_u = rng.dirichlet(np.ones(k), size=n_uniform)
+    Xc, ct = [], []
+    for i in range(k):
+        base = (1.0 - corner_weight) * rng.dirichlet(np.ones(k), size=per_type)
+        base[:, i] += corner_weight
+        Xc.append(base); ct.extend([i] * per_type)
+    return X_u, np.vstack(Xc), np.array(ct)
+
+
+def attractor_analysis(Pi: np.ndarray, names: List[str], n_samples: int = 1500,
+                       steps: int = 800, seed: int = 0,
+                       round_to: float = 0.02,
+                       corner_frac: float = 0.3,
+                       corner_weight: float = 0.8) -> Dict:
+    """
+    복제자 끌개 구성 — **층화 표집** (v0.6.3, 기본 n=1500).
+
+    · 끌개 **발견**은 전 층(균등+코너) 종착점으로 수행 — 코너에 사는 끌개(예: ALLD
+      완전지배)를 놓치지 않음.
+    · **basin_frac 은 균등층에서만** 계산 — 균등 측도 유역의 비편향 추정 유지
+      (층화점을 섞어 세면 측도가 왜곡됨).
+    · **corner_convergence**: 유형별 코너층 초기점이 어느 끌개로 수렴하는지의 분포
+      — '유형 i 가 지배하는 초기 집단의 운명'(코너 강건성)을 별도 보고.
+
+    반환: names, attractors[{composition, basin_frac(균등층), corner_frac_conv(코너층
+    유입 비율)}], ends(균등층 종착), ends_corner, corner_convergence{유형명: {끌개
+    인덱스: 비율}}, n_uniform, n_corner.
     """
     rng = np.random.default_rng(seed)
     k = Pi.shape[0]
-    ends = np.empty((n_samples, k))
-    for s in range(n_samples):
-        ends[s] = replicator_trajectory(Pi, rng.dirichlet(np.ones(k)),
-                                        steps=steps)[-1]
-    keys = np.round(ends / round_to).astype(int)
+    X_u, X_c, ct = stratified_simplex_points(k, n_samples, rng,
+                                             corner_frac=corner_frac,
+                                             corner_weight=corner_weight)
+    ends_u = replicator_ends_batch(Pi, X_u, steps=steps)
+    ends_c = replicator_ends_batch(Pi, X_c, steps=steps)
+    ends_all = np.vstack([ends_u, ends_c])
+    keys = np.round(ends_all / round_to).astype(int)
     uniq, inv, cnt = np.unique(keys, axis=0, return_inverse=True,
                                return_counts=True)
-    order = np.argsort(-cnt)
+    inv_u, inv_c = inv[:len(ends_u)], inv[len(ends_u):]
+    # 균등층 유입 수 기준 정렬(균등 측도 유역 크기 순); 코너 전용 끌개는 뒤에 붙음
+    cnt_u = np.array([np.sum(inv_u == g) for g in range(len(uniq))])
+    cnt_c = np.array([np.sum(inv_c == g) for g in range(len(uniq))])
+    order = np.argsort(-(cnt_u * 1_000_000 + cnt_c))
     attractors = []
-    for o in order:
-        mask = inv == o
+    gid_to_rank = {}
+    for rank, g in enumerate(order):
+        mask = inv == g
+        gid_to_rank[g] = rank
         attractors.append({
-            "composition": ends[mask].mean(axis=0).tolist(),
-            "basin_frac": float(cnt[o] / n_samples),
+            "composition": ends_all[mask].mean(axis=0).tolist(),
+            "basin_frac": float(cnt_u[g] / max(len(ends_u), 1)),
+            "corner_frac_conv": float(cnt_c[g] / max(len(ends_c), 1)),
         })
-    return {"names": names, "attractors": attractors, "ends": ends}
+    corner_convergence = {}
+    for i, nm in enumerate(names):
+        sel = inv_c[ct == i]
+        if len(sel) == 0:
+            continue
+        gs, cs = np.unique(sel, return_counts=True)
+        corner_convergence[nm] = {int(gid_to_rank[g]): float(c / len(sel))
+                                  for g, c in zip(gs, cs)}
+    return {"names": names, "attractors": attractors,
+            "ends": ends_u, "ends_corner": ends_c,
+            "corner_convergence": corner_convergence,
+            "n_uniform": int(len(ends_u)), "n_corner": int(len(ends_c))}
 
 
 def restrict_matrix(Pi: np.ndarray, names: List[str],

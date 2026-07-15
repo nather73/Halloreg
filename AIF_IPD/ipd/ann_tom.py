@@ -46,7 +46,8 @@ import jax.numpy as jnp
 import equinox as eqx
 import optax
 
-from AIF_IPD.core.constants import COOP, DEFECT, joint_index
+from AIF_IPD.core.constants import (COOP, DEFECT, joint_index,
+                                    empathy_shift as C_empathy_shift)
 from AIF_IPD.ipd.tom.inversion import OpponentInversion, ObservationContext, THETA_AXES
 
 # θ 사전 범위(생성용) — 식별 가능한 넓은 범위
@@ -93,7 +94,7 @@ class ParametricOpponent:
 
     def act(self) -> int:
         logit = self.beta * (self.alpha + self.rho * self._f()
-                             + (5.0 * self.lambda_j - self.my_coop_rate - 1.0))
+                             + C_empathy_shift(self.lambda_j, self.my_coop_rate))
         pC = float(_logistic(np.array(logit)))
         return COOP if self.rng.random() < pC else DEFECT
 
@@ -410,11 +411,13 @@ def evaluate(model, data, scaler, eval_from: int = 15) -> Dict:
     # 식별가능 합성: 행동모형에서 α 와 5λ_j 는 가법 축퇴 → α+5λ_j 만 식별가능.
     # 개별 참값 회복이 낮아도 이 합성은 잘 회복되어야 한다(생성모형 성질의 정직한 반영).
     ia = _AX.index("alpha"); il = _AX.index("lambda_j")
-    comp_pred = (pred[:, :, ia] + 5.0 * pred[:, :, il]).ravel()
-    comp_teach = (teach[:, :, ia] + 5.0 * teach[:, :, il]).ravel()
-    comp_true = (true[:, :, ia] + 5.0 * true[:, :, il]).ravel()
+    from AIF_IPD.core import constants as _C
+    _coef = float(_C.T - _C.S)   # 공감항 λ 계수 (기본 5.0); v0.6.3 보수-매개
+    comp_pred = (pred[:, :, ia] + _coef * pred[:, :, il]).ravel()
+    comp_teach = (teach[:, :, ia] + _coef * teach[:, :, il]).ravel()
+    comp_true = (true[:, :, ia] + _coef * true[:, :, il]).ravel()
     out["identifiable_composite"] = {
-        "name": "alpha+5*lambda_j",
+        "name": f"alpha+{_coef:g}*lambda_j",
         "r2_teacher": _r2(comp_teach, comp_pred),
         "r2_true": _r2(comp_true, comp_pred),
         "rmse_true": float(np.sqrt(np.mean((comp_pred - comp_true) ** 2)))}

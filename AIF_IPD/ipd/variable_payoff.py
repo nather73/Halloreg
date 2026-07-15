@@ -268,19 +268,25 @@ def estimate_variable_payoff_matrix(type_specs: Dict[str, dict],
                               "noise_seed": 900000 + seed_offset * 7 + sd * 101 + i * 7 + j})
     res = run_variable_many(specs, regime_name, n_rounds, n_jobs=n_jobs)
     raw = np.zeros((k, k, seeds))
+    ccm_raw = np.zeros((k, k, seeds))            # 행동적 CC율 행렬(대칭)
     for i in range(k):
         for j in range(i, k):
             for sd in range(seeds):
                 h = res[registry[(i, j, sd)]]["hist"]
                 my = float(np.mean(h["my_payoff"])); op = float(np.mean(h["opp_payoff"]))
+                cc = float(np.mean(h["state"] == CC))
                 if i == j:
                     raw[i, i, sd] = 0.5 * (my + op)
                 else:
                     raw[i, j, sd] = my
                     raw[j, i, sd] = op
+                ccm_raw[i, j, sd] = cc
+                ccm_raw[j, i, sd] = cc
     Pi = raw.mean(axis=2)
     Pi_sd = raw.std(axis=2, ddof=1) if seeds > 1 else np.zeros((k, k))
+    CCm = ccm_raw.mean(axis=2)
     return {"names": names, "Pi": Pi, "Pi_sd": Pi_sd, "raw": raw,
+            "CC": CCm, "CC_raw": ccm_raw,
             "n_rounds": n_rounds, "seeds": seeds, "regime": regime_name}
 
 

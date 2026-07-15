@@ -75,7 +75,8 @@ python AIF_IPD/scripts/run_ipd_experiment.py --check-equivalence
 | `gs_game_structure.png` | GS 게임구조(협력지수 CI) 강건성 스윕 |
 | `vp_variable_payoff.png` | VP 가변 페이오프(연속 협력–경쟁) — 시변/극단 CI 레짐 payoff 우위·유역 확장(RE/ORE) |
 | `aba_intent_recovery.png` | ABA A→B→A 의도복구 — 용서(재탐색) 용량-반응·히스테리시스·자기충족 함정 |
-| `ore_optimal_replicator.png` | ORE 최적복제자(Bravetti&Padilla) — 2-유형 재현·RE vs ORE 협력 유역·adaptive 한계기여 |
+| `ore_optimal_replicator.png` | ORE 최적복제자(Bravetti&Padilla) — 2-유형 재현·RE vs ORE 종착 CC율·adaptive 한계기여 |
+| `vp_confirmatory.png` / `aba_confirmatory.png` / `ore_confirmatory.png` | [v0.6.3] 확증 전용 — C-VP1/2·C-ABA1/2·C-ORE1/2 각각의 replicate 분포·평균±95%CI·판정 임계·순열 p 를 명시적으로 시각화 |
 | `ann_tom_recovery.png` | ANN-ToM 재현 — Schwarcz GRU · Kim GCN+RNN 이 입자필터 사후 재현(별도 스크립트) |
 | `recovery_tom.png` | ToM 파라미터 복원 연구(편향·RMSE·커버리지·식별불능) |
 | `<name>.pdf` / `<name>.caption.json` | 각 그림의 벡터본 + 캡션 메타데이터 |
@@ -279,3 +280,78 @@ DD/DC 유발)과 타인-기인(내가 협력했는데 배신당한 CD)으로 분
 타인-귀인 가중치 w_other 를 산출해 dispositional grievance 충전을 게이팅한다(자기-
 기인 배신은 상대 기질 불만을 덜 충전). 구현: `core/controllability.py`,
 `core/allostasis.py`(attr_gate). 기본 off 로 H1–H12 결과 보존.
+
+## v0.6.1 — 협력 지표 개정: 이분 유역 폐기 → 행동적 CC율
+
+이분 협력 유역(협력-라벨 유형의 종착 점유율 > 0.5)은 두 결함이 있어 **모든 가설 검증·
+시각화에서 폐기**하였다: (i) 임의 임계(0.5)에 의한 이분화(임계 통과 후의 질적 개선에
+눈멂, 유계 차분의 천장 효과), (ii) 협력 '라벨'과 실제 협력 '행동'의 괴리(예: deadlock
+레짐에서 협력-라벨 유형이 실제로는 배신하는데도 협력으로 집계).
+
+대신 종착 조성의 **행동적 CC율** 을 표준 지표로 채택한다:
+
+    CC(x) = xᵀ · CCm · x       (CCm[i,j] = 유형 i·j 다이애드의 실제 상호협력 발생률)
+
+짝을 조성 x 에 따라 뽑을 때 두 개체가 모두 협력할 기대 확률이며, 연속값이고 유형
+라벨이 아니라 관측된 CC 행동에서 직접 유도된다. `estimate_payoff_matrix`·
+`estimate_variable_payoff_matrix` 가 CCm 행렬을 함께 반환하고, `evo.re_terminal_cc`·
+`evo.ore_terminal_cc` 가 RE·ORE 종착 조성의 CC율을 계산한다.
+
+이 개정의 영향(사전등록 지표 변경):
+- **VP** C-VP2: RE sub_widening → **RE CC-widening**(종착 CC율 adaptive−random).
+- **ORE** C-ORE1: ORE 유역>RE 유역 → **ORE 종착 CC율>RE 종착 CC율**; C-ORE2: adaptive
+  sub_widening → **adaptive CC-widening**.
+- **H8E** basin_widening → **CC-widening**(supported 키 cc_widening_positive).
+- **H11** 후보별 협력 유역 확장 → **CC-widening**(탐색; 주 확증은 원래 CC 기울기 기반).
+- **H12** C1/C2/C3 keystone 프런티어를 **CC율 곡면** 위에서 재계산(basin_slot →
+  re_terminal_cc). Shapley 한계 기여도 CC율 기반.
+
+정직 보고: deadlock 에서 과거 이분 유역은 인공적 고점(≈0.9)을 보였으나 행동적 CC율은
+낮게 유지된다(adaptive 자기-CC≈0.22 — 실제 배신 반영). 지표 개정이 '유역 점유'와 '실제
+상호협력'의 괴리를 제거해 과잉해석을 막는다. 상태공간 위상도(끌개 유역)는 동역학 구조
+시각화로 유지된다(협력 정량 지표가 아님).
+
+## v0.6.2 — 확증 검정 구성 개정: replicate 단위 = 시드
+
+v0.6.1 검증에서 VP C-VP2·ORE C-ORE1/C-ORE2 가 **전 레짐에서 부호가 일관되게 양수인데도
+미지지**로 나오는 문제가 확인되었다. 원인은 효과 부재가 아니라 **확증 검정의 replicate
+단위가 '레짐'(n=3~4)이었던 구조적 검정력 결손**이다 — 레짐 수준 순열의 p 하한은
+~1/2ⁿ(n=4 → 0.0625)이라 시드를 240까지 늘려도 유의에 도달할 수 없다.
+
+개정: 확증 replicate 단위를 **시드**로 전환. 시드 s 마다 그 시드의 다이애드만으로
+구성한 Π_s·CCm_s 로 종착 CC율을 계산해 (레짐×시드) 관측을 만든다
+(`evo.per_seed_terminal_cc`). 동일 X0(CRN)·동일 시드 인덱스로 짝지어 비교의 정합성을
+유지하며, 레짐 수준 부호 일관성은 탐색 지표로 병기한다.
+
+효과(seeds=16 검증): 효과크기는 그대로인 채 검정력만 회복 —
+- C-VP2 : CC_widening=0.043 [0.012,0.075] (n=48), p_holm=0.006 → **지지**
+- C-ORE1: ΔCC=+0.202 [0.156,0.246] (n=64), p_holm=0.0002 → **지지** (4/4 레짐 일관)
+- C-ORE2: CC-widening=0.090 [0.076,0.103] (n=64), p_holm=0.0002 → **지지**
+
+
+## v0.6.3 — 확증 전용 시각화 · 보수-매개 공감항 · 층화 끌개 표집
+
+**(1) 확증 전용 그림 3종.** `vp_confirmatory.png`·`aba_confirmatory.png`·
+`ore_confirmatory.png` 가 C-VP1/C-VP2·C-ABA1/C-ABA2·C-ORE1/C-ORE2 각각을 replicate
+분포(시드×레짐 지터) + 그룹/전체 평균±부트95%CI + 판정 임계선 + 순열 p 로 명시적으로
+보여준다(C-ORE1 은 짝지은 RE vs ORE 산점, C-ABA2 는 용량-반응 기울기+CI 밴드).
+
+**(2) 보수-매개 공감항 `empathy_shift` (core/constants.py).** 레거시 ToM 공감항
+5λ−p−1 은 기본 보수 (T=5,R=3,P=1,S=0) 에서 유도된 상수식이었다. 이를 현재 보수를
+호출 시점에 읽는 일반형으로 대체:
+
+    empathy_shift(λ, p) = (T−S)·λ + (R−T+P−S)·p + (S−P)
+
+기본 보수에서 레거시와 **비트 단위 동일**(H1–H12·골든 회귀 완전 보존)하며, 가변
+페이오프 환경(§VP)에서는 ToM 공감항이 맥락 효용을 반영한다(예: 조화 R=7 이면 p 계수
++3 으로 반전). 적용: 입자필터(inversion), ToM 복원 스크립트, ANN-ToM 매개적 상대 —
+전 소비처 일관. ANN 식별가능 합성의 λ 계수도 (T−S) 로 일반화. **정직 보고**: ToM
+공감항의 맥락화로 payoff-blind 고정전략에 대한 생성모형 불일치가 생겨 VP 효과크기가
+감소(Δpay 0.166→0.060; CC-widening 0.043→0.051 @seeds=24). seeds=24(실사용 상한)
+검증에서 6/6 확증 지지 유지: C-VP1 p=0.010, C-VP2 p=0.005, C-ORE1/2 p=0.0002.
+
+**(3) 층화 끌개 표집 (evolution.attractor_analysis, 기본 n=1500).** 고차원(k=9)
+Dirichlet(1) 균등표집의 중심 편향('한 유형 과반' 초기점 ≈3%)을 보완: 균등층(70%) +
+유형별 코너층(30%; x=0.8·e_i+0.2·Dirichlet)으로 층화. 끌개 **발견**은 전 층으로,
+**basin_frac 은 균등층에서만**(균등 측도 비편향 유지), 유형별 코너 초기 집단의
+수렴처는 `corner_convergence` 로 별도 보고(코너 강건성). H8E 끌개 구성 n=400→1500.

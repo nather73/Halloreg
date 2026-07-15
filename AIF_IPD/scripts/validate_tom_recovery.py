@@ -29,6 +29,7 @@ import matplotlib.pyplot as plt
 from matplotlib import font_manager
 
 from AIF_IPD.core.logging_utils import get_logger, set_korean_font
+from AIF_IPD.core.constants import empathy_shift as C_empathy_shift
 from AIF_IPD.ipd.tom.inversion import OpponentInversion, ObservationContext
 
 LOGGER = get_logger("HalloReg.recovery")
@@ -51,7 +52,7 @@ class SyntheticOpponent:
 
     def coop_prob(self, focal_last):
         f = 0.0 if focal_last is None else (1.0 - 2.0 * focal_last)
-        shift = 5.0 * self.lambda_j - self.my_coop_rate - 1.0
+        shift = C_empathy_shift(self.lambda_j, self.my_coop_rate)
         return float(_logistic(self.beta * (self.alpha + self.rho * f + shift)))
 
     def act(self, focal_last):

@@ -879,3 +879,66 @@ vs emitted(환경오류 반영 실제 방출) 불일치와 결과 유형(CD=순�
 DD/DC=자기기인)으로 통제권·w_other 산출. w_other(=attr_gate)로 dispositional grievance
 충전과 예기 항, core 의 dispositional 증거를 게이팅(자기기인 배신은 상대 기질 불만을
 덜 충전). 기본 off(attr_gate=1.0)로 H1–H12 결과 보존.
+
+================================================================================
+v0.6.1 — 협력 지표 개정 (이분 유역 → 행동적 CC율)
+================================================================================
+
+동기: 이분 협력 유역(coop_basin_frac; 협력-라벨 종착 점유>0.5)은 (i) 임의 임계 이분화
++ 유계 차분 천장효과, (ii) 라벨-행동 괴리(deadlock 에서 협력-라벨 유형이 실제 배신)로
+협력을 과대·왜곡 측정한다. 특히 deadlock 의 ORE 유역이 인공적 고점(≈0.9)을 보이나 실제
+상호협력은 거의 없음이 드러났다(§ORE 검증).
+
+개정: 종착 조성의 **행동적 CC율** CC(x)=xᵀ·CCm·x 로 전면 대체.
+  · CCm[i,j] = i·j 다이애드의 실제 CC 발생률(관점 무관 대칭). estimate_payoff_matrix·
+    estimate_variable_payoff_matrix 가 함께 반환(CC, CC_raw 키).
+  · evo.population_cc_rate / re_terminal_cc / ore_terminal_cc — 조성·RE종착·ORE종착 CC율.
+  · 초기점 X0 공유(CRN)·Π·CCm 공통 시드 부트스트랩으로 짝지은 비교 유지.
+
+적용 범위(사전등록 확증 재기반):
+  VP  C-VP2  = RE CC-widening(변동레짐)>0
+  ORE C-ORE1 = ORE 종착 CC율 > RE 종착 CC율(레짐 짝지음)
+      C-ORE2 = ORE adaptive CC-widening>0
+  H8E cc_widening_positive (basin_analysis → re_terminal_cc, adaptive 유−무)
+  H11 후보별 CC-widening(_widening_all → re_terminal_cc); 주 확증(CC 기울기)은 원래
+      행동 기반이라 불변
+  H12 basin_slot → re_terminal_cc: C1(위협축 한계 keystone 기울기)·C2(중복축 비대체성)·
+      C3(keystone 프런티어 교차)를 CC율 곡면 위에서 재계산. Shapley φ 도 CC율 기반.
+
+불변: 상태공간 위상도(basin_map_3 끌개 유역)는 동역학 구조 시각화로 유지(협력 정량
+지표 아님). 골든 회귀(controllability off)·H1–H7·GS 결과 불변.
+
+================================================================================
+v0.6.2 — 확증 검정 replicate 단위 개정 (레짐 → 시드)
+================================================================================
+문제: v0.6.1 검증(seeds=16)에서 VP C-VP2·ORE C-ORE1/2 가 전 레짐 부호 일관(4/4)인데도
+p≈0.06~0.13 으로 미지지. 원인은 확증 검정이 레짐 수준(n=3~4)에서 짝지은 순열이라
+p 하한(~1/2^n)에 막힌 것 — 시드를 늘려도 해결 불가능한 구조적 결손.
+
+개정: evo.per_seed_terminal_cc(pi_raw, cc_raw, X0) 추가 — 시드 s 마다 Π_s·CCm_s(그
+시드의 다이애드만)로 RE·ORE 종착 CC율을 계산. 확증은 (레짐×시드) pooled replicate 로
+검정하고, 레짐 내 시드 인덱스로 짝지음(CRN X0 공유). 레짐 수준 부호 일관성은 탐색 병기.
+
+적용: VP C-VP2(시드×레짐 단일표본), ORE C-ORE1(시드×레짐 짝지음)·C-ORE2(단일표본).
+검증 결과(seeds=16): 6/6 확증 지지 — C-VP1 p=0.0002, C-VP2 p=0.006, C-ABA1 p=0.0002
+(T=240), C-ABA2 p=0.0005, C-ORE1 p=0.0002, C-ORE2 p=0.0002.
+불변: 효과크기·지표 정의(행동적 CC율)는 그대로. 검정 구성만 교정.
+
+
+================================================================================
+v0.6.3 — 확증 시각화 · 보수-매개 empathy_shift · 층화 끌개
+================================================================================
+(1) 확증 전용 그림: fig_VP/ABA/ORE 말미에 fig_*_confirmatory 훅. 공용 _conf_panel
+    (지터+그룹/전체 평균±부트CI+임계선+통계 주석). exp_VP/exp_ORE 반환에 replicate
+    배열 추가(cvp1/cvp2_replicates, per_reg.seed_re/seed_ore/seed_sw_*).
+(2) constants.empathy_shift(λ,p) = (T−S)λ + (R−T+P−S)p + (S−P). 기본 보수에서
+    레거시 5λ−p−1 과 비트 동일(10^5 표본 max diff 0.0; ref 골든 3다이애드 diff 0.0).
+    배선: inversion._empathy_shift / validate_tom_recovery 매개상대 / ann_tom
+    ParametricOpponent + 식별가능 합성 계수 (T−S). set_payoffs 가 R 만 변경하므로
+    맥락 의존은 p 계수 (R−T+P−S) 로 유입(harmony +3, deadlock −4.5). 부수효과:
+    payoff-blind 상대에 대한 ToM 모형 불일치로 VP 효과 감소 — seeds=24 재검증으로
+    6/6 확증 지지 확인.
+(3) evolution.stratified_simplex_points + attractor_analysis 개정(n=1500 기본,
+    corner_frac=0.3, corner_weight=0.8): 발견=전층, basin_frac=균등층 전용,
+    corner_convergence=유형별 코너 수렴 분포. replicator_ends_batch 벡터화 사용.
+    H8E: n_attr=1500(quick 150), '코너 강건성' 탐색 로깅 추가.
