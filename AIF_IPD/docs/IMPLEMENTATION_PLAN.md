@@ -942,3 +942,64 @@ v0.6.3 — 확증 시각화 · 보수-매개 empathy_shift · 층화 끌개
     corner_frac=0.3, corner_weight=0.8): 발견=전층, basin_frac=균등층 전용,
     corner_convergence=유형별 코너 수렴 분포. replicator_ends_batch 벡터화 사용.
     H8E: n_attr=1500(quick 150), '코너 강건성' 탐색 로깅 추가.
+
+================================================================================
+v0.6.4 — ToM 복원: 양방향 + 회귀자 중심화 배터리
+================================================================================
+(1) core/constants.set_payoff_matrix(R,T,S,P) / reset_payoffs() 추가 — (R,T,S,P)
+    직접 지정. 복원 과제 전용(유효 PD 조건 미강제; 본 실험 미사용 → H1–H12 골든
+    diff 0.0 유지). set_payoffs/set_coop_index 는 불변(T=5,S=0 고정).
+(2) validate_tom_recovery.py 전면 개정:
+    · 4-파라미터(α,ρ,β,λ_j) — λ_j 고정 해제, THETA_RANGES 명시·보고(복원 지표는
+      표집 구간에 의존하므로 필수).
+    · DESIGNS = {legacy: 단일맥락, centered: u=(T−S)∈{+2,0,−2} 중심화 ×
+      v=(R−T+P−S)p+(S−P)∈{∓0.8} 직교 요인설계}. design_diagnostics() 가 u/v 의
+      평균·SD·corr 를 로깅 — 이 진단이 초기 블록표의 산술오류(corr=−0.23)를 검출.
+    · 정방향: bias·rmse·r·R²·recovery_slope·coverage_90·shrinkage + **혼동행렬**
+      corr(참_i,추정_j) 와 대각지배 판정.
+    · 역방향: predictive_check() — θ̂ 로 재생성한 상대의 맥락별 협력확률 vs 참값,
+      입자 사후예측 90% 구간 커버리지(가중분위수).
+    · 그림 2×4: (a-d) 참vs추정 산점(legacy 회색 대비), (e,f) 혼동행렬 히트맵,
+      (g) 커버리지, (h) 역방향 사후예측.
+    · JSON: designs{legacy,centered} + summary(centered, 하위호환) + theta_ranges.
+(3) 검증(n=60, 240라운드): centered 가 α r=0.19→0.95, λ_j 0.62→0.90, 혼동 최대
+    비대각 0.78→0.35(대각 지배). 정직 보고: legacy 는 정방향 파탄에도 역방향
+    r=0.99 — 역방향은 복원의 필요조건일 뿐. ρ·β 는 βρ 결합·포화로 중간 수준 잔존.
+
+================================================================================
+v0.6.5 — ToM 복원 완결 (계단식 v + 능동 설계)
+================================================================================
+(1) _ctx(u,v[,p]) : (u,v)→(R,T,S,P,p) 역산 (R=(v−(S−P))/p+T−P+S; p=.5 → 2v+u+1).
+    DESIGNS 를 dict 로 개편: legacy/centered {"blocks":...}, adaptive {"menu": 15맥락
+    (u∈{±2,0}×v∈{0,±0.8,±1.6}), "adaptive": True}. 검산: 메뉴 전점 u·v 재계산 일치.
+(2) recover_once_adaptive: 후보 30개(메뉴×f±1) 획득함수 = (ρ,β) 기대 사후분산
+    감소(가상 가중갱신, 재표집 없음, (N,C) 벡터화). ε=0.15, 번인 2×30 라운드로빈.
+    선택된 맥락만 set_payoff_matrix 로 반영(상대·필터 동일 맥락 유지).
+(3) predictive_check 를 공통 EVAL_CONTEXTS(centered 배터리)로 통일 — 설계 간 비교
+    가능 + 맥락 외 전이 검사로 승격(legacy in-ctx r=.99 → out-ctx .57, 축퇴 노출).
+(4) 검증(60상대·240라운드): adaptive 가 α .93 / ρ .68 / β .83 / λ .84 (R²),
+    편향≈0, 기울기 .92–1.12, 커버리지 .87–.98, 혼동 비대각 .31(대각 지배).
+    정직 잔여: ρ 최약(모형의 f±1 구조 기인 — 우도 변경 없이는 설계 범위 밖).
+(5) 모형·패키지 불변(스크립트만 수정) — 골든/H1–H12 무영향.
+
+================================================================================
+v0.6.6 — 사영 연구 + ToM 갱신 오프바이원 수정 (브레이킹)
+================================================================================
+(1) scripts/validate_projection.py 신규 (492줄): Q1 복원성/Q2 분리성/Q3 충실도/
+    Q4 동치류 분해. LABELS 8종(전략 내부 error=0, env 잡음 대칭). θ*=장지평
+    probe 극한(--star-rounds/--star-seeds). run_probe_dyad 가 run_dyad 역학 미러
+    + _force_focal_action 으로 **정책 수준** 강제 배신(자기모형 일관 정정 — 방출만
+    바꾸면 ToM 이 보복을 f=+1 에 오귀속). perm_test_decode(라벨 순열),
+    bhattacharyya, icc_oneway, model_signature(CC≡CD/DC≡DD 붕괴 구조 노출).
+    그림 projection_tom.png 2×3 + projection_tom.json.
+    quick 결과: probe 0.55(p=.0164) vs onpolicy 0.20, Q4 이득 +0.35;
+    시그니처 RMSE wsls 0.444(구조적 잔차 예측 적중) vs TFT 0.053/allc 0.018.
+(2) ipd/agent.py step: 갱신용 ctx_upd 분리 — f_upd = my_actions[-2](=a_{k−2}).
+    근거(데이터 수준): step(k) 관측 opp_{k−1} 과 일치도 my_actions[-2]=1.000 vs
+    my_actions[-1]=0.495. 결정용 ctx 는 불변(원래 정렬).
+    실다이애드 TFT ρ̂ 0.17 → +0.88.
+(3) 골든 스냅숏 삭제 후 **v0.6.6 재기준**(재생성 → PASS, 재실행 PASS).
+    ref(v0.2.1) 대비 diff 0.0 은 의도적으로 성립하지 않음.
+(4) 확증 재검증(축소 조건 스팟체크): ABA/ORE 지지 유지(효과크기 소폭 감소),
+    **VP C-VP1/C-VP2 미지지로 반전** — 단 seeds=16 vs 기준선 24 로 검정력 교락.
+    사용자 머신 seeds=24 재실행으로 확정 필요. 정직 보고 원칙에 따라 미지지 명시.

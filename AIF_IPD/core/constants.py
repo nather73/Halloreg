@@ -74,6 +74,40 @@ def set_coop_index(ci: float | None):
                        (DEFECT, COOP): (T, S), (DEFECT, DEFECT): (P, P)})
 
 
+def set_payoff_matrix(R_new: float, T_new: float,
+                      S_new: float, P_new: float) -> tuple:
+    """
+    (R,T,S,P) 를 **직접** 지정하는 일반 보수 setter — 파라미터 복원 과제 설계 전용
+    (v0.6.4).
+
+    `set_coop_index`/`set_payoffs` 는 T=5, S=0, P=1 을 고정하고 R 만 변조한다.
+    그런데 `empathy_shift` 의 λ 계수는 (T−S) 이므로, R 만 바꾸는 조작에서는 λ 의
+    회귀자가 상수 5 로 고정된다 → 로짓에서 λ 열이 절편(α)과 공선이 되어 **α·λ 를
+    개별 식별할 수 없다**(설계행렬 rank 결손). 복원 과제에서 λ 회귀자를 블록마다
+    변조·**중심화**(평균 0)하려면 T·S 를 포함한 일반 조작이 필요하다.
+
+    유효 PD 조건(T>R>P>S)을 강제하지 않는다 — 복원 배터리는 식별을 위해 PD 가
+    아닌 2×2 게임(예: T<S)을 의도적으로 포함한다. 본 실험(run_ipd_experiment)은
+    이 함수를 사용하지 않으므로 H1–H12·GS·VP·ABA·ORE 결과에 영향이 없다.
+
+    주의: 호출 후에는 `reset_payoffs()` 로 기본 PD 로 복귀해야 `set_coop_index`
+    (T−S=5 를 가정)가 정상 동작한다.
+    반환: (R, T, S, P).
+    """
+    global R, T, S, P
+    R, T, S, P = float(R_new), float(T_new), float(S_new), float(P_new)
+    PAYOFF_SELF[:] = [R, S, T, P]
+    PAYOFF_OTHER[:] = [R, T, S, P]
+    PD_PAYOFFS.update({(COOP, COOP): (R, R), (COOP, DEFECT): (S, T),
+                       (DEFECT, COOP): (T, S), (DEFECT, DEFECT): (P, P)})
+    return (R, T, S, P)
+
+
+def reset_payoffs() -> tuple:
+    """기본 PD 보수 (R=3, T=5, S=0, P=1) 로 복귀."""
+    return set_payoff_matrix(3.0, 5.0, 0.0, 1.0)
+
+
 def set_payoffs(ci: float, strict: bool = False) -> tuple:
     """
     협력지수 CI=(R−P)/(T−S) 로 보수를 재설정하되, **극단 영역(CI<0, CI≥1)까지

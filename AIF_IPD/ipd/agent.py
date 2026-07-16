@@ -120,7 +120,21 @@ class ToMEmpathicAgent:
             self._prev_means = self.inversion.posterior_means()
 
             # (1) 입자필터 갱신 (귀인 개인차가 jitter/사전에 반영됨)
-            self.inversion.update(opp_action, ctx)
+            # [v0.6.6 정렬 수정] 관측된 opp_{k−1} 은 (동시행동 게임의 1라운드
+            # 지연으로) 내 행동 a_{k−2} 에 반응한 것이다. 종전에는 ctx 의
+            # my_last_action=a_{k−1} 을 그대로 써서 우도가 한 라운드 어긋났고
+            # (off-by-one), 반응 전략(TFT 등)의 호혜 신호가 파괴되어 ρ̂→0 으로
+            # 붕괴했다(무작위 focal 검증: 현행 ρ̂=−1.10/β̂=0.12 vs 정렬
+            # ρ̂=+3.21/β̂=4.92). 예측 경로는 결정 시점에 my_last=a_{k−2} 로
+            # opp_{k−1} 을 예측하므로 원래 올바름 — 갱신도 같은 a_{k−2} 를 쓰면
+            # 예측–갱신 일관성이 복원된다.
+            f_upd = (self.my_actions[-2] if len(self.my_actions) >= 2
+                     else None)
+            ctx_upd = ObservationContext(
+                my_last_action=f_upd, their_last_action=opp_action,
+                joint_outcome=observed_state,
+                round_number=len(self.my_actions))
+            self.inversion.update(opp_action, ctx_upd)
             inferred = self.inversion.posterior_means()
             bu = self.inversion.belief_update_magnitude(self._prev_means)
 
