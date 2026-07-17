@@ -174,10 +174,13 @@ class RecursiveSocialEFE:
         G_other_expected = G_other  # 이미 내 행동별로 정리됨
 
         # 내 epistemic: 내가 a_i 를 둘 때 상대 다음행동으로부터 θ 정보이득
+        # [v0.8.0 §7] fg 기저에서는 상대 직전행동 g 도 조건에 들어간다(일관 전파).
         f_next = np.array([+1.0, -1.0])  # COOP→+1, DEFECT→-1
+        g_next = (0.0 if ctx is None or ctx.their_last_action is None
+                  else 1.0 - 2.0 * float(ctx.their_last_action))
         IG_self = np.array([
-            self.inversion.expected_infogain(COOP, f_next[COOP]),
-            self.inversion.expected_infogain(DEFECT, f_next[DEFECT]),
+            self.inversion.expected_infogain(COOP, f_next[COOP], g_next),
+            self.inversion.expected_infogain(DEFECT, f_next[DEFECT], g_next),
         ])
 
         # 상대 epistemic (R2): 상대가 '나'를 학습하며 얻는 정보이득.

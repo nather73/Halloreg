@@ -499,3 +499,202 @@ a_{k−2} 를 쓰면 **예측–갱신 일관성**이 복원된다.
 것을 권고한다. ABA/ORE 는 효과크기가 소폭 감소했으나 지지 유지.
 
 사용: `python AIF_IPD/scripts/validate_projection.py --quick`
+
+## v0.7.0 — 반사실(counterfactual) 인과 귀인 (§1·§2·§4) **[모형 개정]**
+
+**기질 귀인에서 ρ 를 축출한다.** ρ(호혜성)는 우도에서 `ρ·f` 로 들어가는 **조건적
+반응성** 파라미터이지 **valence**(상대가 좋은가/나쁜가)가 아니다. 그런데 v0.6.6 의
+`LambdaRegulator.step` 은 `disp_from_rho = σ(−E_rho)` 로 ρ 를 기질 증거에 직접 넣었다.
+
+**세 가지 문제 (실측 확인):**
+
+| 상대 | ρ항 σ(−ρ̂) | α항 σ(−α̂) |
+|---|---|---|
+| ALLC | 0.397 | 0.507 |
+| ALLD | 0.490 | **0.926** |
+| TFT | **0.256** | 0.599 |
+
+1. **무정보성** — ρ 는 ALLC(0.397)와 ALLD(0.490)를 구분하지 못한다. 최대 협력자와
+   최대 착취자에게 사실상 같은 기질 증거를 부여한다.
+2. **역정보성** — 더 나쁘게, TFT 의 ρ항(0.256)이 ALLC(0.397)보다 **낮다**. 호혜적
+   상대가 무조건 협력자보다 "더 나쁜 기질"로 평가되는 역전.
+3. **편향 주입 / 보복 오귀인** — ρ≈0 이면 σ(0)=0.5 가 상수로 기여되고, TFT 의
+   *내가 배신했기 때문에* 나온 보복이 기질로 오귀인된다(ad-hoc `dd_charges` 로 우회).
+
+**개정 — 반사실 인과 분해.** ToM 모형 자체로 계산 가능한 반사실을 쓴다:
+
+```
+기질(무조건) 성분 = P(D | f=+1) = 1 − σ(β̂(α̂ + ρ̂·(+1) + s(λ̂_j, p)))
+유발(provoked)   = P(D | f=−1) − P(D | f=+1)
+```
+
+ρ 는 이제 **valence 가 아니라 반사실 시나리오를 구성하는 역할만** 한다
+("내가 협력했더라도 저 상대가 배신했을까?").
+
+**결과 (seeds=8·240R):**
+
+| 대조 | 현행 Δ | **반사실 Δ** | 명세서 목표 |
+|---|---|---|---|
+| ALLD − TFT | +0.269 | **+0.667** | +0.506 |
+| ALLD − ALLC | +0.275 | **+0.699** | +0.607 |
+
+유발분: TFT +0.260, GTFT +0.263 (배신의 상당분이 내 도발), **ALLD +0.004 ≈ 0**
+(순수 기질). 판별력 ~2.5배 개선으로 목표 초과 달성.
+
+- **§2** 손튜닝 계수 1.5/1.0/0.7 제거 — counterfactual 모드에서는 항 자체가 소멸,
+  legacy 모드는 (1,1,1) 균등화(정당화 불가한 자유 파라미터 3개 제거, Occam).
+- **§4** 세 자기/타인 귀인 기제(ControllabilityAttribution → 반사실 → attr_gate)의
+  파이프라인 순서를 명문화하고, 유발분이 이미 제거된 몫만큼 attr_gate 를 완화해
+  **이중 계상을 방지**한다 (`cf_attr_gate_dedup`).
+- **§1.5 H5 재정의 (모형 개정)** — 정교형=반사실 귀인 사용, 즉각형=관측 배신 직접
+  반응. `dd_charges` 는 이제 *정의*가 아니라 *결과*다. 두 조작화(legacy vs
+  counterfactual)를 나란히 비교하는 절제 실험을 H5 에 포함한다.
+
+```bash
+python AIF_IPD/scripts/run_ipd_experiment.py --disposition-mode counterfactual
+```
+
+## v0.7.1 — rollout ρ 전파 (§3)
+
+현행 모형에는 "내 협력이 다음 라운드에 되돌아온다"는 계산이 **어디에도 없었다**.
+동시행동·horizon=1 에서 pc 는 내 후보 행동에 의존하지 않아 G_self 실용항은 항상 D 를
+선호(T>R, P>S)하고, `OpponentSimulator` 가 rollout step>0 에서 static ToM 으로 후퇴해
+ρ 를 전파하지 않았다.
+
+**경계 (중요).** 이 문제를 λ 로 해결하면 **안 된다**. "호혜적이니 협력이 이득 → λ↑"
+는 λ 를 공감이 아니라 전략 파라미터로 바꿔 구성개념을 붕괴시킨다. ρ 의 도구적 가치는
+**λ 가 아니라 EFE/rollout** 이 다뤄야 한다 — 본 확장은 `LambdaRegulator` 를 전혀
+건드리지 않고 planner 의 rollout 예측만 바꾼다.
+
+**결과 (horizon=2, seeds=4·120R):**
+
+| 상대 | rr=False | rr=True |
+|---|---|---|
+| TFT | coop 0.667 / pay 297.8 | **coop 0.902 / pay 329.8** |
+| GTFT | coop 0.817 / pay 341.0 | coop 0.906 / pay 336.5 |
+| **ALLD (음성 대조)** | coop 0.244 / pay 115.0 | coop 0.263 / pay 112.5 |
+
+호혜 상대에서 협력·보수가 함께 오른다(도구적 경로가 G_self 에 자연 발생).
+**음성 대조 성립**: ALLD 는 ρ̂≈0 이라 사실상 무영향(quick 격자에서 Δcoop=0.000).
+
+```bash
+python AIF_IPD/scripts/run_ipd_experiment.py --rollout-reciprocity --experiments RR
+```
+
+## v0.8.0 — 우도 기억-1 완전화: g·fg 항 (§7) **[브레이킹]**
+
+**WSLS 표현 불가 해소.** 현행 우도 `P(a_j=C|f,θ)=σ(β(α+ρf+s(λ_j,p)))` 의 조건 변수는
+f 하나뿐이다. 표현 가능한 기억-1 시그니처는 제약 `P(C|CC)=P(C|CD)`,
+`P(C|DC)=P(C|DD)` 를 만족하는 **2자유도 부분공간**뿐이며, WSLS 는 joint outcome
+조건(XOR 구조, 참 시그니처 [1,0,0,1])이라 이 클래스 **밖**에 있다.
+
+v0.6.6 실증: WSLS RMSE=0.408 인데 상태 점유 기반 **구조 하한이 0.406** → 추정 오차
+~0.002. **실패는 추정이 아니라 표현이다.** 더 심각한 것은 β*_wsls=0.79 로 전 유형
+최저 — 완전 결정론적 규칙이 "저정밀 잡음"으로 오사영되어, β-게이팅이 WSLS 배신을
+비의도/맥락으로 오귀인했다.
+
+**개정 — 로짓 기저 완전화:**
+
+```
+P(a_j=C | f, g, θ) = σ( β(α + ρ·f + ω·g + η·f·g + s(λ_j, p)) )
+```
+
+- `g` = 상대 자신의 직전 행동(±1): **관성/자기일관성**
+- `η` = f·g 상호작용: **결과-조건성(WSLS성)**
+- 기저 (1, f, g, fg) 가 기억-1 시그니처 **전 공간(4자유도)** 을 스팬
+
+**결과 (probe, 6 seeds·600R·600 입자):**
+
+| 상대 | f 기저 RMSE | **fg 기저 RMSE** | f 기저 β̂ | **fg 기저 β̂** | fg η̂ |
+|---|---|---|---|---|---|
+| **WSLS** | 0.453 | **0.040** | 0.14 | **1.55** | **+2.44** |
+| TFT | 0.029 | 0.041 | 2.00 | 1.49 | +0.06 |
+| ALLC | 0.070 | 0.049 | 1.45 | 1.33 | +0.42 |
+| ALLD | 0.071 | 0.042 | 1.48 | 1.47 | +0.67 |
+
+WSLS 경험 시그니처 `[0.963, 0.048, 0.035, 0.939]` vs fg 모형 `[0.984, 0.024, 0.009,
+0.981]`. 목표(RMSE ≤0.10, β̂ ≥1.5) **모두 달성**, η̂ 특이성(음성 대조) 성립.
+
+**§7.2 시제(tense) 규약 — 오프바이원 재발 방지.** f·g 는 **같은 시제 원칙**을 따른다:
+
+| 경로 | 대상 | f | g |
+|---|---|---|---|
+| 갱신용 | 관측 opp_{k−1} | my_{k−2} | **opp_{k−2}** |
+| 결정용 | 예측 opp_k | my_{k−1} | **opp_{k−1}** |
+
+무작위 focal 데이터-수준 검증(TFT·WSLS, 200R): f·g 모두 **1.000 일치**(대안 시제
+0.510 = 우연). 
+
+**§7.3 fg_centered 복원 배터리 (필수 동반).** g 는 상대 자신의 행동이라 **직접 조작
+불가** — f 만 변조하는 배터리로는 ω·η 가 식별되지 않는다. 합성 상대에 한해 **상대
+행동열을 조건부 강제**해 (f,g) 4셀을 균형 순회한다. 설계행렬 (1,f,g,fg)
+full-rank + 중심화 달성(`corr_f_g=0`, 각 열 평균 0), 6×6 혼동행렬 대각 지배 검증.
+
+```bash
+# fg 기저 실험 / 사영 / 복원
+python AIF_IPD/scripts/run_ipd_experiment.py --likelihood-basis fg --experiments FG
+python AIF_IPD/scripts/validate_projection.py --basis fg
+python AIF_IPD/scripts/validate_tom_recovery.py --designs fg_centered --rounds 480
+```
+
+### 개정 토글 요약 (부록 B 규약: 기본값 = 기존 결과 재현)
+
+| 토글 | 기본 | 새 값 | 명세서 |
+|---|---|---|---|
+| `--disposition-mode` | `legacy` | `counterfactual` | §1 |
+| `--likelihood-basis` | `f` | `fg` | §7 |
+| `--rollout-reciprocity` | off | on | §3 |
+
+세 토글은 서로 독립이며 조합 가능하다. **모든 기존 결과는 기본값으로 재현된다.**
+
+## 버전 대조 도구 (v0.8.0)
+
+두 `summary.json` 을 짝지어 개정이 **무엇을 바꿨고 무엇을 보존했는지** 시각화한다.
+
+```bash
+python AIF_IPD/scripts/compare_versions.py \
+    --old /path/to/v066/summary.json \
+    --new AIF_IPD/results/summary.json \
+    --old-label v0.6.6 --new-label v0.8.0
+```
+
+출력: `results/version_compare.png` (판정 대조 매트릭스 · 효과크기 이동 산점 ·
+Δdz 상위 · 신규/제거 지표 · 요약 카운트) + `version_compare.json`.
+
+**config 불일치 경고가 뜨면 반드시 확인할 것.** seeds/rounds 가 다르면 효과크기 차이가
+개정 효과인지 검정력 차이인지 **교락**된다. 예: quick(seeds=3) vs full(seeds=240)
+대조에서 VP C-VP2 는 효과가 오히려 커졌는데도(0.049 → 0.103) n 이 72→9 로 줄어
+'지지→미지지' 로 뒤집힌다 — 이는 모형 효과가 아니라 검정력 손실이다.
+**대조는 반드시 동일 조건(seeds·rounds·backend)에서 수행한다.**
+
+## v0.8.1 — VP/ORE 예산 명시화 · posterior SD 로깅
+
+- **은닉 캡 폐지**: VP/ORE 의 하드코딩 캡(T≤120, seeds≤24)을 제거하고
+  `--vp-rounds/--vp-seeds/--ore-rounds/--ore-seeds` (기본 **240/60**) 로 명시화.
+  실효값은 `summary.json` config 와 각 실험 결과의 `"T"/"seeds"` 에 기록된다.
+  v0.6.6 조건 재현: `--vp-rounds 120 --vp-seeds 24` (ORE 동일).
+- **posterior SD 로깅**: `agent.log` 에 `sd_alpha/sd_rho/sd_beta/sd_lambda_j/
+  sd_omega/sd_eta` 추가 — 본 실험(T=60/240, on-policy)에서 θ̂ 의존 기제
+  (β-게이팅·반사실 귀인)의 실험 내 식별 상태를 사후 진단한다. recovery 의
+  rounds=480 은 §7.3 통계적 요구이므로 변경하지 않는다.
+- **실행 안내**: `docs/IMPLEMENTATION_PLAN.md` **부록 D** — 설치·규약·개정 토글
+  3종의 의미와 켜는 법·예산 플래그·검증 스크립트·버전 대조·권장 실행 순서.
+
+## v0.8.2 — 기본값 반전 · fg 입자 자동 상향 · horizon 스윕 **[브레이킹]**
+
+- **기본값 반전**: 플래그 없이 실행하면 개정 모형 — `counterfactual` · `fg`
+  (입자 자동 600) · rollout on · `planning_horizon=2`.
+  **v0.6.6 재현은 opt-in**:
+  ```bash
+  python AIF_IPD/scripts/run_ipd_experiment.py --jobs 16 \
+      --disposition-mode legacy --likelihood-basis f \
+      --no-rollout-reciprocity --planning-horizon 1
+  ```
+  에이전트 클래스 기본값은 legacy/f 유지(골든·라이브러리 호환) — 반전은 러너
+  주입 층에서만. 실험이 명시한 값(H5 절제 legacy 팔, RR rr=False 팔)은 전역보다
+  우선하므로 절제/음성대조 설계는 보존된다.
+- **fg 입자 자동 상향**: 러너 경유 fg 실행 시 `n_particles` 미명시면 600 주입.
+- **`--planning-horizon N`** (기본 2) + **`--summary-out FILE`**: 전 실험을
+  horizon 1/2 에서 각각 실행해 `compare_versions.py` 로 총체 대조하는 절차는
+  `docs/IMPLEMENTATION_PLAN.md` **부록 D.8**.
+- 비용: 기본 실행 ≈ v0.8.1 의 3~5×/다이애드 (600 입자 × horizon-2 planning).

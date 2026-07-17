@@ -50,16 +50,23 @@ class ToMEmpathicAgent:
                  w_epi_self: float = 0.6, w_epi_other: float = 0.3,
                  recursive_depth: int = 2, planning_horizon: int = 1,
                  use_pymdp: bool = False, prior_opp_coop: float = 0.5,
+                 likelihood_basis: str = "f",
+                 rollout_reciprocity: bool = False,
                  name: str = "ToMEmpathic", seed: int = 0):
         self.name = name
         self.lam_base = float(lam_base)
         self.lam = float(lam_base)          # 고정
         self.planning_horizon = planning_horizon
         self.use_pymdp = use_pymdp
+        # [v0.8.0 §7] 우도 기저 토글 — agent → inversion → tom_core 일관 전파.
+        self.likelihood_basis = likelihood_basis
+        # [v0.7.1 §3] rollout ρ 전파 토글 (horizon≥2 에서만 유효).
+        self.rollout_reciprocity = bool(rollout_reciprocity)
         self.rng = np.random.default_rng(seed + 991)
 
         # ToM 구성요소
-        self.inversion = OpponentInversion(n_particles=n_particles, seed=seed)
+        self.inversion = OpponentInversion(n_particles=n_particles, seed=seed,
+                                           likelihood_basis=likelihood_basis)
         self.tom = TheoryOfMind(beta_other=beta_other)
         self.gated = GatedToM(self.tom, self.inversion)
         self.social_efe = RecursiveSocialEFE(
@@ -81,18 +88,44 @@ class ToMEmpathicAgent:
         # 상태
         self.my_last = COOP
         self.my_actions: List[int] = []
+        # [v0.7.0] 상대 행동 이력. g(상대 자신의 직전 행동) 추출과 반사실 주변화에
+        # 사용된다(§1 §7). opp_actions[k] = 라운드 k 에서 관측된 상대 행동.
+        self.opp_actions: List[int] = []
         self.pred_coop_prev = 0.5
         self._prev_means = self.inversion.posterior_means()
 
         self.log: Dict[str, list] = {
             "lam": [], "action": [], "pred_coop": [], "reliability": [],
             "E_alpha": [], "E_rho": [], "E_beta": [], "E_lambda_j": [],
+            # [v0.8.0 §7.2] fg 기저 축. f 기저에서는 0 으로 채워진다.
+            "E_omega": [], "E_eta": [],
+            # [v0.8.1] 입자 사후 SD — **실험 내 식별 상태의 사후 진단**용.
+            # recovery 배터리는 이상 조건(T=480·강제 균형 점유)의 상한 검증이므로,
+            # 본 실험(T=60/240·on-policy 점유)에서 θ̂ 의존 기제(β-게이팅·반사실
+            # 귀인)를 해석할 때는 이 SD 로 θ̂ 가 실제로 좁혀졌는지 함께 본다.
+            # 예: sd_beta 가 사전(1.8) 근처에 머물면 β̂ 기반 판정은 약식별 상태.
+            "sd_alpha": [], "sd_rho": [], "sd_beta": [], "sd_lambda_j": [],
+            "sd_omega": [], "sd_eta": [],
             "grievance": [], "trust": [], "belief_update": [],
             "disp_credence": [], "ctx_credence": [],
             "control": [], "w_other": [], "sPE": [], "oPE": [],
+            # [v0.7.0 §1.4] 유발분(provoked) — 반사실 귀인 진단용.
+            "provoked": [],
         }
 
     # ------------------------------------------------------------ 조절 훅
+    def _feature_g_val(self, ctx: ObservationContext) -> float:
+        """ctx 의 g 신호(±1). f 기저에서는 ω=η=0 이므로 무영향."""
+        if ctx is None or ctx.their_last_action is None:
+            return 0.0
+        return 1.0 - 2.0 * float(ctx.their_last_action)
+
+    def _opp_coop_rate(self) -> float:
+        """관측된 상대 협력율 — 반사실 g 주변화의 P(g=+1) (§7.5)."""
+        if not self.opp_actions:
+            return 0.5
+        return float(np.mean([a == COOP for a in self.opp_actions]))
+
     def _current_lambda(self) -> float:
         """서브클래스에서 λ 조절을 오버라이드."""
         return self.lam_base
@@ -101,16 +134,22 @@ class ToMEmpathicAgent:
                   inferred: dict) -> dict:
         """서브클래스 훅. 기본은 조절 없음."""
         return {"grievance": 0.0, "trust": 0.0,
-                "disp_credence": 0.0, "ctx_credence": 0.0}
+                "disp_credence": 0.0, "ctx_credence": 0.0, "provoked": 0.0}
 
     # ------------------------------------------------------------ 한 라운드
     def step(self, observed_state: Optional[int]) -> int:
+        # [v0.8.0 §7.2 시제 표] 결정 경로: 예측 대상은 opp_k 이며, 상대는 내 최신
+        # 행동 my_{k−1} 과 자신의 최신 행동 opp_{k−1} 에 조건화해 반응한다.
+        #   → f = self.my_last (=my_{k−1}),  g = opp_actions[-1] (=opp_{k−1})
+        # (갱신 경로는 아래에서 둘 다 한 시점 더 과거를 쓴다.)
         ctx = ObservationContext(
             my_last_action=self.my_last,
+            their_last_action=(self.opp_actions[-1] if self.opp_actions
+                               else None),
             round_number=len(self.my_actions),
         )
         reg_info = {"grievance": 0.0, "trust": 0.0,
-                    "disp_credence": 0.0, "ctx_credence": 0.0}
+                    "disp_credence": 0.0, "ctx_credence": 0.0, "provoked": 0.0}
         bu = 0.0
 
         if observed_state is not None:
@@ -130,8 +169,13 @@ class ToMEmpathicAgent:
             # 예측–갱신 일관성이 복원된다.
             f_upd = (self.my_actions[-2] if len(self.my_actions) >= 2
                      else None)
+            # [v0.8.0 §7.2 시제 표] g 도 f 와 **같은 시제 원칙**을 따른다:
+            # 관측 opp_{k−1} 에 대한 g 는 opp_{k−2} 다. 이 시점에서 opp_actions 는
+            # 아직 opp_{k−1} 을 append 하기 전이므로 opp_actions[-1] == opp_{k−2}.
+            # (append 는 _regulate 직후에 수행 — 순서 의존이므로 변경 금지.)
+            g_upd = (self.opp_actions[-1] if self.opp_actions else None)
             ctx_upd = ObservationContext(
-                my_last_action=f_upd, their_last_action=opp_action,
+                my_last_action=f_upd, their_last_action=g_upd,
                 joint_outcome=observed_state,
                 round_number=len(self.my_actions))
             self.inversion.update(opp_action, ctx_upd)
@@ -140,6 +184,11 @@ class ToMEmpathicAgent:
 
             # (2) λ 위계적 조절 (서브클래스)
             reg_info = self._regulate(observed_state, opp_action, inferred)
+
+            # [v0.7.0] 상대 행동 이력 기록. **순서 주의**: (1) 입자필터 갱신이
+            # g_upd=opp_{k−2} 를 참조하므로 반드시 갱신 이후에 append 한다.
+            # 여기서 append 하면 opp_actions[-1] 이 방금 관측한 opp_{k−1} 이 된다.
+            self.opp_actions.append(opp_action)
 
             # (3) pymdp 상태추론(옵션; perception 층 — 로깅/충실도용)
             if self.use_pymdp and self._pymdp is not None:
@@ -153,7 +202,8 @@ class ToMEmpathicAgent:
             action = self._plan_action(ctx, lam)
             res_info = {}
             q_coop = self.inversion.predict_coop(
-                +1.0 if self.my_last == COOP else -1.0)
+                +1.0 if self.my_last == COOP else -1.0,
+                g=(self._feature_g_val(ctx)))
         else:
             action, res = self.social_efe.select_action(
                 ctx, self.my_last, lam=lam, rng=self.rng)
@@ -177,6 +227,15 @@ class ToMEmpathicAgent:
         self.log["E_rho"].append(m["rho"])
         self.log["E_beta"].append(m["beta"])
         self.log["E_lambda_j"].append(m["lambda_j"])
+        self.log["E_omega"].append(m.get("omega", 0.0))
+        self.log["E_eta"].append(m.get("eta", 0.0))
+        sd = self.inversion.posterior_stds()
+        self.log["sd_alpha"].append(sd["alpha"])
+        self.log["sd_rho"].append(sd["rho"])
+        self.log["sd_beta"].append(sd["beta"])
+        self.log["sd_lambda_j"].append(sd["lambda_j"])
+        self.log["sd_omega"].append(sd.get("omega", 0.0))
+        self.log["sd_eta"].append(sd.get("eta", 0.0))
         self.log["grievance"].append(reg_info.get("grievance", 0.0))
         self.log["trust"].append(reg_info.get("trust", 0.0))
         self.log["belief_update"].append(bu)
@@ -186,11 +245,16 @@ class ToMEmpathicAgent:
         self.log["w_other"].append(reg_info.get("w_other", 1.0))
         self.log["sPE"].append(reg_info.get("sPE", 0.0))
         self.log["oPE"].append(reg_info.get("oPE", 0.0))
+        self.log["provoked"].append(reg_info.get("provoked", 0.0))
         return action
 
     def _plan_action(self, ctx: ObservationContext, lam: float) -> int:
         """sophisticated planning horizon 으로 행동 선택."""
-        sim = OpponentSimulator(self.tom, self.gated, ctx)
+        # [v0.7.1 §3] rollout_reciprocity=True 면 시뮬레이터가 step>0 에서 ρ̂ 로
+        # 내 가상행동에 조건화된 예측을 낸다(horizon=1 이면 무영향).
+        sim = OpponentSimulator(self.tom, self.gated, ctx,
+                               rollout_reciprocity=self.rollout_reciprocity,
+                               inversion=self.inversion)
         planner = SophisticatedPlanner(
             sim, empathy_factor=lam, horizon=self.planning_horizon,
             beta_self=self.social_efe.beta_self)
@@ -225,9 +289,13 @@ class AdaptiveAgent(ToMEmpathicAgent):
                  beta_clamp: bool = False,
                  controllability: bool = False,
                  controllability_kwargs: Optional[dict] = None,
+                 disposition_mode: str = "legacy",
+                 cf_g_handling: str = "marginalize",
+                 cf_attr_gate_dedup: bool = True,
                  name: str = "Adaptive", **kwargs):
         super().__init__(lam_base=lam_base, name=name, **kwargs)
         self.regulate_lambda = regulate_lambda
+        self.disposition_mode = disposition_mode
 
         # core allostatic belief state (개인별 상이)
         self.core = CoreAllostaticBeliefState(
@@ -245,7 +313,10 @@ class AdaptiveAgent(ToMEmpathicAgent):
         reg_kw = dict(lam_base=lam_base, lam_max=lam_max,
                       sophisticated=sophisticated, kappa=kappa,
                       forgiveness=forgiveness,
-                      dd_charges=dd_charges_grievance)
+                      dd_charges=dd_charges_grievance,
+                      disposition_mode=disposition_mode,
+                      cf_g_handling=cf_g_handling,
+                      cf_attr_gate_dedup=cf_attr_gate_dedup)
         if grievance_decay is not None:      # H7H 히스테리시스 조작용
             reg_kw["decay"] = float(grievance_decay)
         self.regulator = LambdaRegulator(**reg_kw)
@@ -287,15 +358,20 @@ class AdaptiveAgent(ToMEmpathicAgent):
         self.inversion.set_reliability(self.core.reliability_weights())
 
         # (c) λ 위계적 조절 (즉각형은 DD 도 기질 증거로 충전 — H5 조작화)
+        # [v0.7.0 §1] 반사실 귀인은 β̂·α̂·λ̂·ρ̂ 외에 내 협력율 p(공감항 s(λ_j,p) 계산)
+        # 와 상대 자기행동 분포 g(§7.5 주변화)를 필요로 한다.
         out = self.regulator.step(
             betrayal, opp_cooperated, inferred, self.pred_coop_prev,
             self.core, regulate=self.regulate_lambda, opp_defected=opp_defected,
-            attr_gate=attr_gate)
+            attr_gate=attr_gate,
+            my_coop_rate=self.inversion.my_cooperation_rate,
+            g_prob_coop=self._opp_coop_rate())
         self.lam = out["lam"]
 
         return {
             "grievance": out["grievance"],
             "trust": out["trust"],
+            "provoked": out.get("provoked", 0.0),
             "disp_credence": self.core.dispositional_credence(),
             "ctx_credence": self.core.contextual_credence(),
             "control": ctrl_info["control"],

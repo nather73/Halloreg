@@ -60,11 +60,17 @@ RESULTS = _PKG_ROOT / "results"
 RESULTS.mkdir(exist_ok=True)
 
 AXES = ("alpha", "rho", "beta", "lambda_j")
-AX_LABEL = {"alpha": "α", "rho": "ρ", "beta": "β", "lambda_j": "λ_j"}
+AX_LABEL = {"alpha": "α", "rho": "ρ", "beta": "β", "lambda_j": "λ_j",
+            "omega": "ω", "eta": "η"}
+# [v0.8.0 §7.3] fg 기저의 6축
+AXES_FG = ("alpha", "rho", "omega", "eta", "beta", "lambda_j")
 
 # θ 표집 구간 (복원 지표는 이 구간에 의존하므로 반드시 함께 보고한다)
 THETA_RANGES = {"alpha": (-1.2, 1.2), "rho": (0.2, 1.6),
-                "beta": (0.5, 6.0), "lambda_j": (0.05, 0.95)}
+                "beta": (0.5, 6.0), "lambda_j": (0.05, 0.95),
+                # [v0.8.0 §7.2/§7.3] ω(관성), η(결과-조건성). ρ 와 동급 스케일.
+                # WSLS 류(큰 양의 η)를 포함하도록 ± 대칭 구간.
+                "omega": (-1.2, 1.2), "eta": (-1.6, 1.6)}
 
 # ---------------------------------------------------------------- 설계 배터리
 # 블록 = (R, T, S, P, p_focal).  u=(T−S)=λ 회귀자,  v=(R−T+P−S)p+(S−P)=기지 오프셋
@@ -99,6 +105,22 @@ DESIGNS = {
                           for u in (+2.0, 0.0, -2.0)
                           for v in (-1.6, -0.8, 0.0, +0.8, +1.6)],
                  "adaptive": True},
+    # ---------------------------------------------------------------- v0.8.0 §7.3
+    # fg 기저의 식별 설계. **경고(§7.3)**: g 는 상대 자신의 행동이라 직접 조작이
+    # 불가능하다 — f 만 변조하는 기존 배터리로는 ω·η 가 식별되지 않는다.
+    # 해결: 합성 상대이므로 **상대 행동열을 조건부 강제**할 수 있다. 매 라운드
+    # (f, g) ∈ {±1}² 4셀을 균형 순회하도록 (i) focal 행동 f 를 설계하고
+    # (ii) 상대의 '직전 행동' g 를 강제 주입한다. 강제된 g 는 우도의 조건일 뿐
+    # 관측(상대의 이번 행동)은 여전히 상대 모형이 생성하므로 추론은 편향되지 않는다.
+    #   · 설계행렬 (1, f, g, fg) full-rank + 중심화(각 열 평균 0) 달성.
+    #   · v 계단(기지 오프셋)과 교차 → β 단독 식별 유지.
+    #   · η 는 f·g 곱 회귀자이므로 f·g 주효과와 직교화 필요 → 4셀 균형이 이를 보장.
+    "fg_centered": {
+        "blocks": [_ctx(+2.0, -0.8), _ctx(+2.0, +0.8),
+                   _ctx(0.0, -0.8), _ctx(0.0, +0.8),
+                   _ctx(-2.0, -0.8), _ctx(-2.0, +0.8)],
+        "fg_cells": True,      # (f,g) 4셀 균형 순회 + g 조건부 강제
+        "basis": "fg"},
 }
 
 # 역방향(생성 재현) 공통 평가 맥락 — 설계 간 비교 가능하도록 고정
@@ -110,34 +132,67 @@ def _logistic(x):
 
 
 def design_diagnostics(design):
-    """배터리의 λ 회귀자 u=(T−S) 와 기지 오프셋 v 의 평균·SD·상관(직교성 진단)."""
+    """배터리의 λ 회귀자 u=(T−S) 와 기지 오프셋 v 의 평균·SD·상관(직교성 진단).
+
+    [v0.8.0 §7.3] fg 설계에서는 다회귀자 진단으로 확장한다:
+    (u, v, f-빈도, g-빈도, fg-균형). (1,f,g,fg) 설계행렬의 full-rank 와 중심화
+    (각 열 평균 0)를 수치로 확인한다 — η 는 f·g 곱 회귀자라 주효과와 직교화가
+    필수이며, 4셀 균형이 이를 보장한다.
+    """
     blocks = design["menu"] if "menu" in design else design["blocks"]
     u = np.array([T - S for (_, T, S, _, _) in blocks], float)
     v = np.array([(R - T + P - S) * p + (S - P) for (R, T, S, P, p) in blocks],
                  float)
     corr = (float(np.corrcoef(u, v)[0, 1])
             if len(u) > 1 and u.std() > 1e-9 and v.std() > 1e-9 else 0.0)
-    return {"u_mean": float(u.mean()), "u_sd": float(u.std()),
-            "v_mean": float(v.mean()), "v_sd": float(v.std()),
-            "corr_u_v": corr, "n_blocks": len(blocks)}
+    out = {"u_mean": float(u.mean()), "u_sd": float(u.std()),
+           "v_mean": float(v.mean()), "v_sd": float(v.std()),
+           "corr_u_v": corr, "n_blocks": len(blocks)}
+    if design.get("fg_cells"):
+        # 균형 순회 (f,g) 4셀: focal/opp 행동코드 0=C,1=D → 신호 ±1
+        cells = np.array([(0, 0), (0, 1), (1, 0), (1, 1)], float)
+        f = 1.0 - 2.0 * cells[:, 0]
+        g = 1.0 - 2.0 * cells[:, 1]
+        X = np.column_stack([np.ones(4), f, g, f * g])   # 설계행렬 (1,f,g,fg)
+        out.update({
+            "f_mean": float(f.mean()), "g_mean": float(g.mean()),
+            "fg_mean": float((f * g).mean()),
+            "corr_f_g": float(np.corrcoef(f, g)[0, 1]),
+            "design_rank": int(np.linalg.matrix_rank(X)),
+            "design_full_rank": bool(np.linalg.matrix_rank(X) == 4),
+            # 중심화: 상수항을 제외한 각 열 평균이 0 이어야 함
+            "centered": bool(np.allclose(X[:, 1:].mean(axis=0), 0.0)),
+            "n_cells": 4,
+        })
+    return out
 
 
 class SyntheticOpponent:
-    """입자필터의 우도와 동일한 협력확률 모형으로 행동하는 합성 상대 (λ_j 자유)."""
+    """입자필터의 우도와 동일한 협력확률 모형으로 행동하는 합성 상대 (λ_j 자유).
 
-    def __init__(self, alpha, rho, beta, lambda_j, seed=0):
+    [v0.8.0 §7] fg 기저에서는 ω(관성)·η(결과-조건성)도 갖는다:
+        P(C | f, g) = σ(β(α + ρf + ωg + η·fg + s(λ_j, p)))
+    ω=η=0 이면 f 기저와 동일(하위호환).
+    """
+
+    def __init__(self, alpha, rho, beta, lambda_j, seed=0,
+                 omega=0.0, eta=0.0):
         self.alpha, self.rho, self.beta = alpha, rho, beta
         self.lambda_j = lambda_j
+        self.omega, self.eta = float(omega), float(eta)
         self.rng = np.random.default_rng(seed)
         self.my_coop_rate = 0.5          # focal 협력율 p (맥락 블록마다 설정)
 
-    def coop_prob(self, focal_last):
+    def coop_prob(self, focal_last, own_last=None):
         f = 0.0 if focal_last is None else (1.0 - 2.0 * focal_last)
+        g = 0.0 if own_last is None else (1.0 - 2.0 * own_last)
         shift = C_empathy_shift(self.lambda_j, self.my_coop_rate)
-        return float(_logistic(self.beta * (self.alpha + self.rho * f + shift)))
+        return float(_logistic(self.beta * (
+            self.alpha + self.rho * f + self.omega * g + self.eta * f * g
+            + shift)))
 
-    def act(self, focal_last):
-        return 0 if self.rng.random() < self.coop_prob(focal_last) else 1
+    def act(self, focal_last, own_last=None):
+        return 0 if self.rng.random() < self.coop_prob(focal_last, own_last) else 1
 
 
 def _wq(vals, weights, q):
@@ -178,6 +233,49 @@ def recover_once(theta, blocks, rounds, seed, n_particles=400):
                 st0 = dict(inv.posterior_stds())
             # focal 은 블록의 협력율 p_ 로 행동(외생 설계; 상대 지속성 혼입 차단)
             focal_last = int(rng.random() >= p_)
+    return inv, dict(inv.posterior_means()), dict(inv.posterior_stds()), st0
+
+
+def recover_once_fg(theta, blocks, rounds, seed, n_particles=600):
+    """
+    [v0.8.0 §7.3] **fg 기저 복원**: (f, g) 4셀 균형 순회 프로토콜.
+
+    g(상대 자신의 직전 행동)는 직접 조작 불가하므로, 합성 상대에 한해 **조건부
+    강제**한다: 매 라운드 설계가 지정한 (f, g) 셀에 대해
+      · f = focal 의 직전 행동   → focal 행동을 설계값으로 강제
+      · g = 상대의 직전 행동     → 상대에게 '네 직전 행동은 g 였다'고 주입
+    상대의 **이번** 행동은 여전히 상대 모형이 P(C|f,g) 로 생성하므로 관측은
+    오염되지 않는다 — 조작되는 것은 조건(설계)이지 반응이 아니다.
+
+    설계행렬 (1, f, g, fg): 4셀을 균등 순회하면 f·g·fg 열 평균이 모두 0 → 중심화
+    달성, 상호 직교 → full-rank. 여기에 v 계단(기지 오프셋)을 교차해 β 단독 식별.
+    셀당 최소 ~30 관측 권장(§7.3) → rounds ≥ 480 검토.
+    """
+    opp = SyntheticOpponent(theta["alpha"], theta["rho"], theta["beta"],
+                            theta["lambda_j"], seed=seed,
+                            omega=theta.get("omega", 0.0),
+                            eta=theta.get("eta", 0.0))
+    inv = OpponentInversion(n_particles=n_particles, seed=seed + 1,
+                            likelihood_basis="fg")
+    st0 = None
+    # (f, g) 4셀 × 블록(v 계단) 교차 — 균형 순회
+    cells = [(0, 0), (0, 1), (1, 0), (1, 1)]     # (focal_last, opp_last) 행동코드
+    per_block = max(1, rounds // len(blocks))
+    t = 0
+    for (R_, T_, S_, P_, p_) in blocks:
+        set_payoff_matrix(R_, T_, S_, P_)     # 맥락 전환(상대·필터 모두 반영)
+        opp.my_coop_rate = p_
+        inv.my_cooperation_rate = p_
+        for k in range(per_block):
+            focal_last, opp_last = cells[k % 4]   # 균형 순회 (중심화 보장)
+            opp_a = opp.act(focal_last, opp_last)
+            # 우도 조건: f=focal_last, g=opp_last (설계가 아는 값)
+            inv.update(opp_a, ObservationContext(
+                my_last_action=focal_last, their_last_action=opp_last,
+                joint_outcome=None, round_number=t))
+            if st0 is None:
+                st0 = dict(inv.posterior_stds())
+            t += 1
     return inv, dict(inv.posterior_means()), dict(inv.posterior_stds()), st0
 
 
@@ -249,7 +347,7 @@ def recover_once_adaptive(theta, menu, rounds, seed, n_particles=400,
     return inv, dict(inv.posterior_means()), dict(inv.posterior_stds()), st0
 
 
-def predictive_check(inv, theta, blocks=None):
+def predictive_check(inv, theta, blocks=None, fg=False):
     """
     **역방향(생성 재현)**: 추정 θ̂ 로 상대를 재생성하면 원래 상대와 같은 행동이
     나오는가. 맥락(블록 × 호혜신호 f)마다 참 협력확률 vs θ̂ 협력확률을 비교하고,
@@ -259,35 +357,54 @@ def predictive_check(inv, theta, blocks=None):
     blocks = EVAL_CONTEXTS if blocks is None else blocks
     m = inv.posterior_means()
     rows = []
+    # [v0.8.0 §7.3] fg 기저의 역방향 평가맥락은 (f,g) 4셀을 **전부** 포함하도록
+    # 확장한다 — g 를 무시하면 ω·η 의 재현 오차가 평가에서 누락된다.
+    g_levels = (+1.0, -1.0) if fg else (0.0,)
     for (R_, T_, S_, P_, p_) in blocks:
         set_payoff_matrix(R_, T_, S_, P_)
         inv.my_cooperation_rate = p_
         for f in (+1.0, -1.0):
-            pc_true = _logistic(theta["beta"] * (
-                theta["alpha"] + theta["rho"] * f
-                + C_empathy_shift(theta["lambda_j"], p_)))
-            pc_hat = _logistic(m["beta"] * (
-                m["alpha"] + m["rho"] * f
-                + C_empathy_shift(m["lambda_j"], p_)))
-            part = inv._pC(f)                   # 입자별 예측 협력확률
-            lo = _wq(part, inv.weights, 0.05)
-            hi = _wq(part, inv.weights, 0.95)
-            rows.append((pc_true, pc_hat, lo, hi))
+            for g in g_levels:
+                pc_true = _logistic(theta["beta"] * (
+                    theta["alpha"] + theta["rho"] * f
+                    + theta.get("omega", 0.0) * g
+                    + theta.get("eta", 0.0) * f * g
+                    + C_empathy_shift(theta["lambda_j"], p_)))
+                pc_hat = _logistic(m["beta"] * (
+                    m["alpha"] + m["rho"] * f
+                    + m.get("omega", 0.0) * g + m.get("eta", 0.0) * f * g
+                    + C_empathy_shift(m["lambda_j"], p_)))
+                part = inv._pC(f, g)            # 입자별 예측 협력확률
+                lo = _wq(part, inv.weights, 0.05)
+                hi = _wq(part, inv.weights, 0.95)
+                rows.append((pc_true, pc_hat, lo, hi))
     a = np.array(rows, float)
     return {"pc_true": a[:, 0], "pc_hat": a[:, 1],
             "covered": (a[:, 0] >= a[:, 2]) & (a[:, 0] <= a[:, 3])}
 
 
 def run_design(name, design, n_agents, rounds, seed0=0, n_particles=400):
-    """설계 하나에 대해 무작위 θ 표집 → 복원 → 정·역방향 지표."""
+    """설계 하나에 대해 무작위 θ 표집 → 복원 → 정·역방향 지표.
+
+    [v0.8.0 §7.3] design["basis"]=="fg" 면 6축(α,ρ,ω,η,β,λ_j) 복원 배터리로
+    전환한다. 입자 수는 차원 증가를 보상해 기본 600 이상 권장(§7.2).
+    """
     rng = np.random.default_rng(seed0)
     is_adaptive = bool(design.get("adaptive"))
+    is_fg = design.get("basis") == "fg"
+    axes = AXES_FG if is_fg else AXES
     blocks = design["menu"] if is_adaptive else design["blocks"]
+    if is_fg:
+        n_particles = max(int(n_particles), 600)   # §7.2 차원 증가 보상
     tru, est, sd_fin, sd_ini = [], [], [], []
     pc_t, pc_h, cov_pp = [], [], []
     for i in range(n_agents):
-        theta = {ax: float(rng.uniform(*THETA_RANGES[ax])) for ax in AXES}
-        if is_adaptive:
+        theta = {ax: float(rng.uniform(*THETA_RANGES[ax])) for ax in axes}
+        if is_fg:
+            inv, m, st, st0 = recover_once_fg(
+                theta, blocks, rounds, seed=seed0 + 1000 * i + 3,
+                n_particles=n_particles)
+        elif is_adaptive:
             inv, m, st, st0 = recover_once_adaptive(
                 theta, blocks, rounds, seed=seed0 + 1000 * i + 3,
                 n_particles=n_particles)
@@ -295,11 +412,11 @@ def run_design(name, design, n_agents, rounds, seed0=0, n_particles=400):
             inv, m, st, st0 = recover_once(theta, blocks, rounds,
                                            seed=seed0 + 1000 * i + 3,
                                            n_particles=n_particles)
-        tru.append([theta[a] for a in AXES])
-        est.append([m[a] for a in AXES])
-        sd_fin.append([st[a] for a in AXES])
-        sd_ini.append([(st0 or st)[a] for a in AXES])
-        pp = predictive_check(inv, theta)          # 공통 평가 맥락
+        tru.append([theta[a] for a in axes])
+        est.append([m[a] for a in axes])
+        sd_fin.append([st[a] for a in axes])
+        sd_ini.append([(st0 or st)[a] for a in axes])
+        pp = predictive_check(inv, theta, fg=is_fg)   # 공통 평가 맥락
         pc_t.append(pp["pc_true"]); pc_h.append(pp["pc_hat"])
         cov_pp.append(pp["covered"])
     reset_payoffs()
@@ -309,7 +426,7 @@ def run_design(name, design, n_agents, rounds, seed0=0, n_particles=400):
     cov_pp = np.concatenate(cov_pp)
 
     summary = {}
-    for i, ax in enumerate(AXES):
+    for i, ax in enumerate(axes):
         err = E[:, i] - Tr[:, i]
         lo = E[:, i] - 1.645 * SDf[:, i]
         hi = E[:, i] + 1.645 * SDf[:, i]
@@ -325,7 +442,8 @@ def run_design(name, design, n_agents, rounds, seed0=0, n_particles=400):
             "true_sd": float(Tr[:, i].std()), "est_sd": float(E[:, i].std()),
         }
     # 파라미터 혼동행렬 corr(참_i, 추정_j) — 대각 지배해야 개별 식별
-    n_ax = len(AXES)
+    # [v0.8.0 §7.3] fg 기저에서는 6×6 혼동행렬.
+    n_ax = len(axes)
     conf = np.array([[float(np.corrcoef(Tr[:, i], E[:, j])[0, 1])
                       for j in range(n_ax)] for i in range(n_ax)])
     offdiag = float(np.max(np.abs(conf - np.diag(np.diag(conf)))))
@@ -337,7 +455,7 @@ def run_design(name, design, n_agents, rounds, seed0=0, n_particles=400):
         "coverage_90": float(np.mean(cov_pp)),
         "mean_abs_coop_err": float(np.mean(np.abs(pc_t - pc_h))),
     }
-    return {"name": name, "summary": summary,
+    return {"name": name, "summary": summary, "axes": list(axes),
             "confusion": conf.tolist(), "confusion_max_offdiag": offdiag,
             "confusion_diagonal_dominant": diag_dominant,
             "predictive": predictive, "design": design_diagnostics(design),
@@ -350,19 +468,28 @@ def make_figure(res_by_design, rounds, n_agents):
         set_korean_font(plt, font_manager)
     except Exception:
         pass
-    order = [k for k in ("legacy", "centered", "adaptive") if k in res_by_design]
+    order = [k for k in ("legacy", "centered", "adaptive", "fg_centered")
+             if k in res_by_design]
     main = res_by_design[order[-1]]
     base = res_by_design[order[0]] if len(order) > 1 else None
-    COLORS = {"legacy": "0.75", "centered": "C0", "adaptive": "C2"}
-    fig, ax = plt.subplots(2, 4, figsize=(19, 9))
+    COLORS = {"legacy": "0.75", "centered": "C0", "adaptive": "C2",
+              "fg_centered": "C4"}
+    # [v0.8.0 §7.3] 축 수는 설계에 따라 4(f) 또는 6(fg).
+    PAX = list(main.get("axes", AXES))
+    ncol = max(len(PAX), 4)
+    fig, ax = plt.subplots(2, ncol, figsize=(4.7 * ncol, 9))
 
-    # (a-d) 정방향 복원 산점: 참 vs 추정 (모든 설계 중첩)
-    for i, axn in enumerate(AXES):
+    # (a-d/f) 정방향 복원 산점: 참 vs 추정 (해당 축을 가진 설계만 중첩)
+    for i, axn in enumerate(PAX):
         a = ax[0, i]
         Tr, E = main["_true"][:, i], main["_est"][:, i]
         for k in order[:-1]:
             r_ = res_by_design[k]
-            a.scatter(r_["_true"][:, i], r_["_est"][:, i], s=14,
+            kax = list(r_.get("axes", AXES))
+            if axn not in kax:          # ω·η 는 f-기저 설계에 없음
+                continue
+            j_ = kax.index(axn)
+            a.scatter(r_["_true"][:, j_], r_["_est"][:, j_], s=14,
                       color=COLORS[k], alpha=0.55,
                       label=f"{k} (r={r_['summary'][axn]['r']:.2f})")
         a.scatter(Tr, E, s=20, color=COLORS[order[-1]], alpha=0.8,
@@ -373,10 +500,13 @@ def make_figure(res_by_design, rounds, n_agents):
         xs = np.linspace(lo, hi, 20)
         a.plot(xs, ic + sl * xs, color="C3", lw=1.5, label=f"회복기울기={sl:.2f}")
         s = main["summary"][axn]
-        a.set_title(f"({'abcd'[i]}) {AX_LABEL[axn]} 복원\n"
+        a.set_title(f"({'abcdef'[i]}) {AX_LABEL[axn]} 복원\n"
                     f"R²={s['r2']:.2f}, bias={s['bias']:+.2f}", fontsize=10)
         a.set_xlabel(f"참 {AX_LABEL[axn]}"); a.set_ylabel(f"추정 {AX_LABEL[axn]}")
         a.legend(fontsize=6.5, loc="best")
+
+    for i in range(len(PAX), ncol):
+        ax[0, i].axis("off")
 
     # (e,f) 혼동행렬 히트맵 (기준 설계 vs 주 설계)
     for k, (tag, res) in enumerate([(order[0], base), (order[-1], main)]):
@@ -384,15 +514,17 @@ def make_figure(res_by_design, rounds, n_agents):
         if res is None:
             a.axis("off"); continue
         M = np.array(res["confusion"])
+        rax = list(res.get("axes", AXES))
         im = a.imshow(M, cmap="RdBu_r", vmin=-1, vmax=1)
-        for i in range(len(AXES)):
-            for j in range(len(AXES)):
+        for i in range(len(rax)):
+            for j in range(len(rax)):
                 a.text(j, i, f"{M[i, j]:.2f}", ha="center", va="center",
-                       fontsize=8, color="k")
-        a.set_xticks(range(len(AXES)))
-        a.set_xticklabels([f"추정 {AX_LABEL[x]}" for x in AXES], fontsize=7)
-        a.set_yticks(range(len(AXES)))
-        a.set_yticklabels([f"참 {AX_LABEL[x]}" for x in AXES], fontsize=7)
+                       fontsize=7, color="k")
+        a.set_xticks(range(len(rax)))
+        a.set_xticklabels([f"추정 {AX_LABEL[x]}" for x in rax], fontsize=6.5,
+                          rotation=45)
+        a.set_yticks(range(len(rax)))
+        a.set_yticklabels([f"참 {AX_LABEL[x]}" for x in rax], fontsize=6.5)
         ok = "대각 지배 ✓" if res["confusion_diagonal_dominant"] else "혼동 잔존 ✗"
         a.set_title(f"({'ef'[k]}) 혼동행렬 — {tag}\n"
                     f"최대 비대각={res['confusion_max_offdiag']:.2f} [{ok}]",
@@ -401,20 +533,24 @@ def make_figure(res_by_design, rounds, n_agents):
 
     # (g) 90% 커버리지 (전 설계)
     a = ax[1, 2]
-    x = np.arange(len(AXES)); w = 0.8 / max(len(order), 1)
+    x = np.arange(len(PAX)); w = 0.8 / max(len(order), 1)
     for j, k in enumerate(order):
         r_ = res_by_design[k]
-        a.bar(x + (j - (len(order) - 1) / 2) * w,
-              [r_["summary"][s]["coverage_90"] for s in AXES], w,
+        kax = list(r_.get("axes", AXES))
+        vals = [r_["summary"][s]["coverage_90"] if s in kax else np.nan
+                for s in PAX]
+        a.bar(x + (j - (len(order) - 1) / 2) * w, vals, w,
               color=COLORS[k], label=k)
     a.axhline(0.90, color="r", ls="--", label="목표 0.90")
-    a.set_xticks(x); a.set_xticklabels([AX_LABEL[s] for s in AXES])
+    a.set_xticks(x); a.set_xticklabels([AX_LABEL[s] for s in PAX])
     a.set_ylim(0, 1.05); a.legend(fontsize=7)
     a.set_title("(g) 90% 신용구간 경험적 커버리지\n(목표선 근처여야 사후가 정직)",
                 fontsize=10)
 
     # (h) 역방향(생성 재현): 참 협력확률 vs θ̂ 재생성 협력확률 (공통 평가맥락)
     a = ax[1, 3]
+    for i in range(4, ncol):
+        ax[1, i].axis("off")
     for k in order:
         r_ = res_by_design[k]
         a.scatter(r_["_pc_true"], r_["_pc_hat"], s=8, color=COLORS[k],
@@ -450,11 +586,14 @@ def make_figure(res_by_design, rounds, n_agents):
 
 def main():
     ap = argparse.ArgumentParser()
+    # [v0.8.0 §7.3] fg_centered 를 기본 배터리에 편입 — g·fg 도입은 식별 요구를
+    # 근본적으로 늘리므로 복원 검증이 **필수 동반 작업**이다.
     ap.add_argument("--designs", nargs="*",
-                    default=["legacy", "centered", "adaptive"],
+                    default=["legacy", "centered", "adaptive", "fg_centered"],
                     choices=list(DESIGNS))
     ap.add_argument("--agents", type=int, default=60)
-    ap.add_argument("--rounds", type=int, default=240)
+    # §7.3: (f,g) 4셀 × v 계단 → 셀당 최소 ~30 관측 권장 → rounds ≥ 480
+    ap.add_argument("--rounds", type=int, default=480)
     ap.add_argument("--particles", type=int, default=400)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--quick", action="store_true")

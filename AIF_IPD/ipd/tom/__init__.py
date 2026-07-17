@@ -2,6 +2,7 @@
 
 from .inversion import (
     OpponentInversion, ObservationContext, InversionState, THETA_AXES,
+    THETA_AXES_FG, theta_axes,
 )
 from .tom_core import (
     TheoryOfMind, GatedToM, RecursiveSocialEFE, SocialEFEResult,
@@ -11,6 +12,7 @@ from .sophisticated_planner import SophisticatedPlanner
 
 __all__ = [
     "OpponentInversion", "ObservationContext", "InversionState", "THETA_AXES",
+    "THETA_AXES_FG", "theta_axes",
     "TheoryOfMind", "GatedToM", "RecursiveSocialEFE", "SocialEFEResult",
     "OpponentSimulator", "SophisticatedPlanner",
 ]

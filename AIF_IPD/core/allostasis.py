@@ -68,6 +68,92 @@ def _sigmoid(x: float, center: float = 0.0, scale: float = 1.0) -> float:
     return 1.0 / (1.0 + np.exp(-(x - center) / scale))
 
 
+# ===================================================================== §1 반사실
+# [v0.7.0 §1] 반사실(counterfactual) 인과 귀인
+# ------------------------------------------------------------------------------
+# 관측된 배신을 두 성분으로 분해한다. ToM 우도 자체가 반사실을 계산해 준다:
+#
+#     기질(무조건) 성분 = P(D | f=+1) = 1 − σ(β̂(α̂ + ρ̂·(+1) + ω̂·g + η̂·(+1)·g + s))
+#     유발(provoked)   = P(D | f=−1) − P(D | f=+1)
+#
+# ρ 는 여기서 **valence 가 아니라 반사실 시나리오를 구성하는 역할만** 한다
+# ("내가 협력했더라도 저 상대가 배신했을까?"). 이로써:
+#   · ρ 의 무정보성(ALLC ρ항≈ALLD ρ항) 문제가 해소된다 — ρ 는 더 이상 기질 증거가
+#     아니라 조건화 변수다.
+#   · σ(0)=0.5 상수 편향 주입이 사라진다.
+#   · TFT 의 보복은 유발분으로 분리되어 기질 증거에서 제외된다(보복 오귀인 해소).
+#     → ad-hoc `dd_charges` 우회를 원리적으로 흡수.
+# 이론적 근거: Spiering(2025) 통제권·원인 귀인 + 기존 attr_gate(자기/타인 귀인)의
+# 자연스러운 완성.
+
+
+def counterfactual_disposition(inferred: dict, my_coop_rate: float = 0.5,
+                               empathy_shift_fn=None,
+                               g_handling: str = "marginalize",
+                               g_prob_coop: Optional[float] = None) -> dict:
+    """
+    추론된 θ̂ 로 반사실 기질 성분과 유발 성분을 계산한다.
+
+    Parameters
+    ----------
+    inferred : dict
+        입자필터 posterior means. (alpha, rho, beta, lambda_j) 필수,
+        (omega, eta) 는 likelihood_basis="fg" 에서만 존재(없으면 0 — f 기저와 동일).
+    my_coop_rate : float
+        내 협력율 p — 상대 공감항 s(λ_j, p) 계산용.
+    empathy_shift_fn : callable | None
+        s(λ_j, p) 계산 함수. None 이면 constants.empathy_shift 를 쓴다
+        (가변 페이오프 환경에서도 호출 시점 보수를 반영).
+    g_handling : {"marginalize", "plus"}
+        fg 기저에서 반사실을 어느 g 에서 평가할지(§7.5). 기본은 주변화.
+    g_prob_coop : float | None
+        g 주변화에 쓸 P(상대 직전행동=C). None 이면 0.5.
+
+    Returns
+    -------
+    dict with keys:
+        disposition : P(D | f=+1) ∈ [0,1]   — 무조건적(기질) 배신 성향
+        provoked    : P(D|f=−1) − P(D|f=+1) — 내 도발로 유발된 성분
+        p_def_coop  : P(D | f=+1)  (=disposition)
+        p_def_def   : P(D | f=−1)
+    """
+    if empathy_shift_fn is None:
+        from AIF_IPD.core.constants import empathy_shift as _es
+        empathy_shift_fn = _es
+
+    E_alpha = float(inferred.get("alpha", 0.0))
+    E_rho = float(inferred.get("rho", 0.0))
+    E_beta = float(inferred.get("beta", 1.0))
+    E_lam = float(inferred.get("lambda_j", 0.5))
+    # fg 기저(§7). f 기저에서는 키가 없으므로 0 → 항이 소멸(하위호환).
+    E_omega = float(inferred.get("omega", 0.0))
+    E_eta = float(inferred.get("eta", 0.0))
+
+    shift = float(empathy_shift_fn(E_lam, my_coop_rate))
+
+    def _p_def(f: float, g: float) -> float:
+        """P(a_j=D | f, g, θ̂) = 1 − σ(β(α + ρf + ωg + η·fg + s))."""
+        logit = E_beta * (E_alpha + E_rho * f + E_omega * g
+                          + E_eta * f * g + shift)
+        return float(1.0 - _sigmoid(logit, scale=1.0))
+
+    if g_handling == "plus":
+        gs = [(+1.0, 1.0)]
+    else:  # marginalize — 상대 자기행동 분포로 가중
+        pg = 0.5 if g_prob_coop is None else float(np.clip(g_prob_coop, 0.0, 1.0))
+        gs = [(+1.0, pg), (-1.0, 1.0 - pg)]
+
+    p_def_coop = sum(w * _p_def(+1.0, g) for g, w in gs)   # 내가 협력했더라면
+    p_def_def = sum(w * _p_def(-1.0, g) for g, w in gs)    # 내가 배신했더라면
+
+    return {
+        "disposition": float(np.clip(p_def_coop, 0.0, 1.0)),
+        "provoked": float(p_def_def - p_def_coop),
+        "p_def_coop": float(p_def_coop),
+        "p_def_def": float(p_def_def),
+    }
+
+
 @dataclass
 class CoreAllostaticBeliefState:
     """
@@ -280,6 +366,20 @@ class LambdaRegulator:
     # DD(상호배신)도 grievance 를 충전하는가. None 이면 (not sophisticated) 을 따름
     # (기존 동작 보존). H5 요인 분해를 위해 sophisticated 와 독립 조작 가능.
     dd_charges: object = None
+    # [v0.7.0 §1] 기질 귀인 방식.
+    #   "legacy"         : disp = 가중평균(σ(−α), 1−λ_j, σ(−ρ))  — ρ 를 valence 로 오용.
+    #   "counterfactual" : disp = P(D | f=+1)  — "내가 협력했더라도 배신했을까?"
+    # 기본 legacy (기존 결과 보존; 부록 B 토글 규약).
+    disposition_mode: str = "legacy"
+    # [v0.7.0 §7.5] 반사실 평가 시 g(상대 직전 자기행동) 처리.
+    #   "marginalize" : 관측된 g 분포로 가중(권장 — "내가 협력했더라도"의 의미에 부합)
+    #   "plus"        : g=+1 고정
+    # likelihood_basis="f" 에서는 무영향(ω=η=0).
+    cf_g_handling: str = "marginalize"
+    # [v0.7.0 §4] 반사실 모드에서 attr_gate 이중 계상 방지.
+    #   유발분은 이미 반사실로 제거되므로 attr_gate 의 재분배와 겹친다.
+    #   True(기본)면 counterfactual 모드에서 attr_gate 를 1 쪽으로 부분 완화한다.
+    cf_attr_gate_dedup: bool = True
     protective_gain: float = 0.9     # g⁻ 충전 이득 (실현된 배신)
     anticipatory_gain: float = 0.25  # g⁻ 예기적 충전 이득 (allostasis: 예측된 배신)
     tonic_weight: float = 0.55       # 실현 배신 구동 중 '지속(tonic)' 성분
@@ -303,7 +403,8 @@ class LambdaRegulator:
              inferred: dict, pred_coop_prev: float,
              core: CoreAllostaticBeliefState,
              regulate: bool = True, opp_defected: bool = False,
-             attr_gate: float = 1.0) -> dict:
+             attr_gate: float = 1.0, my_coop_rate: float = 0.5,
+             g_prob_coop: Optional[float] = None) -> dict:
         """
         한 라운드 λ 조절.
 
@@ -330,18 +431,39 @@ class LambdaRegulator:
         # dmPFC(mentalizing): '귀인이 허용된 축'만으로 기질 판단을 구성한다.
         #   → alpha_only 는 α 로만, lambda_only 는 λ_j 로만 상대를 읽는다(개인차).
         E_rho = inferred.get("rho", 0.0)
-        disp_from_bias = _sigmoid(-E_alpha, scale=0.5)      # α 낮을수록 → 1
-        disp_from_lambda = 1.0 - float(np.clip(E_lam, 0, 1))  # λ_j 낮을수록 → 1
-        disp_from_rho = _sigmoid(-E_rho, scale=0.5)          # ρ 낮을수록 → 1
         w_a, w_r, _, w_l = core.theta_update_mask
         w_sum = w_a + w_r + w_l
-        if w_sum <= 1e-9:                                    # beta_context: 기질 판단 없음
-            disposition = 0.0
+        provoked = 0.0
+
+        if self.disposition_mode == "counterfactual":
+            # ---- [v0.7.0 §1] 반사실 귀인 ----
+            # 기질 = P(D | f=+1). ρ 는 valence 가 아니라 반사실을 구성하는 조건화
+            # 변수로만 쓰인다. 1.5/1.0/0.7 손튜닝 계수(§2)는 이 경로에서 소멸한다.
+            cf = counterfactual_disposition(
+                inferred, my_coop_rate=my_coop_rate,
+                g_handling=self.cf_g_handling, g_prob_coop=g_prob_coop)
+            provoked = cf["provoked"]
+            if w_sum <= 1e-9:            # beta_context: 기질 판단 없음
+                disposition = 0.0
+            else:
+                # 귀인 마스크(개인차)는 반사실 기질 판정의 '신뢰'로 반영한다.
+                # (마스크가 α·λ_j·ρ 를 모두 막으면 기질 판단 자체가 불가.)
+                disposition = float(np.clip(cf["disposition"], 0.0, 1.0))
         else:
-            disposition = float(
-                (1.5 * w_a * disp_from_bias + 1.0 * w_l * disp_from_lambda
-                 + 0.7 * w_r * disp_from_rho)
-                / (1.5 * w_a + 1.0 * w_l + 0.7 * w_r))
+            # ---- legacy (기존 결과 보존) ----
+            # [v0.7.0 §2] 손튜닝 계수 1.5/1.0/0.7 → (1,1,1) 균등화.
+            # 근거: 계수를 완전히 뒤집어도 전 지표 변동이 시드 SD 미만(정당화 불가한
+            # 자유 파라미터 3개 제거, Occam). ρ 항의 개념적 지위(조건적 반응 → 약한
+            # 기질 증거)는 계수가 아니라 이 주석으로 남긴다.
+            disp_from_bias = _sigmoid(-E_alpha, scale=0.5)      # α 낮을수록 → 1
+            disp_from_lambda = 1.0 - float(np.clip(E_lam, 0, 1))  # λ_j 낮을수록 → 1
+            disp_from_rho = _sigmoid(-E_rho, scale=0.5)          # ρ 낮을수록 → 1
+            if w_sum <= 1e-9:                                # beta_context: 기질 판단 없음
+                disposition = 0.0
+            else:
+                disposition = float(
+                    (w_a * disp_from_bias + w_l * disp_from_lambda
+                     + w_r * disp_from_rho) / (w_a + w_l + w_r))
 
         # rmPFC(정교): 추론된 의도성(β)으로 방어를 게이팅.
         precision_conf = float(np.clip(E_beta / 4.0, 0.0, 1.0))
@@ -371,6 +493,19 @@ class LambdaRegulator:
         # attr_gate(=w_other, 통제권 기반 타인-귀인 가중치, Spiering 2025): 자기-기인
         # 배신은 타인 기질 grievance 를 충전하지 않도록 구동을 게이팅한다.
         g_attr = float(np.clip(attr_gate, 0.0, 1.0))
+        # ---- [v0.7.0 §4] 세 자기/타인 귀인 기제의 이중 계상 방지 ----
+        # 파이프라인 순서:
+        #   (1) ControllabilityAttribution → attr_gate=w_other  (결과의 자기-기인성)
+        #   (2) 반사실 귀인(§1)            → 유발분 제거        (배신의 자기-도발성)
+        #   (3) attr_gate 로 구동 게이팅
+        # (1)과 (2)는 서로 다른 것을 잡지만("내 행동이 결과를 통제했나" vs "내 행동이
+        # 상대를 도발했나") 자기-기인 배신의 기질 누출 차단이라는 목적이 겹친다.
+        # counterfactual 모드에서는 유발분이 이미 disposition 에서 제거되었으므로
+        # attr_gate 를 그대로 곱하면 같은 자기-기인 성분을 두 번 할인한다.
+        # → 반사실이 설명한 몫(provoked)만큼 게이트를 1 쪽으로 완화한다.
+        if self.disposition_mode == "counterfactual" and self.cf_attr_gate_dedup:
+            share = float(np.clip(abs(provoked), 0.0, 1.0))
+            g_attr = float(np.clip(g_attr + (1.0 - g_attr) * share, 0.0, 1.0))
         attributed_disp = (self.kappa * disposition * disp_credence
                            * betrayal_drive * g_attr)
 
@@ -415,4 +550,6 @@ class LambdaRegulator:
             "trust": self.trust,
             "disposition": disposition,
             "disp_credence": disp_credence,
+            # [v0.7.0 §1.4] 유발분 — 진단·그림용. legacy 모드에서는 0.
+            "provoked": float(provoked),
         }

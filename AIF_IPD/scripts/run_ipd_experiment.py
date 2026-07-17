@@ -72,6 +72,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib import font_manager
+from matplotlib.patches import Patch
 
 from AIF_IPD.core.constants import (CC, CD, DC, DD, COOP, DEFECT,
                                     my_action_from_state)
@@ -155,11 +156,56 @@ def stable_seed(*key) -> int:
 
 
 # ------------------------------------------------------------------ 스펙 헬퍼
+# [v0.7.0/v0.7.1/v0.8.0] 모형 개정 전역 토글.
+#   부록 B 규약: 기본값은 **기존 결과를 재현하는 쪽**(legacy / f / False).
+#   --disposition-mode, --likelihood-basis, --rollout-reciprocity 로 전환.
+#   각 실험이 스펙에 명시적으로 값을 넣으면(예: H5 의 조작화 절제) 그쪽이 우선한다.
+# [v0.8.2] **기본값 반전**: 개정 모형(반사실·fg·rollout)이 기본이 된다.
+#   v0.6.6 재현은 이제 명시적 opt-in:
+#     --disposition-mode legacy --likelihood-basis f \
+#     --no-rollout-reciprocity --planning-horizon 1
+#   rollout 은 horizon≥2 에서만 존재하므로 기본 planning_horizon=2 로 함께 반전
+#   (horizon=1 이면 rollout_reciprocity=True 여도 구조적으로 무영향).
+#   실험이 스펙에 명시한 값(H5 절제의 legacy 팔, RR 의 rr=False 팔 등)은
+#   전역보다 우선한다 — 절제/음성대조 설계가 기본값 반전에도 보존되는 이유.
+MODEL_REVISION = {
+    "disposition_mode": "counterfactual",   # §1 반사실 귀인
+    "likelihood_basis": "fg",               # §7 우도 기저 완전화
+    "rollout_reciprocity": True,            # §3 rollout ρ 전파
+    "planning_horizon": 2,                  # §3 rollout 실효화 (1 이면 rollout 없음)
+}
+
+# [v0.8.1] VP/ORE 실행 예산 **명시화**.
+#   종전에는 코드에 박힌 은닉 캡(T = min(max(rounds), 120), seeds = min(seeds, 24))
+#   이 있어 config 가 실제 실행 조건을 반영하지 못했다(재현성 문제). v0.8.1 부터
+#   VP/ORE 는 --rounds 와 **독립적인 자체 지평/시드**를 CLI 로 받으며, 기본값을
+#   본 실험 지평(240)과 seeds=60 으로 복원한다. 실효값은 vars(args) 경유로
+#   summary.json 의 config 에 그대로 기록되고, 각 실험 출력의 "T"/"seeds" 에도
+#   중복 기록된다. --quick 은 예산도 함께 축소한다(스모크용).
+EXP_BUDGET = {
+    "vp_rounds": 240, "vp_seeds": 60,
+    "ore_rounds": 240, "ore_seeds": 60,
+}
+
+
 def agent_spec(kind: str, seed: int, **kw) -> dict:
     base = dict(type=kind, seed=seed, lam_base=LAM_BASE)
     if kind == "adaptive":
         base.update(lam_max=LAM_MAX)
+    # 전역 개정 토글을 주입(실험이 명시한 값은 덮어쓰지 않음)
+    if kind in ("adaptive", "tom_empathic"):
+        base["likelihood_basis"] = MODEL_REVISION["likelihood_basis"]
+        base["rollout_reciprocity"] = MODEL_REVISION["rollout_reciprocity"]
+        base["planning_horizon"] = MODEL_REVISION["planning_horizon"]
+    if kind == "adaptive":
+        base["disposition_mode"] = MODEL_REVISION["disposition_mode"]
     base.update(kw)
+    # [v0.8.2] fg 입자 자동 상향: 6축(α,ρ,ω,η,β,λ_j)은 4축보다 차원이 커서
+    # 400 입자로는 사후가 성기다. 실험이 n_particles 를 명시하지 않았으면 600.
+    # (§7.2 권장 — exp_FG/recovery 내부 처리와 본 실험 경로를 일치시킨다.)
+    if (kind in ("adaptive", "tom_empathic")
+            and base.get("likelihood_basis") == "fg"):
+        base.setdefault("n_particles", 600)
     return base
 
 
@@ -375,48 +421,104 @@ def exp_H5(seeds, rounds, jobs, backend):
     [탐색] 2×2×2 요인 분해 (sophisticated × attribution × dd_charge, §2) —
         군집(시드) 부트스트랩 회귀로 주효과·상호작용 CI.
         첫 배신: 절단 대응 — T 내 배신 비율(Wilson)+비율 순열, 위험곡선 순열.
-    주의: 즉각형 정의(DD-충전)는 같은 리비전에서 도입된 조작 확인(manipulation
-    check)이며, 창발적 예측(조기 배신·보복 나선)과 구분해 보고한다.
+
+    [v0.7.0 §1.5 — H5 재정의 (모형 개정, 단순 리팩터 아님)]
+    ------------------------------------------------------------------
+    현행(legacy) H5 는 `dd_charges` ad-hoc 토글로 즉각형/정교형을 갈랐다. 반사실
+    귀인(§1) 도입으로 두 유형이 **더 원리적으로** 재정의된다:
+
+      · 정교형(rmPFC) = **반사실 귀인 사용**. "내가 협력했더라도 저 상대가
+        배신했을까?"를 물어, 내 도발로 유발된 배신(유발분)을 기질 증거에서 제외한다.
+      · 즉각형(vmPFC) = **관측된 배신에 직접 반응**. 반사실을 계산하지 않으므로
+        모든 배신(CD ∪ DD)이 기질 증거가 된다.
+
+    즉 `dd_charges` 는 이제 *결과*이지 *정의*가 아니다 — 반사실을 쓰지 않는 즉각형은
+    DD 를 자기-도발로 설명할 수단이 없어 자연히 기질로 충전하게 된다.
+
+    두 조작화를 나란히 비교하는 **절제 실험**을 포함한다(명세서 §1.5 요구):
+      · `legacy`         : dd_charges 로 유형 구분 (기존 결과 재현·보존)
+      · `counterfactual` : 반사실 귀인 사용 여부로 유형 구분 (신규 정의)
+
+    정직 보고: 재정의로 결과가 바뀌면 그대로 보고한다. 확증 검정은 **신규 정의**
+    (counterfactual)를 기준으로 하되, legacy 조작화의 결과를 병기한다.
     """
-    LOGGER.info("[H5] 즉각형(vmPFC) vs 정교형(rmPFC) — 확증 대비 + 요인 분해")
+    LOGGER.info("[H5] 즉각형(vmPFC) vs 정교형(rmPFC) — 확증 대비 + 요인 분해 "
+                "+ [v0.7.0] 조작화 절제(legacy vs counterfactual)")
     kw = dict(kappa=0.9, use_pymdp=backend == "pymdp")
 
-    def variant(soph: bool, intent: bool, dd: bool):
+    def variant(soph: bool, intent: bool, dd: bool, mode: str = "legacy"):
         return agent_spec("adaptive", 0, sophisticated=soph,
                           attribution_target="intent_only" if intent else "all",
-                          dd_charges_grievance=dd, **kw)
+                          dd_charges_grievance=dd, disposition_mode=mode, **kw)
 
-    # ---- 확증 대비: 즉각형(F,T,T) vs 정교형(T,F,F) ----
-    soph_cfg = variant(True, False, False)
-    imm_cfg = variant(False, True, True)
+    # ---- 조작화 절제: 두 정의를 나란히 실행 (§1.5) ----
+    #   legacy         : 정교형(T,F,F) vs 즉각형(F,T,T)   — dd_charges 가 유형을 정의
+    #   counterfactual : 정교형=반사실 귀인, 즉각형=관측 배신 직접 반응
+    #     · 정교형: disposition_mode="counterfactual", dd_charges=False
+    #     · 즉각형: disposition_mode="legacy"(반사실 미사용), dd_charges=True
+    OPS = {
+        "legacy": {"sophisticated": variant(True, False, False, "legacy"),
+                   "immediate": variant(False, True, True, "legacy")},
+        "counterfactual": {
+            "sophisticated": variant(True, False, False, "counterfactual"),
+            "immediate": variant(False, True, True, "legacy")},
+    }
+
     mets, raws = {}, {}
-    for lab, cfg in (("sophisticated", soph_cfg), ("immediate", imm_cfg)):
-        for opp in ("exploiter", "noisy_tft"):
-            m, r = _run_block(cfg, opp, seeds, rounds, jobs)
-            mets[(lab, opp)] = m; raws[(lab, opp)] = r
+    for op, cfgs in OPS.items():
+        for lab, cfg in cfgs.items():
+            for opp in ("exploiter", "noisy_tft"):
+                m, r = _run_block(cfg, opp, seeds, rounds, jobs)
+                mets[(op, lab, opp)] = m
+                raws[(op, lab, opp)] = r
 
-    def vals(key, lab, opp):
-        return [m[key] for m in mets[(lab, opp)]]
+    def vals(key, op, lab, opp):
+        return [m[key] for m in mets[(op, lab, opp)]]
 
-    def_i = [-v for v in vals("exploitability", "immediate", "exploiter")]
-    def_s = [-v for v in vals("exploitability", "sophisticated", "exploiter")]
-    pay_i = vals("cum_payoff", "immediate", "noisy_tft")
-    pay_s = vals("cum_payoff", "sophisticated", "noisy_tft")
-    t_def = paired_stats(def_i, def_s, "greater", seed=51)
-    t_pay = paired_stats(pay_i, pay_s, "less", seed=52)
-    h5_i = t_def["mean_a"] > t_def["mean_b"]
-    h5_ii = t_pay["mean_a"] < t_pay["mean_b"]
-    # 결합가설 p: 두 단측 p 의 최대 (교차 기각역; 보수적)
-    p_joint = max(t_def["p"], t_pay["p"])
-    register_primary("H5", "결합: 방어(즉각>정교) ∧ 보수(즉각<정교)", p_joint,
-                     bool(h5_i and h5_ii),
+    # ---- 두 조작화 각각에 대해 결합가설 검정 ----
+    ops_out = {}
+    for op in OPS:
+        d_i = [-v for v in vals("exploitability", op, "immediate", "exploiter")]
+        d_s = [-v for v in vals("exploitability", op, "sophisticated", "exploiter")]
+        p_i = vals("cum_payoff", op, "immediate", "noisy_tft")
+        p_s = vals("cum_payoff", op, "sophisticated", "noisy_tft")
+        t_d = paired_stats(d_i, d_s, "greater", seed=51)
+        t_p = paired_stats(p_i, p_s, "less", seed=52)
+        ops_out[op] = {
+            "defense": t_d, "payoff": t_p,
+            "h5_i": bool(t_d["mean_a"] > t_d["mean_b"]),
+            "h5_ii": bool(t_p["mean_a"] < t_p["mean_b"]),
+            "p_joint": float(max(t_d["p"], t_p["p"])),
+            "raw": {"defense_imm": d_i, "defense_soph": d_s,
+                    "payoff_imm": p_i, "payoff_soph": p_s},
+        }
+        LOGGER.info("[H5|%s] 방어 즉각=%.3f vs 정교=%.3f (%s) | 보수 즉각=%.1f vs "
+                    "정교=%.1f (%s)", op, t_d["mean_a"], t_d["mean_b"],
+                    fmt_es(t_d["es"], "dz"), t_p["mean_a"], t_p["mean_b"],
+                    fmt_es(t_p["es"], "dz"))
+
+    # 확증 검정은 **신규 정의(counterfactual)** 기준 (§1.5)
+    new = ops_out["counterfactual"]
+    t_def, t_pay = new["defense"], new["payoff"]
+    h5_i, h5_ii = new["h5_i"], new["h5_ii"]
+    p_joint = new["p_joint"]
+    register_primary("H5", "결합: 방어(즉각>정교) ∧ 보수(즉각<정교) [반사실 정의]",
+                     p_joint, bool(h5_i and h5_ii),
                      f"방어 {fmt_es(t_def['es'], 'dz')} | 보수 {fmt_es(t_pay['es'], 'dz')}")
+    # legacy 조작화 결과는 탐색으로 병기 — 기존 결과 보존·대조
+    register_exploratory("H5", "결합가설 [legacy dd_charges 정의] (조작화 절제)",
+                         ops_out["legacy"]["p_joint"],
+                         f"방어 {fmt_es(ops_out['legacy']['defense']['es'], 'dz')}")
+    LOGGER.info("[H5-절제] 조작화 비교: legacy p=%.4g (지지=%s) vs counterfactual "
+                "p=%.4g (지지=%s)", ops_out["legacy"]["p_joint"],
+                ops_out["legacy"]["h5_i"] and ops_out["legacy"]["h5_ii"],
+                p_joint, h5_i and h5_ii)
 
     # ---- 절단 대응 첫 배신 (§1): T 내 배신 비율 + 위험곡선 ----
     T = rounds
 
     def fd_data(lab):
-        fds = vals("first_defect_round", lab, "noisy_tft")
+        fds = vals("first_defect_round", "counterfactual", lab, "noisy_tft")
         times = np.minimum(np.asarray(fds, int), T)
         cens = np.asarray(fds) >= T
         return times, cens
@@ -429,7 +531,7 @@ def exp_H5(seeds, rounds, jobs, backend):
                          f"{prop['p1']['p']:.2f} vs {prop['p2']['p']:.2f}")
     register_exploratory("H5", "첫 배신 위험곡선 차이 (로그랭크형)", hz["p"])
 
-    # ---- [탐색] 2×2×2 요인 분해 ----
+    # ---- [탐색] 2×2×2 요인 분해 (legacy 조작화 축 유지) ----
     fac_specs, fac_key = [], []
     for soph in (True, False):
         for intent in (False, True):
@@ -467,22 +569,45 @@ def exp_H5(seeds, rounds, jobs, backend):
         LOGGER.info("[탐색][H5-요인|방어량] %s: %.3f [%.3f, %.3f]", nm, b, *ci)
     for nm, b, ci in zip(fx_pay["names"][1:], fx_pay["beta"][1:], fx_pay["ci"][1:]):
         LOGGER.info("[탐색][H5-요인|noisyTFT보수] %s: %.2f [%.2f, %.2f]", nm, b, *ci)
-    LOGGER.info("[H5-주의] DD-충전 규칙은 같은 리비전 도입 — 본 검정 중 해당 경로는 "
-                "조작 확인(manipulation check)이며, 조기 배신·위험곡선이 창발적 예측이다")
+    LOGGER.info("[H5-주의] legacy 조작화의 DD-충전 규칙은 같은 리비전 도입 — 해당 "
+                "경로는 조작 확인(manipulation check)이며, 조기 배신·위험곡선이 "
+                "창발적 예측이다. v0.7.0 반사실 정의는 이 ad-hoc 토글을 원리적으로 흡수")
+
+    # ---- 유발분(provoked) 진단: 반사실이 무엇을 걸러냈는가 ----
+    prov = {}
+    for opp in ("exploiter", "noisy_tft"):
+        pv = [float(np.mean(r["agent_log"]["provoked"]))
+              for r in raws[("counterfactual", "sophisticated", opp)]]
+        prov[opp] = {"mean": float(np.mean(pv)), "sd": float(np.std(pv))}
+        LOGGER.info("[H5-반사실] %s 유발분 평균=%.3f (SD=%.3f)", opp,
+                    prov[opp]["mean"], prov[opp]["sd"])
 
     traces = {}
     for l in ("sophisticated", "immediate"):
         for o in ("exploiter", "noisy_tft"):
-            traces[f"lam|{l}|{o}"] = stack_traces(raws[(l, o)], "lam")
+            traces[f"lam|{l}|{o}"] = stack_traces(
+                raws[("counterfactual", l, o)], "lam")
         traces[f"cumpay|{l}|noisy_tft"] = np.stack(
-            [np.cumsum(r["hist"]["my_payoff"]) for r in raws[(l, "noisy_tft")]])
+            [np.cumsum(r["hist"]["my_payoff"])
+             for r in raws[("counterfactual", l, "noisy_tft")]])
+    # 조작화 대조용 legacy 궤적
+    for l in ("sophisticated", "immediate"):
+        traces[f"lam|legacy|{l}|exploiter"] = stack_traces(
+            raws[("legacy", l, "exploiter")], "lam")
 
     fx_def.pop("boots", None); fx_pay.pop("boots", None)
+    for op in ops_out:
+        for k in ("defense", "payoff"):
+            ops_out[op][k].pop("boots", None)
     return {"tests": {"defense": t_def, "payoff": t_pay,
                       "prop_defect": prop, "hazard": hz},
+            "operationalization": ops_out,
+            "provoked": prov,
             "factorial": {"defense": fx_def, "payoff": fx_pay},
-            "raw": {"defense_imm": def_i, "defense_soph": def_s,
-                    "payoff_imm": pay_i, "payoff_soph": pay_s,
+            "raw": {"defense_imm": new["raw"]["defense_imm"],
+                    "defense_soph": new["raw"]["defense_soph"],
+                    "payoff_imm": new["raw"]["payoff_imm"],
+                    "payoff_soph": new["raw"]["payoff_soph"],
                     "fd_imm": [int(x) for x in ti], "fd_cens_imm": ci_.tolist(),
                     "fd_soph": [int(x) for x in ts], "fd_cens_soph": cs.tolist()},
             "sub": {"h5_i": bool(h5_i), "h5_ii": bool(h5_ii)},
@@ -2896,6 +3021,259 @@ def exp_GS(seeds, rounds, jobs, backend):
             "supported": None}   # 확증 지표 없음 (사전등록)
 
 
+def exp_RR(seeds, rounds, jobs, backend):
+    """
+    RR [확증] (v0.7.1 §3) rollout ρ 전파의 도구적 협력 경로.
+
+    결합가설:
+      C-RR1 : 호혜 상대(TFT/GTFT)에서 rollout_reciprocity=True 가 협력율↑ (짝지은)
+      C-RR2 : 착취자(ALLD)에서는 무영향 — ρ̂≈0 이므로 (음성 대조; 등가성 검정)
+
+    **경계**: ρ 의 도구적 가치는 λ 가 아니라 EFE/rollout 이 다뤄야 한다. 본 실험은
+    LambdaRegulator 를 건드리지 않고 planner rollout 만 조작하므로, λ 궤적이
+    조건 간 크게 다르지 않아야 한다(구성개념 보존 확인 — 탐색 지표로 보고).
+
+    Albarracin 원 발견(planning depth↑ → 협력 임계 우측 이동)이 ρ 전파 하에서
+    어떻게 바뀌는지 horizon {2,4} 스윕으로 확인한다. 원 결과는 rr=False 로 보존.
+    """
+    LOGGER.info("[RR] rollout ρ 전파 — 도구적 호혜 경로 (horizon≥2)")
+    kw = dict(kappa=0.9, use_pymdp=backend == "pymdp")
+    horizons = [2] if seeds < 10 else [2, 4]
+    opps = ("tit_for_tat", "generous_tft", "exploiter")
+
+    out = {}
+    for H in horizons:
+        for rr in (False, True):
+            for opp in opps:
+                cfg = agent_spec("adaptive", 0, planning_horizon=H,
+                                 rollout_reciprocity=rr, **kw)
+                m, r = _run_block(cfg, opp, seeds, rounds, jobs)
+                out[(H, rr, opp)] = (m, r)
+
+    def coop(H, rr, opp):
+        return [float(np.mean(np.asarray(x["agent_log"]["action"]) == COOP))
+                for x in out[(H, rr, opp)][1]]
+
+    def pay(H, rr, opp):
+        return [mm["cum_payoff"] for mm in out[(H, rr, opp)][0]]
+
+    H0 = horizons[0]
+    # ---- C-RR1: 호혜 상대에서 협력↑ (TFT·GTFT 평균) ----
+    c_on = np.mean([coop(H0, True, o) for o in ("tit_for_tat", "generous_tft")],
+                   axis=0)
+    c_off = np.mean([coop(H0, False, o) for o in ("tit_for_tat", "generous_tft")],
+                    axis=0)
+    t_rr1 = paired_stats(list(c_on), list(c_off), "greater", seed=71)
+    rr1 = t_rr1["mean_a"] > t_rr1["mean_b"]
+
+    # ---- C-RR2: 착취자 음성 대조 (등가: |Δ| 가 작아야 함) ----
+    e_on, e_off = coop(H0, True, "exploiter"), coop(H0, False, "exploiter")
+    t_rr2 = paired_stats(e_on, e_off, "two-sided", seed=72)
+    d_alld = abs(t_rr2["mean_a"] - t_rr2["mean_b"])
+    d_recip = abs(t_rr1["mean_a"] - t_rr1["mean_b"])
+    # 음성 대조 성립: 착취자 효과가 호혜 상대 효과의 1/3 미만
+    rr2 = bool(d_alld < max(0.33 * d_recip, 0.02))
+
+    register_primary("RR", "결합: 호혜상대 협력↑(rr) ∧ 착취자 무영향(음성대조)",
+                     t_rr1["p"], bool(rr1 and rr2),
+                     f"호혜 Δ={d_recip:+.3f} {fmt_es(t_rr1['es'], 'dz')} | "
+                     f"착취자 Δ={d_alld:+.3f}")
+    LOGGER.info("[RR] 음성 대조: 호혜 Δcoop=%.3f vs 착취자 Δcoop=%.3f → %s",
+                d_recip, d_alld, "성립" if rr2 else "미성립(ρ 경로 밖 효과 의심)")
+
+    # ---- 보수: 도구적 이득이 실제 보수로 이어지는가 (탐색) ----
+    p_on = np.mean([pay(H0, True, o) for o in ("tit_for_tat", "generous_tft")],
+                   axis=0)
+    p_off = np.mean([pay(H0, False, o) for o in ("tit_for_tat", "generous_tft")],
+                    axis=0)
+    t_pay = paired_stats(list(p_on), list(p_off), "greater", seed=73)
+    register_exploratory("RR", "호혜상대 누적보수 rr=True > False", t_pay["p"],
+                         f"{t_pay['mean_a']:.1f} vs {t_pay['mean_b']:.1f}")
+
+    # ---- 구성개념 보존: λ 궤적이 조건 간 크게 다르지 않아야 (탐색) ----
+    lam_on = [float(np.mean(x["agent_log"]["lam"]))
+              for x in out[(H0, True, "tit_for_tat")][1]]
+    lam_off = [float(np.mean(x["agent_log"]["lam"]))
+               for x in out[(H0, False, "tit_for_tat")][1]]
+    t_lam = paired_stats(lam_on, lam_off, "two-sided", seed=74)
+    register_exploratory("RR", "λ 궤적 불변 (구성개념 보존: ρ→EFE 경로만)",
+                         t_lam["p"], f"λ̄ {t_lam['mean_a']:.3f} vs "
+                                     f"{t_lam['mean_b']:.3f}")
+    LOGGER.info("[RR-구성개념] λ̄ rr=True %.3f vs rr=False %.3f — λ 는 공감 파라미터로 "
+                "유지되어야 하며 전략 파라미터가 되어선 안 된다", t_lam["mean_a"],
+                t_lam["mean_b"])
+
+    grid = {f"H{H}|{'rr' if rr else 'base'}|{o}":
+            {"coop_mean": float(np.mean(coop(H, rr, o))),
+             "coop_sd": float(np.std(coop(H, rr, o))),
+             "pay_mean": float(np.mean(pay(H, rr, o))),
+             "pay_sd": float(np.std(pay(H, rr, o)))}
+            for H in horizons for rr in (False, True) for o in opps}
+    for k, v in grid.items():
+        LOGGER.info("[RR-격자] %-26s coop=%.3f±%.3f pay=%.1f±%.1f", k,
+                    v["coop_mean"], v["coop_sd"], v["pay_mean"], v["pay_sd"])
+
+    return {"tests": {"rr1": t_rr1, "rr2": t_rr2, "payoff": t_pay, "lam": t_lam},
+            "grid": grid, "horizons": horizons,
+            "raw": {"coop_on": list(map(float, c_on)),
+                    "coop_off": list(map(float, c_off)),
+                    "alld_on": list(map(float, e_on)),
+                    "alld_off": list(map(float, e_off)),
+                    "lam_on": lam_on, "lam_off": lam_off},
+            "sub": {"c_rr1": bool(rr1), "c_rr2": bool(rr2)},
+            "supported": bool(rr1 and rr2), "traces": {}}
+
+
+def exp_FG(seeds, rounds, jobs, backend):
+    """
+    FG [확증] (v0.8.0 §7) 우도 기억-1 완전화 — WSLS 표현 가능성 회복.
+
+    결합가설:
+      C-FG1 : WSLS 시그니처 재현 RMSE ≤ 0.10 (f 기저의 구조적 하한 0.406 대비)
+      C-FG2 : β̂_wsls ≥ 1.5 (결정론성 회복 — f 기저에서는 0.79 로 오사영)
+      C-FG3 : η̂_wsls ≫ 0 이고 타 전략은 η̂≈0 (음성 대조)
+
+    f 기저에서 WSLS 실패는 **추정이 아니라 표현**의 실패다(구조 하한 0.406 ≈ 실측
+    0.408 → 추정 오차 ~0.002). fg 기저는 (1,f,g,fg) 로 기억-1 전 공간을 스팬한다.
+    """
+    LOGGER.info("[FG] 우도 기저 f vs fg — WSLS 표현 가능성 (§7)")
+    from AIF_IPD.ipd.tom.inversion import OpponentInversion, ObservationContext
+    from AIF_IPD.ipd.env import StrategyAgent
+
+    strats = ("wsls", "tit_for_tat", "allc", "alld", "generous_tft")
+    T = rounds if isinstance(rounds, int) else rounds[-1]
+    T = max(int(T), 240)
+    n_seed = max(4, seeds // 2)
+
+    def probe_one(kind, basis, seed):
+        """iid 무작위 focal 탐침 — (f,g) 4셀 점유를 균형화해 ω·η 를 식별."""
+        o = StrategyAgent(kind=kind, seed=1000 + seed, error=0.05)
+        inv = OpponentInversion(n_particles=600 if basis == "fg" else 400,
+                                seed=seed + 1, likelihood_basis=basis)
+        rng = np.random.default_rng(500 + seed)
+        my_h, op_h = [], []
+        cells = {}
+        for t in range(T):
+            f_last = my_h[-1] if my_h else None
+            g_last = op_h[-1] if op_h else None
+            oa = o.act()
+            inv.update(oa, ObservationContext(
+                my_last_action=f_last, their_last_action=g_last,
+                joint_outcome=None, round_number=t))
+            if f_last is not None and g_last is not None:
+                key = (1 - 2 * f_last, 1 - 2 * g_last)
+                c = cells.setdefault(key, [0, 0])
+                c[0] += (oa == COOP); c[1] += 1
+            mine = int(rng.random() < 0.5)
+            o.observe(mine)
+            my_h.append(mine); op_h.append(oa)
+        # 경험 vs 모형 함의 시그니처 (4셀)
+        # **정직 보고**: ALLC/ALLD 처럼 자기 행동이 상수인 상대는 g 가 한 수준에
+        # 고정되어 (f,g) 4셀 중 2셀만 점유한다 — 이는 결함이 아니라 그 전략의
+        # 구조적 속성이다. 점유된 셀만으로 RMSE 를 계산하고 점유 셀 수를 함께
+        # 보고한다(4셀 미만이면 시그니처 비교의 해석 범위가 제한됨을 명시).
+        emp, mod, occ = [], [], []
+        for key in [(1, 1), (1, -1), (-1, 1), (-1, -1)]:
+            if key in cells and cells[key][1] > 10:
+                emp.append(cells[key][0] / cells[key][1])
+                mod.append(inv.predict_coop(float(key[0]), g=float(key[1])))
+                occ.append(key)
+        m = inv.posterior_means()
+        rmse = (float(np.sqrt(np.mean((np.array(emp) - np.array(mod)) ** 2)))
+                if emp else float("nan"))
+        return m, rmse, np.array(emp), np.array(mod), len(occ)
+
+    res = {}
+    for basis in ("f", "fg"):
+        for kind in strats:
+            ms, rs, es, mo, ocs = [], [], [], [], []
+            for s in range(n_seed):
+                m, rmse, e, md, nocc = probe_one(kind, basis, s)
+                ms.append(m); rs.append(rmse); ocs.append(nocc)
+                if len(e) == 4:
+                    es.append(e); mo.append(md)
+            res[(basis, kind)] = {
+                "theta": {k: float(np.mean([x.get(k, 0.0) for x in ms]))
+                          for k in ("alpha", "rho", "omega", "eta", "beta",
+                                    "lambda_j")},
+                "theta_sd": {k: float(np.std([x.get(k, 0.0) for x in ms]))
+                             for k in ("alpha", "rho", "omega", "eta", "beta",
+                                       "lambda_j")},
+                "rmse": [float(x) for x in rs],
+                "rmse_mean": float(np.nanmean(rs)),
+                "rmse_sd": float(np.nanstd(rs)),
+                "cells_occupied": float(np.mean(ocs)),
+                "full_cells": bool(np.mean(ocs) >= 4 - 1e-9),
+                "empirical": (np.mean(es, axis=0).tolist() if es else []),
+                "model": (np.mean(mo, axis=0).tolist() if mo else []),
+            }
+            LOGGER.info("[FG] %-14s basis=%-2s Q3_RMSE=%.3f±%.3f  β̂=%.2f  η̂=%+.2f  "
+                        "(점유셀 %.1f/4)", kind, basis,
+                        res[(basis, kind)]["rmse_mean"],
+                        res[(basis, kind)]["rmse_sd"],
+                        res[(basis, kind)]["theta"]["beta"],
+                        res[(basis, kind)]["theta"]["eta"],
+                        res[(basis, kind)]["cells_occupied"])
+
+    # ---- C-FG1: WSLS RMSE 개선 (짝지은: 시드 공유) ----
+    r_f = res[("f", "wsls")]["rmse"]
+    r_fg = res[("fg", "wsls")]["rmse"]
+    t_rmse = paired_stats(r_fg, r_f, "less", seed=81)
+    fg1 = bool(res[("fg", "wsls")]["rmse_mean"] <= 0.10)
+
+    # ---- C-FG2: β 회복 ----
+    b_fg = res[("fg", "wsls")]["theta"]["beta"]
+    b_f = res[("f", "wsls")]["theta"]["beta"]
+    fg2 = bool(b_fg >= 1.5)
+
+    # ---- C-FG3: η 음성 대조 ----
+    # 정직 보고: η 는 f·g 곱 회귀자라 (f,g) 4셀을 모두 점유해야 식별된다.
+    # ALLC/ALLD 는 자기 행동이 상수라 2셀만 점유 → η̂ 가 사전에 가까워 음성 대조의
+    # 증거력이 약하다. 따라서 **4셀 점유 전략만** 대조군으로 쓴다.
+    eta_w = res[("fg", "wsls")]["theta"]["eta"]
+    ident = [k for k in strats
+             if k != "wsls" and res[("fg", k)]["full_cells"]]
+    eta_others = [abs(res[("fg", k)]["theta"]["eta"]) for k in ident] or [0.0]
+    fg3 = bool(eta_w > 0.5 and eta_w > 2.0 * max(eta_others))
+    LOGGER.info("[FG] η̂ 음성 대조군(4셀 점유): %s → |η̂| max=%.2f", ident,
+                max(eta_others))
+
+    register_primary("FG", "결합: WSLS RMSE≤0.10 ∧ β̂≥1.5 ∧ η̂ 특이성",
+                     t_rmse["p"], bool(fg1 and fg2 and fg3),
+                     f"RMSE {res[('f','wsls')]['rmse_mean']:.3f}→"
+                     f"{res[('fg','wsls')]['rmse_mean']:.3f} | β̂ {b_f:.2f}→{b_fg:.2f} "
+                     f"| η̂_wsls={eta_w:+.2f} vs 타 max={max(eta_others):.2f}")
+    LOGGER.info("[FG] C-FG1 RMSE≤0.10: %s | C-FG2 β̂≥1.5: %s | C-FG3 η̂ 특이성: %s",
+                fg1, fg2, fg3)
+
+    # 타 전략 불변 (음성 대조; 탐색)
+    for k in strats:
+        if k == "wsls":
+            continue
+        rf_k = np.asarray(res[("f", k)]["rmse"], float)
+        rg_k = np.asarray(res[("fg", k)]["rmse"], float)
+        if not (np.isfinite(rf_k).all() and np.isfinite(rg_k).all()):
+            # 정직 보고: ALLC/ALLD 는 자기 행동이 상수라 (f,g) 4셀 중 2셀만
+            # 점유한다 — 시그니처 비교 자체가 정의되지 않는 셀이 있으므로 검정을
+            # 등록하지 않고 점유 구조를 그대로 보고한다(널 값을 p 로 위장 금지).
+            LOGGER.info("[FG-정직] %s: (f,g) 점유셀 %.1f/4 — 4셀 미점유로 시그니처 "
+                        "RMSE 미정의. 음성 대조 검정 미등록(구조적 제약).",
+                        k, res[("fg", k)]["cells_occupied"])
+            continue
+        t_k = paired_stats(list(rg_k), list(rf_k), "two-sided", seed=82)
+        register_exploratory("FG", f"{k} 시그니처 RMSE 기저 간 불변 (음성 대조)",
+                             t_k["p"],
+                             f"{res[('f',k)]['rmse_mean']:.3f} → "
+                             f"{res[('fg',k)]['rmse_mean']:.3f}")
+
+    out = {f"{b}|{k}": v for (b, k), v in res.items()}
+    return {"by_basis": out, "strats": list(strats),
+            "tests": {"rmse": t_rmse},
+            "raw": {"wsls_rmse_f": r_f, "wsls_rmse_fg": r_fg},
+            "sub": {"c_fg1": fg1, "c_fg2": fg2, "c_fg3": fg3},
+            "supported": bool(fg1 and fg2 and fg3), "traces": {}}
+
+
 # ================================================================== H9/H10
 def exp_H9_H10(seeds, rounds, jobs, backend):
     """
@@ -3016,9 +3394,12 @@ def exp_VP(seeds, rounds, jobs, backend):
     """
     from AIF_IPD.ipd.variable_payoff import (
         run_variable_many, estimate_variable_payoff_matrix, CI_REGIMES)
-    Ts = rounds if isinstance(rounds, (list, tuple)) else [rounds]
-    vp_seeds = max(3, min(int(seeds), 24))       # 순차-in-dyad 이므로 시드 상한
-    T = int(min(max(Ts), 120))                   # 대표 지평(비용 관리; 지평 목록 명시)
+    # [v0.8.1] 은닉 캡 제거 — VP 지평·시드는 --rounds/--seeds 와 독립인 명시적
+    # 예산(--vp-rounds/--vp-seeds, 기본 240/60)을 쓴다. 종전 캡(T≤120, seeds≤24)
+    # 은 "비용 관리"였을 뿐 원리적 요구가 아니었고, config 에 기록되지 않는 은닉
+    # 불일치를 만들었다. 이제 실효값이 config 와 본 반환값("T"/"seeds")에 남는다.
+    T = int(EXP_BUDGET["vp_rounds"])
+    vp_seeds = max(3, int(EXP_BUDGET["vp_seeds"]))
     focal = _vp_focal_specs(backend)
     LOGGER.info("[VP] 가변 CI 레짐=%d × focal=%d × 상대=%d, seeds=%d, T=%d",
                 len(_VP_REGIMES), len(focal), len(_VP_OPP_PANEL), vp_seeds, T)
@@ -3309,9 +3690,10 @@ def exp_ORE(seeds, rounds, jobs, backend):
     내부에서 CI 레짐 격자 자체 추정(GLOBAL).
     """
     from AIF_IPD.ipd.variable_payoff import estimate_variable_payoff_matrix
-    Ts = rounds if isinstance(rounds, (list, tuple)) else [rounds]
-    ore_seeds = max(3, min(int(seeds), 24))
-    T = int(min(max(Ts), 120))
+    # [v0.8.1] VP 와 동일 — 은닉 캡 제거, 명시적 예산(--ore-rounds/--ore-seeds,
+    # 기본 240/60). 실효값은 config 및 반환값 "T"/"seeds" 에 기록된다.
+    T = int(EXP_BUDGET["ore_rounds"])
+    ore_seeds = max(3, int(EXP_BUDGET["ore_seeds"]))
     regimes = ["mild_pd", "harsh_pd", "deadlock", "oscillate"]
     LOGGER.info("[ORE] RE vs ORE 종착 CC율, 레짐=%d, seeds=%d, T=%d",
                 len(regimes), ore_seeds, T)
@@ -3466,6 +3848,7 @@ def bar_ci(ax, xs, means, cis, labels=None, colors=None, width=0.6):
     """평균 + 부트스트랩 95% CI 오차막대 (검정 주석 패널 표준, §5)."""
     means = np.asarray(means, float)
     err = np.array([[m - c[0], c[1] - m] for m, c in zip(means, cis)]).T
+    err = np.maximum(err, 0.0)   # [v0.8.2] 점추정∉백분위CI(적은 부트) 음수 방지
     ax.bar(xs, means, width=width, yerr=err, capsize=4,
            color=colors, alpha=0.85)
     if labels:
@@ -3559,17 +3942,20 @@ def fig_H4(d, tag=""):
 
 def fig_H5(d, tag=""):
     _kfont()
-    fig, ax = plt.subplots(1, 3, figsize=(15, 4))
+    fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+    ax = axes[0]
     r = d["raw"]
     bar_ci(ax[0], [0, 1], [np.mean(r["defense_imm"]), np.mean(r["defense_soph"])],
            [boot_mean_ci(r["defense_imm"])["ci"], boot_mean_ci(r["defense_soph"])["ci"]],
            ["즉각", "정교"], colors=["C3", "C0"])
-    ax[0].set_title("착취자 방어량 (즉각>정교)"); ax[0].set_ylabel("−exploitability")
+    ax[0].set_title("착취자 방어량 (즉각>정교) [반사실 정의]")
+    ax[0].set_ylabel("−exploitability")
     _n_note(ax[0], len(r["defense_imm"]))
     bar_ci(ax[1], [0, 1], [np.mean(r["payoff_imm"]), np.mean(r["payoff_soph"])],
            [boot_mean_ci(r["payoff_imm"])["ci"], boot_mean_ci(r["payoff_soph"])["ci"]],
            ["즉각", "정교"], colors=["C3", "C0"])
-    ax[1].set_title("noisy TFT 누적보수 (즉각<정교)"); ax[1].set_ylabel("cum payoff")
+    ax[1].set_title("noisy TFT 누적보수 (즉각<정교) [반사실 정의]")
+    ax[1].set_ylabel("cum payoff")
     _n_note(ax[1], len(r["payoff_imm"]))
     # 요인 forest (§5): 방어량 회귀 계수 CI
     fx = d["factorial"]["defense"]
@@ -3582,10 +3968,200 @@ def fig_H5(d, tag=""):
     ax[2].set_yticks(yy); ax[2].set_yticklabels(names, fontsize=8)
     ax[2].set_title("2×2×2 요인 (방어량) [탐색]")
     ax[2].set_xlabel("계수 ±코딩 (부트 95% CI)")
+
+    # ---- [v0.7.0 §1.5] 조작화 절제: legacy vs counterfactual ----
+    ax2 = axes[1]
+    ops = d.get("operationalization", {})
+    if ops:
+        labs = ["legacy\n(dd_charges)", "counterfactual\n(반사실)"]
+        for j, (metric, ttl) in enumerate((("defense", "착취자 방어량"),
+                                           ("payoff", "noisy TFT 누적보수"))):
+            xs, means, sds = [], [], []
+            for i, op in enumerate(("legacy", "counterfactual")):
+                for k, who in enumerate(("imm", "soph")):
+                    v = np.asarray(ops[op]["raw"][f"{metric}_{who}"], float)
+                    xs.append(i * 2 + k); means.append(v.mean()); sds.append(v.std())
+                    ax2[j].scatter(np.full(len(v), i * 2 + k)
+                                   + np.random.default_rng(0).normal(0, .05, len(v)),
+                                   v, s=8, alpha=.45,
+                                   color="C3" if k == 0 else "C0", zorder=3)
+            ax2[j].bar(xs, means, yerr=sds, capsize=4, alpha=.55,
+                       color=["C3", "C0", "C3", "C0"], zorder=2)
+            ax2[j].set_xticks([0.5, 2.5]); ax2[j].set_xticklabels(labs, fontsize=8)
+            ax2[j].set_title(f"{ttl} — 조작화 절제 (평균±SD)")
+            ax2[j].legend(handles=[
+                Patch(facecolor="C3", label="즉각"),
+                Patch(facecolor="C0", label="정교")], fontsize=7)
+    # 유발분 진단: 반사실이 걸러낸 '내 도발' 성분
+    pv = d.get("provoked", {})
+    if pv:
+        ks = list(pv.keys())
+        ax2[2].bar(range(len(ks)), [pv[k]["mean"] for k in ks],
+                   yerr=[pv[k]["sd"] for k in ks], capsize=4,
+                   color=["C4", "C2"], alpha=.75)
+        ax2[2].set_xticks(range(len(ks))); ax2[2].set_xticklabels(ks, fontsize=8)
+        ax2[2].axhline(0, color="k", lw=.8)
+        ax2[2].set_ylabel("provoked = P(D|f=−1) − P(D|f=+1)")
+        ax2[2].set_title("유발분: 반사실이 걸러낸 성분 (평균±SD)")
     _save(fig, "h5_immediate_vs_sophisticated" + tag,
           "H5: 즉각형(vmPFC)은 방어량↑·화해보수↓. Forest=요인 분해 계수 CI. "
-          "DD-충전 경로는 조작 확인이며 조기 배신·위험곡선이 창발적 예측.",
+          "하단=[v0.7.0 §1.5] 조작화 절제(legacy dd_charges vs 반사실 귀인)와 "
+          "유발분 진단. 착취자는 유발분≈0(순수 기질), 호혜 상대는 유발분>0.",
           f"seeds={len(r['defense_imm'])}")
+
+
+def fig_RR(d, tag=""):
+    """RR (v0.7.1 §3): rollout ρ 전파 — 도구적 협력 경로 + 음성 대조."""
+    _kfont()
+    fig, ax = plt.subplots(2, 3, figsize=(15, 8))
+    rng = np.random.default_rng(0)
+    r = d["raw"]
+
+    def _bar(a, series, labels, colors, ylab, ttl):
+        means = [np.mean(s) for s in series]; sds = [np.std(s) for s in series]
+        a.bar(range(len(series)), means, yerr=sds, capsize=4, alpha=.6,
+              color=colors, zorder=2)
+        for i, s in enumerate(series):
+            a.scatter(np.full(len(s), i) + rng.normal(0, .05, len(s)), s,
+                      s=10, alpha=.5, color="k", zorder=3)
+        a.set_xticks(range(len(series))); a.set_xticklabels(labels, fontsize=8)
+        a.set_ylabel(ylab); a.set_title(ttl, fontsize=10)
+
+    _bar(ax[0, 0], [r["coop_off"], r["coop_on"]], ["rr=False", "rr=True"],
+         ["0.7", "C2"], "협력율", "호혜 상대(TFT/GTFT) 협력율\n(C-RR1: rr↑)")
+    _bar(ax[0, 1], [r["alld_off"], r["alld_on"]], ["rr=False", "rr=True"],
+         ["0.7", "C3"], "협력율",
+         "착취자 협력율 — 음성 대조\n(C-RR2: ρ̂≈0 → 무영향이어야)")
+    _bar(ax[0, 2], [r["lam_off"], r["lam_on"]], ["rr=False", "rr=True"],
+         ["0.7", "C0"], "λ̄", "λ 궤적 불변 [구성개념 보존]\n(ρ→EFE 경로만, λ 아님)")
+
+    # 격자: horizon × rr × 상대
+    grid = d["grid"]
+    keys = sorted(grid)
+    for j, metric in enumerate(("coop", "pay")):
+        a = ax[1, j]
+        vals = [grid[k][f"{metric}_mean"] for k in keys]
+        sds = [grid[k][f"{metric}_sd"] for k in keys]
+        cols = ["C2" if "|rr|" in k else "0.7" for k in keys]
+        a.barh(range(len(keys)), vals, xerr=sds, capsize=3, color=cols, alpha=.75)
+        a.set_yticks(range(len(keys))); a.set_yticklabels(keys, fontsize=6)
+        a.set_xlabel("협력율" if metric == "coop" else "누적보수")
+        a.set_title(f"격자: horizon×rr×상대 ({'협력율' if metric=='coop' else '보수'})"
+                    "\n평균±SD", fontsize=10)
+    ax[1, 2].axis("off")
+    ax[1, 2].text(0.02, 0.95,
+                  "§3 경계 (중요)\n\n"
+                  "ρ 의 도구적 가치는 λ 가 아니라\n"
+                  "EFE/rollout 이 다뤄야 한다.\n\n"
+                  "'호혜적이니 협력이 이득 → λ↑' 는\n"
+                  "λ 를 공감이 아닌 전략 파라미터로\n"
+                  "바꿔 구성개념을 붕괴시킨다.\n\n"
+                  "→ LambdaRegulator 는 불변,\n"
+                  "   planner rollout 만 조작.\n\n"
+                  "음성 대조: ALLD 는 ρ̂≈0 이므로\n"
+                  "효과가 없어야 정상.",
+                  va="top", fontsize=8.5, family="monospace")
+    _save(fig, "rr_rollout_reciprocity" + tag,
+          "RR (v0.7.1 §3): rollout ρ 전파로 '협력→상대 협력 유도→내 미래 보수↑' 의 "
+          "도구적 경로가 G_self 에 자연 발생. 호혜 상대에서 협력·보수↑, 착취자에서는 "
+          "ρ̂≈0 이라 무영향(음성 대조). λ 궤적은 불변 — ρ 의 도구적 가치가 공감 "
+          "파라미터를 오염시키지 않음을 확인.",
+          f"seeds={len(r['coop_on'])}")
+
+
+def fig_FG(d, tag=""):
+    """FG (v0.8.0 §7): 우도 기억-1 완전화 — WSLS 표현 회복."""
+    _kfont()
+    fig, ax = plt.subplots(2, 3, figsize=(15, 8))
+    rng = np.random.default_rng(0)
+    strats = d["strats"]; bb = d["by_basis"]
+
+    # (a) Q3 RMSE: f vs fg (전 전략)
+    a = ax[0, 0]
+    x = np.arange(len(strats)); w = 0.38
+    for i, basis in enumerate(("f", "fg")):
+        ms = [bb[f"{basis}|{k}"]["rmse_mean"] for k in strats]
+        ss = [bb[f"{basis}|{k}"]["rmse_sd"] for k in strats]
+        a.bar(x + (i - .5) * w, ms, w, yerr=ss, capsize=3,
+              color=["0.7", "C4"][i], label=f"basis={basis}", alpha=.85)
+    a.axhline(0.10, color="r", ls="--", lw=1, label="목표 ≤0.10")
+    a.set_xticks(x); a.set_xticklabels(strats, fontsize=7, rotation=20)
+    a.set_ylabel("Q3 시그니처 RMSE"); a.legend(fontsize=7)
+    a.set_title("(a) 시그니처 재현 오차 (평균±SD)\nWSLS 만 큰 개선 = 표현 문제였음",
+                fontsize=10)
+
+    # (b) WSLS 시그니처: 경험 vs 모형 (두 기저)
+    a = ax[0, 1]
+    cells = ["f=+1\ng=+1", "f=+1\ng=−1", "f=−1\ng=+1", "f=−1\ng=−1"]
+    xs = np.arange(4)
+    emp = bb["fg|wsls"]["empirical"]
+    if emp:
+        a.plot(xs, emp, "ko-", label="경험(참)", lw=2, ms=7)
+    for basis, c in (("f", "0.6"), ("fg", "C4")):
+        mo = bb[f"{basis}|wsls"]["model"]
+        if mo:
+            a.plot(xs, mo, "o--", color=c, label=f"모형 {basis}", ms=6)
+    a.set_xticks(xs); a.set_xticklabels(cells, fontsize=7)
+    a.set_ylabel("P(상대 협력)"); a.set_ylim(-.05, 1.05); a.legend(fontsize=7)
+    a.set_title("(b) WSLS 시그니처 (XOR 구조)\nf 기저는 ~0.5 로 붕괴, fg 는 재현",
+                fontsize=10)
+
+    # (c) β̂ 회복
+    a = ax[0, 2]
+    for i, basis in enumerate(("f", "fg")):
+        ms = [bb[f"{basis}|{k}"]["theta"]["beta"] for k in strats]
+        ss = [bb[f"{basis}|{k}"]["theta_sd"]["beta"] for k in strats]
+        a.bar(x + (i - .5) * w, ms, w, yerr=ss, capsize=3,
+              color=["0.7", "C4"][i], label=f"basis={basis}", alpha=.85)
+    a.axhline(1.5, color="r", ls="--", lw=1, label="목표 β̂≥1.5")
+    a.set_xticks(x); a.set_xticklabels(strats, fontsize=7, rotation=20)
+    a.set_ylabel("β̂ (의도성/정밀도)"); a.legend(fontsize=7)
+    a.set_title("(c) β̂ 회복 — 결정론의 잡음 오사영 해소\n(f 기저: WSLS β̂ 최저 = 반전)",
+                fontsize=10)
+
+    # (d) η̂ 특이성 (음성 대조)
+    a = ax[1, 0]
+    ms = [bb[f"fg|{k}"]["theta"]["eta"] for k in strats]
+    ss = [bb[f"fg|{k}"]["theta_sd"]["eta"] for k in strats]
+    a.bar(x, ms, yerr=ss, capsize=3,
+          color=["C4" if k == "wsls" else "0.7" for k in strats], alpha=.85)
+    a.axhline(0, color="k", lw=.8)
+    a.set_xticks(x); a.set_xticklabels(strats, fontsize=7, rotation=20)
+    a.set_ylabel("η̂ (결과-조건성)")
+    a.set_title("(d) η̂ 특이성 [음성 대조]\nWSLS 만 크게 양(+), 타 전략 ≈0", fontsize=10)
+
+    # (e) ω̂ (관성)
+    a = ax[1, 1]
+    ms = [bb[f"fg|{k}"]["theta"]["omega"] for k in strats]
+    ss = [bb[f"fg|{k}"]["theta_sd"]["omega"] for k in strats]
+    a.bar(x, ms, yerr=ss, capsize=3, color="C0", alpha=.85)
+    a.axhline(0, color="k", lw=.8)
+    a.set_xticks(x); a.set_xticklabels(strats, fontsize=7, rotation=20)
+    a.set_ylabel("ω̂ (관성/자기일관성)")
+    a.set_title("(e) ω̂ — 상대의 자기일관성 항", fontsize=10)
+
+    # (f) WSLS RMSE 시드별 짝지음
+    a = ax[1, 2]
+    rf, rfg = d["raw"]["wsls_rmse_f"], d["raw"]["wsls_rmse_fg"]
+    for i, (u, v) in enumerate(zip(rf, rfg)):
+        a.plot([0, 1], [u, v], "-", color="0.7", lw=1, zorder=1)
+    a.scatter(np.zeros(len(rf)) + rng.normal(0, .02, len(rf)), rf, s=25,
+              color="0.5", zorder=3, label="f")
+    a.scatter(np.ones(len(rfg)) + rng.normal(0, .02, len(rfg)), rfg, s=25,
+              color="C4", zorder=3, label="fg")
+    a.axhline(0.406, color="r", ls=":", lw=1.2, label="f 기저 구조 하한 0.406")
+    a.axhline(0.10, color="g", ls="--", lw=1, label="목표 0.10")
+    a.set_xticks([0, 1]); a.set_xticklabels(["f", "fg"])
+    a.set_ylabel("WSLS Q3 RMSE"); a.legend(fontsize=6.5)
+    a.set_title("(f) WSLS: 시드별 짝지은 개선\n실패는 추정이 아니라 표현이었다",
+                fontsize=10)
+    _save(fig, "fg_likelihood_basis" + tag,
+          "FG (v0.8.0 §7): 우도를 σ(β(α+ρf+ωg+η·fg+s)) 로 확장하면 기저 (1,f,g,fg) 가 "
+          "기억-1 시그니처 전 공간을 스팬한다. WSLS 의 XOR 규칙은 f 로 주변화되면 "
+          "~0.5 동전던지기로 사영되어 결정론이 '저정밀 잡음'으로 오귀인됐다(β̂ 반전). "
+          "fg 기저에서 η̂_wsls≫0 로 정확히 표현되고 β̂ 가 회복된다. 타 전략은 η̂≈0 "
+          "(음성 대조).",
+          f"seeds={len(rf)}")
 
 
 def fig_H6(d, tag=""):
@@ -3669,6 +4245,7 @@ def fig_H7(d, tag=""):
                              bp[P]["ci"][1] - bp[P]["delta_mean"]]
                             for P in Ps]).T
             xs = np.arange(len(Ps)) + (ri - (nr - 1) / 2) * w
+            err = np.maximum(err, 0.0)   # [v0.8.2] 음수 yerr 방지
             bars = ax[1, 0].bar(xs, dm, width=w, yerr=err, capsize=2,
                                 color=rcolors.get(rv, f"C{ri}"),
                                 alpha=0.88, label=rival_lbl.get(rv, rv))
@@ -3749,6 +4326,7 @@ def fig_H7H(d, tag=""):
     m = [fa[str(T)][0] for T in Ts]
     err = np.array([[fa[str(T)][0] - fa[str(T)][1][0],
                      fa[str(T)][1][1] - fa[str(T)][0]] for T in Ts]).T
+    err = np.maximum(err, 0.0)   # [v0.8.2] 음수 yerr 방지
     ax[0, 0].errorbar(Ts, m, yerr=err, fmt="o-", capsize=4, color="C0",
                       label="Δ vs GTFT(확률) [확증]")
     fac = d["family_a"].get("delta_count")
@@ -3756,6 +4334,7 @@ def fig_H7H(d, tag=""):
         mc = [fac[str(T)][0] for T in Ts]
         errc = np.array([[fac[str(T)][0] - fac[str(T)][1][0],
                           fac[str(T)][1][1] - fac[str(T)][0]] for T in Ts]).T
+        errc = np.maximum(errc, 0.0)   # [v0.8.2] 음수 yerr 방지
         ax[0, 0].errorbar(Ts, mc, yerr=errc, fmt="s--", capsize=3, ms=4,
                           color="C4", label="Δ vs GTFT(횟수) [탐색]")
     ax[0, 0].axhline(0, color="r", ls="--", lw=1)
@@ -4145,6 +4724,7 @@ def fig_H11(d, tag=""):
             err = np.array([[cur[str(dd)][0] - cur[str(dd)][1][0],
                              cur[str(dd)][1][1] - cur[str(dd)][0]]
                             for dd in doses]).T
+            err = np.maximum(err, 0.0)   # [v0.8.2] 음수 yerr 방지
             a.errorbar(doses, m, yerr=err, fmt="o-", capsize=3, ms=4,
                        color=arm_col[arm], label=arm_lbl[arm], lw=1.4)
         a.set_xlabel("swap dose (개체 수)"); a.set_ylabel(ylabel)
@@ -4361,6 +4941,10 @@ def fig_H12(d, tag=""):
     vals = [sh["phi"][x] for x in cs]
     err = np.array([[sh["phi"][x] - sh["phi_ci"][x][0],
                      sh["phi_ci"][x][1] - sh["phi"][x]] for x in cs]).T
+    # [v0.8.2 수정] 잠재 버그: 부트 리플리킷이 적으면(quick) 점추정 φ 가 백분위
+    # CI 밖에 놓일 수 있어 비대칭 yerr 가 음수가 된다(matplotlib ValueError).
+    # 그림 표시용으로만 0 클립 — JSON 의 원 CI 값은 그대로 보존된다.
+    err = np.maximum(err, 0.0)
     cols = ["C0" if x == "adaptive" else "0.6" for x in cs]
     ax[2, 0].bar(xx, vals, yerr=err, capsize=4, color=cols, alpha=0.85)
     ax[2, 0].set_xticks(xx)
@@ -4809,11 +5393,15 @@ EXPERIMENTS = {
     "H11": (exp_H11, fig_H11),
     "H12": (exp_H12, fig_H12),
     "GS": (exp_GS, fig_GS),
+    # [v0.7.1 §3] rollout ρ 전파 / [v0.8.0 §7] 우도 fg 기저
+    "RR": (exp_RR, fig_RR),
+    "FG": (exp_FG, fig_FG),
     "VP": (exp_VP, fig_VP),
     "ABA": (exp_ABA, fig_ABA),
     "ORE": (exp_ORE, fig_ORE),
 }
-GLOBAL_EXPERIMENTS = {"H7H", "H8E", "H12", "VP", "ABA", "ORE"}   # 내부 err/T/레짐 스윕 — rounds 목록을 통째로 전달
+# FG 는 자체 기저 스윕(f vs fg)을 내부에서 수행 — rounds 목록 통째 전달
+GLOBAL_EXPERIMENTS = {"H7H", "H8E", "H12", "VP", "ABA", "ORE", "FG"}   # 내부 err/T/레짐 스윕 — rounds 목록을 통째로 전달
 
 
 def _jsonable(o):
@@ -4988,7 +5576,43 @@ def main():
                     help="스모크: seeds=3, rounds=[30]")
     ap.add_argument("--check-equivalence", action="store_true",
                     help="pymdp↔numpy EFE 등가성만 검증하고 종료")
+    # ---- [v0.7.0/v0.7.1/v0.8.0] 모형 개정 토글 (부록 B: 기본=기존 재현) ----
+    ap.add_argument("--disposition-mode", choices=["legacy", "counterfactual"],
+                    default="counterfactual",
+                    help="§1 기질 귀인 [v0.8.2 기본 counterfactual; "
+                         "v0.6.6 재현은 legacy 명시]")
+    ap.add_argument("--likelihood-basis", choices=["f", "fg"], default="fg",
+                    help="§7 우도 기저 [v0.8.2 기본 fg (+입자 자동 600); "
+                         "v0.6.6 재현은 f 명시]")
+    ap.add_argument("--rollout-reciprocity",
+                    action=argparse.BooleanOptionalAction, default=True,
+                    help="§3 rollout ρ 전파 [v0.8.2 기본 on; 끄기는 "
+                         "--no-rollout-reciprocity]")
+    ap.add_argument("--planning-horizon", type=int, default=2,
+                    help="[v0.8.2] 전 실험 기본 planning horizon (기본 2 — "
+                         "rollout 실효화; 1 이면 rollout 구조적 무영향). "
+                         "실험이 자체 지정하면(RR) 그쪽 우선")
+    ap.add_argument("--summary-out", default="summary.json",
+                    help="[v0.8.2] 요약 파일명 — horizon 1/2 별도 실행 후 "
+                         "compare_versions.py 대조용 (예: summary_h1.json)")
+    # ---- [v0.8.1] VP/ORE 실행 예산 명시화 (은닉 캡 T≤120·seeds≤24 폐지) ----
+    ap.add_argument("--vp-rounds", type=int, default=240,
+                    help="VP 지평 (기본 240 — 본 실험 지평과 정합 복원)")
+    ap.add_argument("--vp-seeds", type=int, default=60,
+                    help="VP 시드 수 (기본 60)")
+    ap.add_argument("--ore-rounds", type=int, default=240,
+                    help="ORE 지평 (기본 240)")
+    ap.add_argument("--ore-seeds", type=int, default=60,
+                    help="ORE 시드 수 (기본 60)")
     args = ap.parse_args()
+    EXP_BUDGET["vp_rounds"] = args.vp_rounds
+    EXP_BUDGET["vp_seeds"] = args.vp_seeds
+    EXP_BUDGET["ore_rounds"] = args.ore_rounds
+    EXP_BUDGET["ore_seeds"] = args.ore_seeds
+    MODEL_REVISION["disposition_mode"] = args.disposition_mode
+    MODEL_REVISION["likelihood_basis"] = args.likelihood_basis
+    MODEL_REVISION["rollout_reciprocity"] = bool(args.rollout_reciprocity)
+    MODEL_REVISION["planning_horizon"] = max(1, int(args.planning_horizon))
     if args.check_equivalence:
         from AIF_IPD.core.pymdp_backend import PymdpEFE, pymdp_available
         if not pymdp_available():
@@ -4999,9 +5623,23 @@ def main():
         return
     if args.quick:
         args.seeds, args.rounds = 3, [30]
+        # 예산도 스모크 크기로 축소 (실효값이 config 에 그대로 남도록 args 를 갱신)
+        for k, v in (("vp_rounds", 30), ("vp_seeds", 3),
+                     ("ore_rounds", 30), ("ore_seeds", 3)):
+            EXP_BUDGET[k] = v
+            setattr(args, k, v)
     Ts = sorted(set(args.rounds))
-    LOGGER.info("=== HalloReg v0.3 — seeds=%d rounds=%s jobs=%d backend=%s ===",
+    LOGGER.info("=== HalloReg v0.8.2 — seeds=%d rounds=%s jobs=%d backend=%s ===",
                 args.seeds, Ts, args.jobs, args.backend)
+    LOGGER.info("실험 예산: VP T=%d seeds=%d | ORE T=%d seeds=%d",
+                EXP_BUDGET["vp_rounds"], EXP_BUDGET["vp_seeds"],
+                EXP_BUDGET["ore_rounds"], EXP_BUDGET["ore_seeds"])
+    LOGGER.info("모형 개정 토글: disposition_mode=%s | likelihood_basis=%s | "
+                "rollout_reciprocity=%s | planning_horizon=%d",
+                MODEL_REVISION["disposition_mode"],
+                MODEL_REVISION["likelihood_basis"],
+                MODEL_REVISION["rollout_reciprocity"],
+                MODEL_REVISION["planning_horizon"])
     LOGGER.info("사전등록: %s (α_family=%s, FDR q=%s)", _PREREG_PATH.name,
                 PREREG.get("alpha_family"), PREREG.get("fdr_q"))
 
@@ -5052,7 +5690,7 @@ def main():
         fig_horizon_overview(summary, Ts)
     except Exception as e:
         LOGGER.exception("지평 개관 그림 실패: %s", e)
-    with open(RESULTS / "summary.json", "w", encoding="utf-8") as f:
+    with open(RESULTS / args.summary_out, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
 
     LOGGER.info("═════════ 확증(1차) 지표 — Holm 보정 ═════════")
@@ -5065,7 +5703,7 @@ def main():
                 PREREG.get("fdr_q"))
     n_sig = sum(1 for x in EXPLORATORY if x.get("q_fdr", 1) < PREREG.get("fdr_q", 0.05))
     LOGGER.info("탐색 지표 %d개 중 FDR 통과 %d개", len(EXPLORATORY), n_sig)
-    LOGGER.info("결과 저장: %s", RESULTS / "summary.json")
+    LOGGER.info("결과 저장: %s", RESULTS / args.summary_out)
 
 
 if __name__ == "__main__":

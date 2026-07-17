@@ -12,12 +12,14 @@ from .generative import (
     efe_terms, G_self, G_other_perspective, predicted_next_state, softmax,
 )
 from .allostasis import (
+    counterfactual_disposition,
     CoreAllostaticBeliefState, LambdaRegulator,
     CAUSE_AXES, DISPOSITIONAL_AXES, CONTEXTUAL_AXES,
 )
 from .logging_utils import get_logger, set_korean_font
 
 __all__ = [
+    "counterfactual_disposition",
     "R", "T", "S", "P", "CC", "CD", "DC", "DD", "COOP", "DEFECT",
     "N_STATES", "N_ACTIONS", "PAYOFF_SELF", "PAYOFF_OTHER", "PD_PAYOFFS",
     "ACTION_NAMES", "STATE_NAMES",

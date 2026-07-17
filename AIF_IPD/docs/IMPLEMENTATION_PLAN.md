@@ -1003,3 +1003,384 @@ v0.6.6 — 사영 연구 + ToM 갱신 오프바이원 수정 (브레이킹)
 (4) 확증 재검증(축소 조건 스팟체크): ABA/ORE 지지 유지(효과크기 소폭 감소),
     **VP C-VP1/C-VP2 미지지로 반전** — 단 seeds=16 vs 기준선 24 로 검정력 교락.
     사용자 머신 seeds=24 재실행으로 확정 필요. 정직 보고 원칙에 따라 미지지 명시.
+
+================================================================================
+v0.7.0 — 반사실(counterfactual) 인과 귀인 [모형 개정] (명세서 §1·§2·§4)
+================================================================================
+(1) core/allostasis.py: counterfactual_disposition() 신규.
+    기질 = P(D|f=+1) = 1 − σ(β̂(α̂+ρ̂·(+1)+ω̂g+η̂·fg+s(λ̂_j,p)))
+    유발 = P(D|f=−1) − P(D|f=+1)
+    ρ 는 valence 가 아니라 **반사실 시나리오를 구성하는 조건화 변수**로만 쓰인다.
+    LambdaRegulator 에 disposition_mode ∈ {legacy, counterfactual} (기본 legacy),
+    cf_g_handling ∈ {marginalize, plus} (기본 marginalize — §7.5 권장),
+    cf_attr_gate_dedup (기본 True — §4).
+(2) 사전 확인(실측, v0.6.6 legacy, seeds=4·240R): ρ 항의 무정보성 재현.
+    ALLC ρ항 0.397 ≈ ALLD 0.490 (Δ=0.093) vs α항 0.507 vs 0.926 (Δ=0.419).
+    **명세서에 없던 추가 발견**: TFT ρ항 0.256 < ALLC 0.397 — 호혜 상대가 무조건
+    협력자보다 나쁜 기질로 평가되는 **역전**. ρ 는 무정보가 아니라 역정보였다.
+(3) 반사실 판별력(seeds=8·240R, 폐루프): ALLD−TFT +0.269 → **+0.667**(목표 .506),
+    ALLD−ALLC +0.275 → **+0.699**(목표 .607). 목표 초과.
+    유발분: TFT +0.260, GTFT +0.263, ALLD **+0.004≈0**(순수 기질), WSLS −0.020.
+    정직 보고: 유발분 크기가 명세서(TFT +0.585)보다 작다. 명세서 값은 legacy 조절
+    하 θ̂ 에 반사실 공식을 사후 적용한 것이고, 본 값은 반사실이 **폐루프로 작동하는**
+    동역학에서 얻은 것 — 보복을 오귀인하지 않아 λ 가 덜 떨어지고 → 내가 덜 배신하고
+    → TFT 도 덜 보복하여 유발분 자체가 감소. **개정이 의도대로 작동한 결과**이며
+    판별력은 오히려 목표를 초과했다.
+    WSLS 반사실 disp=0.504·유발분≈0 — §7 이 예측한 f-기저 구조적 표현 불가의 직접
+    증거(XOR 이 f 로 주변화되면 P(D|f=+1)≈P(D|f=−1) 로 반사실 대비 소멸).
+(4) §2 계수 1.5/1.0/0.7 제거: counterfactual 은 항 자체 소멸; legacy 는 (1,1,1)
+    균등화(자유 파라미터 3개 제거, Occam). ρ 항의 개념적 지위는 주석으로 보존.
+(5) §4 세 귀인 기제 파이프라인 명문화: (1) ControllabilityAttribution → attr_gate
+    (결과의 자기-기인성) → (2) 반사실 → 유발분 제거(배신의 자기-도발성) →
+    (3) attr_gate 게이팅. counterfactual 모드에서 유발분이 이미 제거된 뒤 attr_gate
+    를 그대로 곱하면 같은 성분을 이중 할인 → 반사실이 설명한 몫만큼 게이트 완화.
+(6) §1.5 H5 재정의(모형 개정): 정교형=반사실 사용, 즉각형=관측 배신 직접 반응.
+    dd_charges 는 이제 정의가 아니라 결과. exp_H5 가 두 조작화(legacy vs
+    counterfactual)를 나란히 실행 — 확증은 신규 정의 기준, legacy 는 탐색 병기.
+    hypotheses.yaml H5 rationale 전면 개정 + H5_OPS(조작화 절제) 추가.
+    fig_H5 2×3 확장(조작화 절제 + 유발분 진단 패널, 평균±SD + seed jitter).
+(7) 검증: AST → --quick smoke → 전체 경로 → 18실험 통합 → 골든 재기준(PASS, 재실행
+    PASS). 골든은 §2 균등화로 legacy 수치가 변하므로 v0.7.0 기준 재설정.
+
+================================================================================
+v0.7.1 — rollout ρ 전파 (명세서 §3)
+================================================================================
+(1) ipd/tom/opponent_simulator.py: rollout_reciprocity 토글(기본 False).
+    step>0 에서 static ToM 후퇴 대신 P(a_j=C|f_virt) = σ(β̂(α̂+ρ̂f_virt+ω̂g+η̂fg+s)).
+    신뢰도 게이팅(r)로 step 0 GatedToM 과 동일 논리 유지.
+(2) ipd/tom/sophisticated_planner.py: evaluate_policy 가 가상 궤적을 따라
+    my_prev/opp_prev 를 갱신하며 rollout → "협력→상대 협력 유도→내 미래 보수↑"
+    도구적 경로가 G_self 에 자연 발생.
+(3) **경계 준수**: LambdaRegulator 는 전혀 건드리지 않는다. ρ 의 도구적 가치를 λ 로
+    처리하면 λ 가 공감이 아닌 전략 파라미터가 되어 구성개념이 붕괴한다.
+    exp_RR 이 λ 궤적 불변을 탐색 지표로 명시 검증.
+(4) 실측(horizon=2, seeds=4·120R): TFT coop 0.667→0.902, pay 297.8→329.8;
+    GTFT coop 0.817→0.906. **음성 대조 성립**: ALLD coop 0.244→0.263,
+    pay 115.0→112.5 (quick 격자에서는 Δcoop=0.000) — ρ̂≈0 이라 전파할 것이 없음.
+(5) exp_RR/fig_RR 신규 + hypotheses.yaml RR(C-RR1 호혜 협력↑, C-RR2 착취자 무영향).
+    horizon=1 에서는 rollout 이 없어 무영향(구조적 보장).
+
+================================================================================
+v0.8.0 — 우도 기억-1 완전화: g·fg 항 [브레이킹] (명세서 §7)
+================================================================================
+(1) ipd/tom/inversion.py: likelihood_basis ∈ {f, fg} (기본 f).
+    P(a_j=C|f,g,θ) = σ(β(α + ρ·f + ω·g + η·f·g + s(λ_j,p))).
+    THETA_AXES_FG 6축, _PRIOR ω/η ~ N(0,1) clip ±3, jitter 0.10.
+    f 기저에서 omega/eta 는 0 배열 → 항 소멸 → v0.6.6 우도와 동일(하위호환).
+    predict_coop(f, g), expected_infogain(a, f_next, g_next), posterior_means/stds
+    에 ω·η 추가. _feature_g() 신규 (their_last_action 은 v0.6.6 에도 있었으나
+    우도가 미사용 — fg 에서 비로소 소비).
+(2) **§7.2 시제 표 명문화 (오프바이원 재발 방지)**:
+      갱신용: 관측 opp_{k−1} → f=my_{k−2}, g=opp_{k−2}  (둘 다 한 시점 더 과거)
+      결정용: 예측 opp_k    → f=my_{k−1}, g=opp_{k−1}  (둘 다 최신)
+    agent.py 가 opp_actions 를 _regulate **직후** append 하므로 갱신 시점의
+    opp_actions[-1] == opp_{k−2} (순서 의존 — 변경 금지, 주석 명시).
+    **데이터-수준 검증(§7.4-1)**: 무작위 focal·200R, TFT/WSLS 모두
+    f==my[k−1] 1.000 / g==op[k−1] 1.000 vs 대안 시제 0.510/0.515(우연).
+    ground truth: TFT opp[k]==my[k−1] 1.000. 시제 정합 확인.
+(3) **§7.4-2 WSLS 표현 회복(probe, 6 seeds·600R·600 입자)**:
+      WSLS Q3 RMSE 0.453 → **0.040** (목표 ≤0.10 달성)
+      β*_wsls 0.14 → **1.55** (목표 ≥1.5 달성 — 결정론성 회복)
+      η̂_wsls **+2.44**, TFT +0.06 / ALLC +0.42 / ALLD +0.67 (음성 대조 성립)
+      경험 [0.963,0.048,0.035,0.939] vs fg 모형 [0.984,0.024,0.009,0.981]
+    validate_projection --basis fg 에서도 WSLS RMSE 0.016 확인.
+(4) §7.3 fg_centered 복원 배터리(필수 동반): g 는 직접 조작 불가 → 합성 상대에 한해
+    **상대 행동열 조건부 강제**로 (f,g) 4셀 균형 순회. recover_once_fg 신규.
+    design_diagnostics 다회귀자 확장(u,v,f-빈도,g-빈도,fg-균형) → 실측
+    f_mean=g_mean=fg_mean=0.0, corr_f_g=0.0, design_rank=4 full-rank, centered=True.
+    THETA_RANGES 에 ω∈[−1.2,1.2], η∈[−1.6,1.6] 추가. 입자 600(차원 보상),
+    기본 rounds 480(셀당 ~30 관측, §7.3 권장). 6×6 혼동행렬 + fg 4셀 전부 포함하는
+    역방향 평가맥락. run_design/predictive_check/그림 전부 축수 적응형으로 개정.
+(5) scripts/validate_projection.py: --basis {f,fg}. model_implied_signature 가
+    상태 k=(my,opp) 를 divmod 로 분해해 f·g 를 모두 조건에 넣는다(fg 기저에서
+    4자유도 전 공간 표현). _ident_coords 는 축 이름 인덱싱 + fg 에서 (βω, βη) 추가.
+(6) exp_FG/fig_FG 신규 + hypotheses.yaml FG(C-FG1 RMSE≤0.10, C-FG2 β̂≥1.5,
+    C-FG3 η̂ 특이성). **정직 보고**: ALLC/ALLD 는 자기 행동이 상수라 (f,g) 4셀 중
+    2.2셀만 점유 → η 가 약식별. 시그니처 RMSE 가 미정의인 경우 검정을 등록하지 않고
+    점유 구조를 그대로 보고(널을 p 로 위장 금지). η̂ 음성 대조군은 **4셀 점유
+    전략만**(TFT/GTFT) 사용.
+(7) 전역 토글: run_ipd_experiment.py --disposition-mode / --likelihood-basis /
+    --rollout-reciprocity. MODEL_REVISION 이 agent_spec 에 주입되어 전 실험 일관 전파
+    (실험이 명시한 값은 덮어쓰지 않음 — H5 조작화 절제가 이에 의존).
+(8) 검증 층위 전부 통과: AST(30파일) → --quick smoke → 전체 경로(H5/RR/FG) →
+    18실험 통합(H1 H2H3 H4 H5 H6 H7 H7H H8 H8E H9H10 H11 H12 GS VP ABA ORE RR FG)
+    → 골든 재기준 PASS(재실행 PASS).
+
+================================================================================
+v0.8.1 — VP/ORE 예산 명시화 · 본 실험 posterior SD 로깅
+================================================================================
+(1) run_ipd_experiment.py: 은닉 캡 폐지.
+    종전: exp_VP/exp_ORE 내부에 T = min(max(rounds), 120), seeds = min(seeds, 24)
+    가 하드코딩되어 --rounds/--seeds 인자와 무관하게 축소 실행되었고, 실효 조건이
+    config 에 기록되지 않았다(은닉 불일치·재현성 결함).
+    개정: --vp-rounds/--vp-seeds/--ore-rounds/--ore-seeds (기본 240/60) 신설.
+    EXP_BUDGET 전역이 두 실험에 주입되며, 실효값은 (a) vars(args) 경유로
+    summary.json 의 config, (b) 각 실험 반환값의 "T"/"seeds", (c) 시작 로그 배너
+    세 곳에 기록된다. --quick 은 예산도 30/3 으로 축소(args 갱신 → config 정직).
+    **주의**: 기본 예산 실행(VP 7레짐 × T=240 × seeds=60)은 v0.6.6 대비 ~5×
+    비용 — 사용자 로컬(16코어)에서 실행 전제. v0.6.6 결과(T=120·seeds=24)와
+    대조할 때는 지평·시드가 교락 축이 됨을 hypotheses.yaml 에 명시.
+(2) ipd/agent.py: 매 라운드 inversion.posterior_stds() 를 로그에 기록 —
+    sd_alpha/sd_rho/sd_beta/sd_lambda_j/sd_omega/sd_eta.
+    목적: recovery 배터리는 이상 조건(T=480·강제 균형 점유)의 **상한 검증**이므로,
+    본 실험(T=60/240·on-policy)에서 θ̂ 의존 기제(β-게이팅·반사실 귀인) 해석 시
+    실험 내 식별 상태를 사후 진단할 수단이 필요했다(T=60 에서 β coverage 0.58
+    과신 확인). f 기저에서 sd_omega=sd_eta=0(상수축). 스모크 실측: T=60 에서
+    sd_beta 1.17→0.90 (사전 1.8 대비 약식별 상태가 그대로 드러남 — 도구 유효).
+    recovery 자체의 rounds(480)는 변경하지 않는다 — §7.3 통계적 요구.
+(3) 검증: AST → 로그 키 스모크(f/fg 양 기저) → --quick VP·ORE(예산 배선 확인)
+    → 골든 PASS(로그 키 추가는 수치 무변).
+
+================================================================================
+부록 D — 시뮬레이션 실행 안내 (v0.8.1 기준, 로컬 16코어 전제)
+================================================================================
+
+D.0 설치·공통 규약
+--------------------------------------------------------------------------------
+  pip install numpy matplotlib scipy pyyaml
+  pip install inferactively-pymdp            # 선택: --backend pymdp 등가성 검증
+  pip install "jax[cpu]" equinox optax       # 선택: validate_ann_tom.py 전용
+
+  · 실행 위치: 리포지토리 루트(Halloreg/). 모든 경로는 여기 기준.
+  · --jobs 16 (물리 코어 수). -1(논리 32)은 SMT 이득 없음 — 쓰지 말 것.
+  · 소스를 편집하며 A/B 비교할 때는 반드시:
+      find . -name __pycache__ -type d -prune -exec rm -rf {} +
+      python -B <script> ...
+    (stale 바이트코드가 "차이 없음"이라는 그럴싸한 오답을 만든다. 두 조건이
+    소수점 끝까지 같으면 발견이 아니라 캐시를 의심할 것.)
+  · 모든 산출물은 AIF_IPD/results/ 에 저장 (그림 png+pdf+caption.json, 수치 json).
+  · 골든 회귀: python -B AIF_IPD/tests/test_golden.py (스냅숏은 v0.7.0 재기준).
+
+D.1 메인 실험 러너 — run_ipd_experiment.py
+--------------------------------------------------------------------------------
+  # 전체 실험, 기본 예산 (seeds=240, rounds=60·240 이중 지평, VP/ORE 240/60)
+  python AIF_IPD/scripts/run_ipd_experiment.py --jobs 16
+
+  # 특정 실험만 / 단일 지평만
+  python AIF_IPD/scripts/run_ipd_experiment.py --experiments H5 RR FG --jobs 16
+  python AIF_IPD/scripts/run_ipd_experiment.py --rounds 60 --jobs 16
+
+  # 스모크 (seeds=3, rounds=[30], VP/ORE 예산 30/3)
+  python AIF_IPD/scripts/run_ipd_experiment.py --quick --jobs 1
+
+  실험 목록(18): H1 H2H3 H4 H5 H6 H7 H7H H8 H8E H9H10 H11 H12 GS RR FG VP ABA ORE
+  · per-T 실험(H1~H6, H7, H8, H9H10, H11, GS, RR): --rounds 의 각 지평에서 반복,
+    결과 키 H5_T60 식으로 태깅.
+  · GLOBAL 실험(H7H, H8E, H12, VP, ABA, ORE, FG): 자체 지평 규약 —
+      H7H  : 지평 자체가 조작 변수 (dΔ/dT 기울기가 확증 지표)
+      H8E/H12 : {60,240} ∪ 요청 지평
+      ABA  : 요청 지평 각각에서 3국면 분할
+      VP/ORE : --vp-rounds/--ore-rounds (아래 D.2)
+      FG   : 내부 probe 지평 max(rounds, 240)
+
+D.2 [v0.8.1] VP/ORE 예산 플래그
+--------------------------------------------------------------------------------
+  --vp-rounds 240   --vp-seeds 60     # VP 지평·시드 (기본값)
+  --ore-rounds 240  --ore-seeds 60    # ORE 지평·시드 (기본값)
+
+  의미: VP/ORE 는 CI 레짐 격자를 자체 추정하는 GLOBAL 실험이라 --rounds 와
+  독립적인 예산을 갖는다. v0.8.0 까지는 은닉 캡(120/24)이 있었고, v0.8.1 이
+  이를 명시적 플래그로 전환하며 기본값을 본 실험 지평(240)과 seeds=60 으로
+  복원했다. 실효값은 summary.json 의 config 와 각 실험 결과의 "T"/"seeds" 에서
+  확인한다.
+  v0.6.6 결과와 같은 조건으로 재현하려면: --vp-rounds 120 --vp-seeds 24
+  (ORE 동일). 예산이 다른 두 summary 를 대조하면 효과 차이가 개정 효과인지
+  검정력/지평 차이인지 교락된다 — compare_versions.py 가 경고를 띄운다.
+
+D.3 모형 개정 토글 (v0.8.2 — **기본값 = 개정 모형**; 독립·조합 가능)
+--------------------------------------------------------------------------------
+  [v0.8.2 기본값] counterfactual · fg(입자 자동 600) · rollout on · horizon 2.
+  플래그 없이 실행하면 개정 모형으로 시뮬레이션된다.
+
+  **v0.6.6 재현(레거시) 실행**:
+  python AIF_IPD/scripts/run_ipd_experiment.py --jobs 16 \
+      --disposition-mode legacy --likelihood-basis f \
+      --no-rollout-reciprocity --planning-horizon 1
+  (+VP/ORE 까지 v0.6.6 조건으로: --vp-rounds 120 --vp-seeds 24 --ore-rounds 120
+   --ore-seeds 24)
+
+  아래는 각 토글의 의미 (기본/레거시 값 표기는 v0.8.2 기준으로 읽을 것):
+--------------------------------------------------------------------------------
+  ① --disposition-mode {legacy, counterfactual}      [§1, 기본 counterfactual]
+     무엇인가: 상대 '기질' 판단 방식. legacy 는 σ(−α̂)·(1−λ̂)·σ(−ρ̂) 가중평균으로
+     ρ 를 valence 처럼 쓴다(실측상 무정보 — ALLC 0.397 vs ALLD 0.490 — 이며
+     TFT 0.256 < ALLC 로 역정보이기까지 하다). counterfactual 은
+     기질 = P(D|f=+1) ("내가 협력했더라도 배신했을까"), 유발분 = P(D|f=−1)−P(D|f=+1)
+     로 분해해 내 도발로 유발된 배신을 기질 증거에서 제외한다. ρ 는 반사실을
+     구성하는 조건화 변수로만 쓰인다. 판별력 ALLD−TFT +0.269 → +0.667.
+     로그의 "provoked" 가 유발분 궤적. 관련 에이전트 인자: disposition_mode,
+     cf_g_handling(marginalize/plus), cf_attr_gate_dedup.
+     켜기: python AIF_IPD/scripts/run_ipd_experiment.py --disposition-mode counterfactual
+
+  ② --likelihood-basis {f, fg}                        [§7, 기본 fg]
+     무엇인가: ToM 우도의 조건 변수. f 기저 σ(β(α+ρf+s)) 는 기억-1 시그니처의
+     2자유도 부분공간만 표현 — WSLS(XOR, [1,0,0,1])는 구조적으로 표현 불가
+     (v0.6.6 RMSE 0.408 ≈ 구조 하한 0.406; 실패는 추정이 아니라 표현).
+     fg 기저 σ(β(α+ρf+ωg+η·fg+s)) 는 (1,f,g,fg) 로 전 공간(4자유도)을 스팬.
+     g=상대 자신의 직전 행동(관성 ω), η=결과-조건성(WSLS성). probe 검증에서
+     WSLS RMSE 0.453→0.040, β̂ 0.14→1.55, η̂=+2.44(타 전략 ≈0).
+     주의 1: on-policy 에서는 점유 편중으로 η 식별이 제한된다(§7.5 부분 성립 —
+     REVISION_v070_v080_NOTES.md). fg 로 돌린 θ̂ 의존 지표는 sd_* 로그로 식별
+     상태를 함께 확인할 것(D.6).
+     주의 2: [v0.8.2] 러너 경유(agent_spec) fg 실행은 입자 600 자동 상향.
+     에이전트를 직접 생성하는 커스텀 코드에서는 n_particles=600 을 직접 지정.
+     켜기: --likelihood-basis fg
+
+  ③ --rollout-reciprocity / --no-rollout-reciprocity  [§3, 기본 on]
+     무엇인가: planning horizon≥2 의 rollout 에서 상대 예측을 ρ̂ 로 내 가상
+     직전행동에 조건화한다. 종전에는 step>0 이 static ToM 으로 후퇴해 "내 협력이
+     되돌아온다"는 계산이 없었고, 협력은 λ·G_other 로만 발생했다. 켜면 도구적
+     호혜가 G_self 에 자연 발생: TFT coop 0.667→0.902, pay 297.8→329.8.
+     음성 대조: ALLD 는 ρ̂≈0 이라 무영향(Δ=0.000).
+     경계: LambdaRegulator 는 불변 — ρ 의 도구적 가치를 λ 로 처리하면 공감
+     구성개념이 붕괴한다(λ 궤적 불변을 exp_RR 이 탐색 지표로 검증).
+     [v0.8.2] 기본 horizon=2 라 기본 상태에서 실효. --planning-horizon 1 로
+     내리면 rollout 은 구조적으로 무영향이 된다(끈 것과 행동 동일).
+     끄기: --no-rollout-reciprocity
+
+  조합 예:
+  python AIF_IPD/scripts/run_ipd_experiment.py --jobs 16 \
+      --disposition-mode counterfactual --likelihood-basis fg --rollout-reciprocity
+  시작 배너("모형 개정 토글: ...")와 summary.json config 로 실효 조건을 확인.
+
+D.4 검증 스크립트
+--------------------------------------------------------------------------------
+  # ToM 파라미터 복원 (기본: 4설계 legacy/centered/adaptive/fg_centered,
+  #  agents=60, rounds=480, particles=400 — fg_centered 는 내부에서 600 상향)
+  python AIF_IPD/scripts/validate_tom_recovery.py
+  #  rounds=480 은 §7.3 통계적 요구((f,g) 4셀 × 6블록, 셀당 ~30 관측) — 낮추면
+  #  ω·η 식별 실패. v0.6.6 조건 재현: --designs legacy centered adaptive --rounds 240
+
+  # 사영(projection) 검증 (기본 basis=f; fg 는 --basis fg)
+  python AIF_IPD/scripts/validate_projection.py
+  python AIF_IPD/scripts/validate_projection.py --basis fg
+
+  # pymdp 등가성 / ANN-ToM (선택)
+  python AIF_IPD/scripts/run_ipd_experiment.py --check-equivalence
+  python AIF_IPD/scripts/validate_ann_tom.py
+
+D.5 버전 대조 — compare_versions.py
+--------------------------------------------------------------------------------
+  python AIF_IPD/scripts/compare_versions.py \
+      --old /path/v066/summary.json --new AIF_IPD/results/summary.json \
+      --old-label v0.6.6 --new-label v0.8.1
+
+  · 확증 지표를 (hyp, T-태그)로 짝지어 판정 대조 매트릭스·효과크기 산점·Δdz·
+    신규/제거 목록·요약 카운트를 그린다 (version_compare.png/json).
+  · config 불일치(seeds/rounds/backend) 시 교락 경고. **대조는 동일 조건에서만
+    해석 가능** — 실측 예: quick(n=9) vs full(n=72) 대조에서 VP C-VP2 는 효과가
+    커졌는데도(0.049→0.103) 검정력 손실로 '지지→미지지' 반전.
+  · v0.6.6 대조 시 VP/ORE 는 예산 자체가 다르다(120/24 → 240/60). 예산 효과와
+    개정 효과를 분리하려면 v0.8.1 을 --vp-rounds 120 --vp-seeds 24 로 한 번 더
+    돌려 3점 비교(v0.6.6 ↔ v0.8.1@구예산 ↔ v0.8.1@신예산)를 권장.
+
+D.6 [v0.8.1] posterior SD 로그 활용
+--------------------------------------------------------------------------------
+  agent.log 의 sd_alpha/sd_rho/sd_beta/sd_lambda_j/sd_omega/sd_eta.
+  · 용도: θ̂ 의존 지표(H2 λ̂_final, H3 E[β], β-게이팅, 반사실 disposition) 해석
+    시 해당 시점 θ̂ 가 사전에서 실제로 좁혀졌는지 확인. sd 가 사전 폭 근처면
+    약식별 — 그 지표는 대조(contrast) 주장으로만 읽고 보정(calibration) 주장으로
+    읽지 말 것.
+  · 참고 사전 SD: α 2.0, ρ 1.2, β 1.8, λ_j 0.3, ω/η 1.0.
+  · f 기저에서 sd_omega=sd_eta=0 (상수축 — 정상).
+
+D.7 권장 실행 순서 (로컬 전면 재실행)
+--------------------------------------------------------------------------------
+  1. python -B AIF_IPD/tests/test_golden.py            # 환경 정합 확인
+  2. python AIF_IPD/scripts/run_ipd_experiment.py --jobs 16
+     # 기본값 = legacy/f/off + VP·ORE 240/60 → v0.8.1 기준선 확보
+  3. compare_versions.py 로 v0.6.6 summary 와 대조
+     # VP/ORE 반전 시: --vp-rounds 120 --vp-seeds 24 재실행으로 예산 교락 분리
+  4. (선택) 개정 토글 켠 조건들: --disposition-mode counterfactual 등 —
+     기준선과 같은 seeds/rounds 로 A/B (D.0 캐시 규약 준수)
+  5. validate_tom_recovery.py / validate_projection.py (+--basis fg)
+
+================================================================================
+v0.8.2 — 기본값 반전 · fg 입자 자동 상향 · horizon 플래그 [브레이킹]
+================================================================================
+(1) **기본값 반전**: 러너 기본 = 개정 모형.
+      disposition_mode=counterfactual | likelihood_basis=fg |
+      rollout_reciprocity=True | planning_horizon=2
+    v0.6.6 재현은 이제 명시적 opt-in:
+      --disposition-mode legacy --likelihood-basis f \
+      --no-rollout-reciprocity --planning-horizon 1
+    planning_horizon 기본을 2 로 함께 반전한 이유: rollout 은 horizon≥2 에서만
+    존재하므로 horizon=1 + rollout=True 는 구조적 무효(§3) — "기본 = rollout" 이
+    실효하려면 horizon 이 따라와야 한다.
+    **에이전트 클래스 기본값은 legacy/f/400/h1 유지** — 골든 회귀(직접 생성 경로)
+    와 라이브러리 하위호환 보존. 반전은 러너의 agent_spec 주입 층에서만 일어나며,
+    실험이 스펙에 명시한 값(H5 절제의 legacy 팔, RR 의 rr=False·H 팔, FG 의 f/fg
+    내부 스윕)은 전역보다 우선한다 — 단위 검증 7항목 PASS.
+    validate_projection.py 의 --basis 기본도 fg 로 정합(러너와 일치).
+(2) **fg 입자 자동 상향**: agent_spec 에서 최종 likelihood_basis=="fg" 이고
+    n_particles 미명시면 600 주입(setdefault — 명시값 보존). 종전에는 exp_FG/
+    recovery 내부에만 있어 "--likelihood-basis fg 본 실험 = 400 입자" 라는
+    의도치 않은 중간 조건이 존재했다(v0.8.1 문답에서 발견).
+(3) **--planning-horizon N** (기본 2): 전 실험 기본 horizon 을 전역 주입.
+    RR 처럼 자체 지정하는 실험은 그쪽 우선. --summary-out FILE (기본
+    summary.json) 신설 — horizon 1/2 별도 실행 결과를 덮어쓰지 않고 보존해
+    compare_versions.py 대조에 쓴다.
+(4) **horizon 1 vs 2 총체 비교 절차** (부록 D.8): 전 실험을 두 지평에서 각각
+    실행 후 compare_versions.py 로 짝지어 대조. 샌드박스 quick 검증 실측은
+    본 문서 D.8 끝의 주의 사례 참조.
+(5) 비용: 기본 실행이 v0.8.1 대비 대략 3~5×/다이애드 — fg 입자 600(≈1.5×) ×
+    horizon 2 planning(2^H 정책 열거, ≈2~3×). VP/ORE 240/60 과 결합되므로
+    전면 실행은 로컬 16코어 전제.
+(6) 검증: AST → agent_spec 단위 7항목 → quick 전 실험 h1/h2 스윕 + 대조 →
+    legacy 재현 플래그 결정론 → 골든 PASS.
+
+D.8 [v0.8.2] horizon 1 vs 2 총체 비교 절차
+--------------------------------------------------------------------------------
+  목적: 전 실험을 기본 horizon 1 과 2 에서 각각 시뮬레이션하고, 계획 지평이
+  18개 가설의 판정·효과크기에 미치는 영향을 총체적으로 본다. horizon=2 조건은
+  rollout ρ 전파가 실효하는 조건이기도 하므로(§3), 이 비교는 "1단계 반응 모형
+  vs 도구적 호혜 모형"의 전면 대조이기도 하다.
+
+  # ① 두 지평 실행 (summary 파일명 분리 — 서로 덮어쓰지 않게)
+  python AIF_IPD/scripts/run_ipd_experiment.py --jobs 16 \
+      --planning-horizon 1 --summary-out summary_h1.json
+  python AIF_IPD/scripts/run_ipd_experiment.py --jobs 16 \
+      --planning-horizon 2 --summary-out summary_h2.json
+  # (그림은 파일명이 같아 덮어쓰인다 — 그림도 보존하려면 실행 사이에
+  #  results/ 를 통째로 복사해 둘 것)
+
+  # ② 총체 대조
+  python AIF_IPD/scripts/compare_versions.py \
+      --old AIF_IPD/results/summary_h1.json \
+      --new AIF_IPD/results/summary_h2.json \
+      --old-label horizon=1 --new-label horizon=2 --out horizon_compare
+
+  해석 주의:
+  · horizon=1 에서는 rollout_reciprocity=True 여도 무영향이므로, 이 대조의
+    "horizon 효과"는 (계획 심화 + rollout ρ 전파)의 **결합 효과**다. 순수 계획
+    심화만 보려면 h2 를 --no-rollout-reciprocity 로 한 번 더 돌려 3점 비교.
+  · seeds/rounds 는 두 실행에서 동일해야 한다(교락 방지 — config 경고 확인).
+  · RR 실험은 자체 horizon(2,4)을 쓰므로 이 스윕의 영향을 받지 않는다 — 두
+    summary 에서 RR 이 (거의) 동일하면 주입 경계가 지켜졌다는 무결성 검사가 된다.
+
+--------------------------------------------------------------------------------
+v0.8.2 샌드박스 검증 기록 (1코어, --quick 규모)
+--------------------------------------------------------------------------------
+(a) agent_spec 주입 의미론 단위검증 7항목 PASS: 기본 반전 / fg→600 / f 명시 시
+    비상향 / 입자 명시값 보존(800) / H5 legacy 팔 보호 / RR rr=False·H=4 팔 보호 /
+    tom_empathic 주입.
+(b) horizon 스윕 기전 실증(D.8 절차 그대로): 13실험 부분집합을 h1/h2 각각
+    --summary-out 분리 실행 → compare_versions 대조. config 에 planning_horizon
+    1/2 정직 기록, seeds/rounds 동일(교락 경고 無), 17개 확증 지표 완전 짝지음
+    (신규/제거 0). 무결성 검사 성립: RR(자체 horizon)·FG(내부 probe)는 두 실행에서
+    **비트 단위 동일** — 전역 주입이 자체 지정 실험을 침범하지 않음.
+(c) quick 규모 예고 신호(과잉해석 금지, n=3): VP C-VP1 이 h2 에서 지지로 반전
+    — Δpay 0.031 [−0.127, 0.207] → 0.307 [0.170, 0.477]. rollout ρ 전파가 가변
+    레짐에서 adaptive 보수 우위를 실효화한다는 §3 서사와 정합. 전면 확인은 로컬
+    full-run 의 D.8 3점 비교로.
+(d) h2 커버리지: 17/18 실험 완주 확인 (부분집합 13 + H8E·H11·H7H·H12 별도).
+    **H8 은 샌드박스 시간 제약으로 h2 미검증** — 단 H8 은 H11/H8E 와 동일한
+    집단 시뮬 경로의 규모 확장(133 집단)이라 코드 경로는 커버됨. 로컬 h2 전면
+    실행에서 H8 이 최장 블록이 될 것(h1 quick 191s → h2 는 수 배).
+(e) 잠재 버그 2건 수정(v0.6.6 기원, 신규 기본 동역학이 노출):
+    비대칭 yerr(점추정−백분위CI)가 적은 부트에서 음수가 되어 matplotlib
+    ValueError — fig_H12 Shapley 패널에서 실제 크래시 재현·수정. 동일 패턴 감사
+    결과 6개 지점 중 1곳(ORE)만 원저자가 클립했었음 → 나머지 5곳(공용 bar_ci
+    포함) 전부 np.maximum(err, 0.0) 클립. 그림 표시용이며 JSON 원 CI 는 보존.
+(f) legacy 재현 opt-out 경로: 4플래그 조합으로 2회 실행 → summary 완전 동일
+    (결정론), 신규 기본 실행과는 상이(반전 실효). 골든 PASS.

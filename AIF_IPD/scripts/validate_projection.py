@@ -60,6 +60,14 @@ RESULTS = _PKG_ROOT / "results"
 RESULTS.mkdir(exist_ok=True)
 
 AXES = ("alpha", "rho", "beta", "lambda_j")
+# [v0.8.0 §7.4-2] fg 기저 6축. --basis fg 로 전환하면 WSLS 표현 회복을 검증한다.
+AXES_FG = ("alpha", "rho", "omega", "eta", "beta", "lambda_j")
+# 모듈 수준 기저 상태 (main 에서 설정; one_dyad 가 참조)
+BASIS = "f"
+
+
+def cur_axes():
+    return AXES_FG if BASIS == "fg" else AXES
 AX_LABEL = {"alpha": "α", "rho": "ρ", "beta": "β", "lambda_j": "λ_j"}
 STATE_NAMES = ["CC", "CD", "DC", "DD"]
 
@@ -139,25 +147,41 @@ def run_probe_dyad(agent, opponent, n_rounds, env_err, probe_eps,
 
 
 def one_dyad(label, policy, T, seed, env_err, probe_eps):
-    """다이애드 1회: (θ̂_final, θ̂_mid, 사후sd_final, hist)."""
-    ad = AdaptiveAgent(seed=100 + seed, kappa=0.9, sophisticated=True)
+    """다이애드 1회: (θ̂_final, θ̂_mid, 사후sd_final, hist).
+
+    [v0.8.0 §7.4-2] BASIS=="fg" 면 6축(α,ρ,ω,η,β,λ_j)을 수집한다.
+    """
+    ad = AdaptiveAgent(seed=100 + seed, kappa=0.9, sophisticated=True,
+                       likelihood_basis=BASIS,
+                       n_particles=600 if BASIS == "fg" else 400)
     opp = _make_opp(label, 900 + seed)
     eps = probe_eps if policy == "probe" else 0.0
     hist = run_probe_dyad(ad, opp, T, env_err, eps, noise_seed=seed)
-    th_f = np.array([ad.log["E_alpha"][-1], ad.log["E_rho"][-1],
-                     ad.log["E_beta"][-1], ad.log["E_lambda_j"][-1]])
-    th_m = np.array([ad.log["E_alpha"][T // 2], ad.log["E_rho"][T // 2],
-                     ad.log["E_beta"][T // 2], ad.log["E_lambda_j"][T // 2]])
+    keys = {"alpha": "E_alpha", "rho": "E_rho", "beta": "E_beta",
+            "lambda_j": "E_lambda_j", "omega": "E_omega", "eta": "E_eta"}
+    axs = cur_axes()
+    th_f = np.array([ad.log[keys[a]][-1] for a in axs])
+    th_m = np.array([ad.log[keys[a]][T // 2] for a in axs])
     sd = ad.inversion.posterior_stds()
-    sd_f = np.array([sd[a] for a in AXES])
+    sd_f = np.array([sd[a] for a in axs])
     return th_f, th_m, sd_f, hist
 
 
 # ------------------------------------------------------------------ Q2 도구
 def _ident_coords(X):
-    """식별 좌표계: (α+5λ, βρ, β)."""
-    return np.column_stack([X[:, 0] + 5.0 * X[:, 3], X[:, 2] * X[:, 1],
-                            X[:, 2]])
+    """식별 좌표계: (α+5λ, βρ, β).
+
+    [v0.8.0] 축 순서가 기저에 따라 다르므로 이름으로 인덱싱한다.
+    fg 기저에서는 (ω, η) 를 추가 좌표로 포함해 WSLS 분리를 반영한다.
+    """
+    axs = cur_axes()
+    ia, ir, ib, il = (axs.index("alpha"), axs.index("rho"),
+                      axs.index("beta"), axs.index("lambda_j"))
+    cols = [X[:, ia] + 5.0 * X[:, il], X[:, ib] * X[:, ir], X[:, ib]]
+    if BASIS == "fg":
+        cols += [X[:, ib] * X[:, axs.index("omega")],
+                 X[:, ib] * X[:, axs.index("eta")]]
+    return np.column_stack(cols)
 
 
 def loo_decode(Z, y, n_cls):
@@ -224,13 +248,29 @@ def memory_one_signature(hists):
     return sig, cnt
 
 
-def model_implied_signature(theta_hat, p_focal):
-    """P_θ̂ 함의 조건확률 — f 는 focal 직전 행동에만 의존(CC,CD→+1; DC,DD→−1)."""
-    a, r, b, l = theta_hat
+def model_implied_signature(theta_hat, p_focal, basis="f"):
+    """P_θ̂ 함의 조건확률 — 상태 k∈{CC,CD,DC,DD} 는 (내 행동, 상대 행동) 을 인코딩.
+
+    f 기저 : f 는 focal 직전 행동에만 의존(CC,CD→+1; DC,DD→−1).
+        표현 가능한 시그니처는 제약 P(C|CC)=P(C|CD), P(C|DC)=P(C|DD) 를 만족하는
+        **2자유도 부분공간**뿐이다 → WSLS(XOR, 참 시그니처 [1,0,0,1])는 이 클래스
+        **밖**이라 구조적으로 표현 불가(§7.1).
+
+    fg 기저 (§7.2): g = 상대 자신의 직전 행동(CC,DC→+1; CD,DD→−1) 도 조건에 포함.
+        기저 (1, f, g, fg) 가 기억-1 시그니처 전 공간(4자유도)을 스팬 →
+        WSLS 는 η(f·g 상호작용)로 정확히 표현되고 β 는 결정론성을 되찾는다.
+    """
+    if basis == "fg":
+        a, r, w, e, b, l = theta_hat
+    else:
+        a, r, b, l = theta_hat
+        w = e = 0.0
     out = np.empty(4)
     for k in range(4):
-        f = +1.0 if k in (0, 1) else -1.0
-        out[k] = 1.0 / (1.0 + np.exp(-b * (a + r * f
+        my_a, opp_a = divmod(k, 2)              # 상태 인코딩과 일치
+        f = 1.0 - 2.0 * my_a                    # CC,CD → +1 / DC,DD → −1
+        g = 1.0 - 2.0 * opp_a                   # CC,DC → +1 / CD,DD → −1
+        out[k] = 1.0 / (1.0 + np.exp(-b * (a + r * f + w * g + e * f * g
                                            + C_empathy_shift(l, p_focal))))
     return out
 
@@ -365,7 +405,16 @@ def main():
     ap.add_argument("--error", type=float, default=0.05)
     ap.add_argument("--perms", type=int, default=200)
     ap.add_argument("--quick", action="store_true")
+    # [v0.8.0 §7.4-2] 우도 기저. "fg" 로 재실행해 WSLS 표현 회복을 검증한다
+    # (Q3 wsls RMSE 0.408 → ≤0.10, β*_wsls 0.79 → ≥1.5 목표).
+    ap.add_argument("--basis", choices=["f", "fg"], default="fg",
+                    help="우도 기저 [v0.8.2 기본 fg — 러너 기본값과 정합; "
+                         "v0.6.6 재현은 f 명시]")
     args = ap.parse_args()
+    global BASIS
+    BASIS = args.basis
+    LOGGER.info("우도 기저: %s (%s)", BASIS,
+                "v0.6.6 보존" if BASIS == "f" else "§7 fg 확장")
     if args.quick:
         args.seeds, args.rounds = 5, 120
         args.star_rounds, args.star_seeds, args.perms = 400, 2, 60
@@ -423,7 +472,7 @@ def main():
                    "coverage_90": float(cov),
                    "theta_star": theta_star[lab].tolist()}
     sh = [float(np.corrcoef(X["probe"][:, k], Xmid["probe"][:, k])[0, 1])
-          for k in range(4)]
+          for k in range(len(cur_axes()))]
 
     # ---- Q2/Q4: 분리성 ----
     decode, confusion = {}, {}
@@ -451,7 +500,7 @@ def main():
     for li, lab in enumerate(LABELS):
         sig, cnt = memory_one_signature(HISTS[lab])
         th_mean = X["probe"][y["probe"] == li].mean(axis=0)
-        mod = model_implied_signature(th_mean, pfoc[lab])
+        mod = model_implied_signature(th_mean, pfoc[lab], basis=BASIS)
         ok = ~np.isnan(sig)
         q3[lab] = {"empirical": [None if np.isnan(v) else float(v)
                                  for v in sig],

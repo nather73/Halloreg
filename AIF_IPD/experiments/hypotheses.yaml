@@ -52,6 +52,34 @@ hypotheses:
       즉각형(vmPFC)의 정의적 예측 2개의 결합. 요인 분해(2x2x2: sophisticated x
       attribution x dd_charge)는 탐색으로 보고, DD-충전 규칙 경로는 조작 확인
       (manipulation check)임을 문서에 명시한다.
+
+      [v0.7.0 재정의 — 명세서 §1.5. 단순 리팩터가 아니라 모형 개정]
+      반사실(counterfactual) 인과 귀인 도입으로 두 유형의 조작화가 더 원리적으로
+      재정의된다. 종전에는 ad-hoc `dd_charges` 토글이 유형을 *정의*했으나, 이제는
+      기질 귀인 방식이 유형을 정의하고 DD-충전은 그 *결과*다:
+        - 정교형(rmPFC) = 반사실 귀인 사용. "내가 협력했더라도 저 상대가
+          배신했을까?"(P(D|f=+1))를 물어 내 도발로 유발된 배신(유발분)을 기질
+          증거에서 제외한다. 보복 나선을 기질로 오귀인하지 않는다.
+        - 즉각형(vmPFC) = 반사실을 계산하지 않고 관측된 배신에 직접 반응. 자기-
+          도발을 설명할 수단이 없어 모든 배신(CD ∪ DD)이 기질 증거가 된다.
+      근거: ρ 는 우도에서 조건적 반응성 파라미터이지 valence 가 아니다. 실측상
+      ρ 항은 ALLC(0.397)와 ALLD(0.490)를 거의 구분하지 못하며(무정보), TFT(0.256)
+      가 ALLC 보다 낮게 나오는 역전까지 보였다(역정보). 반사실 판별력은
+      ALLD−TFT +0.269 → +0.667, ALLD−ALLC +0.275 → +0.699 로 ~2.5배 개선된다.
+
+      확증 검정은 **신규 정의(counterfactual)** 를 기준으로 하고, legacy
+      조작화(dd_charges) 결과는 조작화 절제(ablation)로 병기해 탐색 보고한다
+      (두 조작화를 나란히 비교 — 명세서 §1.5 요구). 정직 보고 원칙: 재정의로
+      결과가 반전되면 기준을 재구성하고 실제 기제를 보고한다.
+  H5_OPS:
+    primary: operationalization_ablation
+    test: paired_perm
+    direction: both_operationalizations_agree
+    rationale: >
+      [v0.7.0 §1.5 절제] legacy(dd_charges) vs counterfactual(반사실) 두 조작화의
+      결합가설 판정이 일치하는지 확인한다. 일치하면 H5 의 결론이 조작화에 강건함을
+      뜻하고, 불일치하면 어느 조작화가 어떤 기제를 포착하는지 정직 보고한다.
+      탐색 지표로 등록(BH-FDR).
   H6:
     primary: noise_rank_reversal
     test: paired_perm
@@ -176,6 +204,11 @@ hypotheses:
   # v0.6 확장 (가변 페이오프 · A-B-A 의도복구 · 최적복제자) — §VP/§ABA/§ORE
   # ===========================================================================
   VP:
+    # [v0.8.1] 실행 예산 명시화: 종전 은닉 캡(T≤120, seeds≤24)을 폐지하고
+    # --vp-rounds/--vp-seeds (기본 240/60) 로 노출. 캡은 비용 관리였을 뿐 원리적
+    # 요구가 아니었으며, config 미기록 은닉 불일치를 만들었다. v0.6.6 기준 결과
+    # (T=120·seeds=24, C-VP1 Δ=+0.061 p=.015 / C-VP2 +0.049 p=.003 지지)와의
+    # 대조 시에는 지평·시드 차이가 교락 축이 됨을 명시한다.
     primary: variable_payoff_advantage   # 결합가설 — C-VP1 AND C-VP2
     test: one_sample_perm                # 시변 레짐 통합 단일표본(부호뒤집기)
     direction: cvp1_pos_and_cvp2_pos
@@ -225,6 +258,7 @@ hypotheses:
       통제권 on/off·비-ToM 베이스라인 행동 복구·자기충족 함정(A3 배신율→복구실패
       기울기, 저용서에서 강함).
   ORE:
+    # [v0.8.1] VP 와 동일 — --ore-rounds/--ore-seeds (기본 240/60) 로 예산 명시화.
     primary: ore_basin_expansion          # 결합가설 — C-ORE1 AND C-ORE2
     test: paired_perm_and_one_sample      # 레짐 짝지음 + 단일표본
     direction: core1_ore_gt_re_and_core2_pos
@@ -244,3 +278,68 @@ hypotheses:
       정직 보고: deadlock(CI<0)에서 과거 이분 유역은 인공적 고점(≈0.9)을 보였으나,
       행동적 CC율로 보면 낮게 유지된다(협력-라벨 유형이 실제로는 배신) — 지표 개정이
       '유역 점유'와 '실제 상호협력'의 괴리를 드러내 과잉해석을 제거한다.
+
+  # ===========================================================================
+  # v0.7.1 확장 (rollout ρ 전파) — 명세서 §3
+  # ===========================================================================
+  RR:
+    primary: rollout_reciprocity_instrumental_cooperation
+    test: paired_perm
+    direction: rr_greater_coop_and_payoff_on_reciprocal
+    confirm_C_RR1: rr_coop_gt_on_tft      # 호혜 상대에서 협력율: rr=True > False
+    confirm_C_RR2: rr_null_on_alld        # 착취자에서 무영향 (음성 대조)
+    rationale: >
+      [v0.7.1 §3] 현행 모형에는 "내 협력이 다음 라운드에 되돌아온다"는 계산이
+      어디에도 없다. 동시행동·horizon=1 에서 pc 는 내 후보 행동에 의존하지 않아
+      G_self 실용항은 항상 D 를 선호(T>R, P>S)하고, 두 행동의 상태 엔트로피가 같아
+      epistemic 도 상쇄된다 — 협력은 오직 λ·G_other 와 infogain 에서만 발생한다.
+      게다가 OpponentSimulator 가 rollout step>0 에서 static ToM 으로 후퇴해 ρ 를
+      전파하지 않으므로, planning horizon 을 늘려도 호혜의 도구적 가치가 반영되지
+      않는다.
+
+      경계(중요): 이 문제를 λ 로 해결하면 안 된다. "호혜적이니 협력이 이득 → λ↑"
+      는 λ 를 공감이 아니라 전략 파라미터로 바꿔 구성개념을 붕괴시킨다. ρ 의
+      도구적 가치는 λ 가 아니라 EFE/rollout 이 다뤄야 한다 — 따라서 본 확장은
+      LambdaRegulator 를 전혀 건드리지 않고 planner 의 rollout 예측만 바꾼다.
+
+      확증: C-RR1 TFT/GTFT 상대에서 rollout_reciprocity=True 가 협력율·보수를
+      높인다(도구적 경로가 G_self 에 자연 발생). C-RR2 ALLD 상대에서는 ρ̂≈0 이라
+      무영향이어야 한다(음성 대조 — 효과가 ρ 경로로 흐른다는 증거).
+      토글 기본 False(기존 보존). horizon=1 에서는 rollout 이 없어 무영향.
+
+  # ===========================================================================
+  # v0.8.0 확장 (우도 기억-1 완전화: g·fg 항) — 명세서 §7
+  # ===========================================================================
+  FG:
+    primary: fg_basis_wsls_representability
+    test: descriptive_thresholds          # 사영 충실도 임계 (Q3 RMSE, β* 회복)
+    direction: wsls_rmse_down_and_beta_up
+    confirm_C_FG1: wsls_q3_rmse_le_0.10   # WSLS Q3 RMSE 0.408 → ≤0.10
+    confirm_C_FG2: wsls_beta_star_ge_1.5  # β*_wsls 0.79 → ≥1.5 (결정론성 회복)
+    confirm_C_FG3: eta_positive_wsls_null_others  # η̂_wsls ≫ 0, 타 전략 η̂≈0
+    rationale: >
+      [v0.8.0 §7] 현행 우도 P(a_j=C|f,θ)=σ(β(α+ρf+s(λ_j,p))) 의 조건 변수는 f
+      하나뿐이다. 표현 가능한 기억-1 시그니처는 제약 P(C|CC)=P(C|CD),
+      P(C|DC)=P(C|DD) 를 만족하는 2자유도 부분공간뿐이며, WSLS 는 joint outcome
+      조건(XOR 구조, 참 시그니처 [1,0,0,1])이라 이 클래스 **밖**에 있다.
+
+      실증(v0.6.6 full-run): WSLS 경험 시그니처 [0.915,0.094,0.098,0.901] vs 모형
+      함의 [0.524,0.524,0.454,0.454], RMSE=0.408 인데 상태 점유 기반 클래스 내 최적
+      근사의 하한이 0.406 → 추정 오차 ~0.002. **실패는 추정이 아니라 표현이다.**
+      더 심각한 것은 의도성의 체계적 반전: β*_wsls=0.79 로 전 유형 최저(TFT 2.27,
+      allc 2.17, alld 1.69). WSLS 는 error=0.05 외 완전 결정론적인데 XOR 신호가 f 로
+      주변화되면 ~0.5 동전던지기로 보여 **결정론이 저정밀 잡음으로 오사영**된다.
+      파급: allostasis β-게이팅(precision=clip(E_beta/4))이 WSLS 배신을 비의도/맥락
+      으로 오귀인 → 기질 증거 억제 → 자기보호 저작동. §1 반사실 귀인도 β̂ 를 쓰므로
+      같은 오염을 받는다.
+
+      개정: 우도를 P(a_j=C|f,g,θ)=σ(β(α+ρf+ωg+η·fg+s(λ_j,p))) 로 확장.
+      g=상대 자신의 직전 행동(관성/자기일관성), η=f·g 상호작용(결과-조건성/WSLS성).
+      기저 (1,f,g,fg) 는 기억-1 시그니처 전 공간(4자유도)을 스팬한다.
+
+      순서 제약(§7.5): §1 을 f-기저에서 완성·검증한 뒤 §7 로 확장한다(역순이면 §1
+      검증 기준선이 없음). 반사실 기질 판정은 fg 기저에서 P(D|f=+1, g) 가 되며,
+      g 주변화(상대 자기행동 분포로 가중)가 "내가 협력했더라도"의 의미에 부합한다.
+      식별 요구 증가는 fg_centered 복원 배터리로 동반 검증(§7.3, 필수).
+      토글 기본 "f"(기존 보존). 대부분 상대(TFT/GTFT/ALLC/ALLD)는 ω≈η≈0 이라 큰
+      변화가 없어야 하나(음성 대조), WSLS 포함 실험은 실질 변화 예상 → 정직 보고.

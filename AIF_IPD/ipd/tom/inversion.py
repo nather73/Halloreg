@@ -41,6 +41,15 @@ _EPS = 1e-10
 # θ 축 순서 (core.allostasis 의 마스크와 일치)
 THETA_AXES = ("alpha", "rho", "beta", "lambda_j")
 
+# [v0.8.0 §7] fg 기저 확장 축. 기저 (1, f, g, fg) 는 기억-1 시그니처 전 공간
+# (4자유도)을 스팬한다 → 기억-1 상대(WSLS 포함)는 모두 표현 가능해진다.
+THETA_AXES_FG = ("alpha", "rho", "omega", "eta", "beta", "lambda_j")
+
+
+def theta_axes(basis: str = "f"):
+    """likelihood_basis 에 따른 θ 축 튜플."""
+    return THETA_AXES_FG if basis == "fg" else THETA_AXES
+
 
 def _logistic(x: np.ndarray) -> np.ndarray:
     return np.where(x >= 0, 1.0 / (1.0 + np.exp(-x)),
@@ -84,18 +93,34 @@ class OpponentInversion:
         "rho": (0.5, 1.2),
         "beta": (3.0, 1.8),      # 감마 대신 절단 정규로 근사
         "lambda_j": (0.4, 0.3),
+        # [v0.8.0 §7.2] ω(관성/자기일관성), η(결과-조건성/WSLS성).
+        # 사전 범위 ω, η ∈ [−2,+2] 근방 = ρ 와 동급 스케일. 평균 0(무정보).
+        "omega": (0.0, 1.0),
+        "eta": (0.0, 1.0),
     }
     # 축별 기본 리샘플 jitter
-    _JITTER = {"alpha": 0.10, "rho": 0.10, "beta": 0.15, "lambda_j": 0.05}
+    _JITTER = {"alpha": 0.10, "rho": 0.10, "beta": 0.15, "lambda_j": 0.05,
+               "omega": 0.10, "eta": 0.10}
 
     def __init__(self, n_particles: int = 400,
                  reliability_weights: Optional[dict] = None,
-                 resample_frac: float = 0.5, seed: int = 0):
+                 resample_frac: float = 0.5, seed: int = 0,
+                 likelihood_basis: str = "f"):
+        """
+        likelihood_basis : {"f", "fg"}
+            "f"  (기본) : P(a_j=C|f,θ) = σ(β(α + ρf + s(λ_j,p)))     — v0.6.6 보존
+            "fg" (§7)   : P(a_j=C|f,g,θ) = σ(β(α + ρf + ωg + η·fg + s(λ_j,p)))
+                기저 (1,f,g,fg) 가 기억-1 시그니처 전 공간을 스팬 → WSLS 표현 가능.
+        """
+        if likelihood_basis not in ("f", "fg"):
+            raise ValueError(f"알 수 없는 likelihood_basis: {likelihood_basis}")
+        self.likelihood_basis = likelihood_basis
+        self.axes = theta_axes(likelihood_basis)
         self.N = int(n_particles)
         self.rng = np.random.default_rng(seed)
         self.resample_frac = resample_frac
         # 축별 신뢰도 가중치(없으면 균등). β 신뢰도가 높으면 β 축을 더 넓게/빠르게 탐색.
-        self.w_theta = {k: 1.0 for k in THETA_AXES}
+        self.w_theta = {k: 1.0 for k in self.axes}
         if reliability_weights:
             self.w_theta.update(reliability_weights)
 
@@ -103,6 +128,10 @@ class OpponentInversion:
         # H2 기제 절제용: β 축 동결 (사전 평균에 클램프 → β 로 설명 불가)
         self._beta_clamp_val = None
         self._init_particles()
+
+    @property
+    def _fg(self) -> bool:
+        return self.likelihood_basis == "fg"
 
     def clamp_beta(self, value=None):
         """입자필터의 β 축을 상수에 동결한다 (H2 절제 대조: β-귀인 경로 차단)."""
@@ -134,6 +163,14 @@ class OpponentInversion:
         self.rho = draw("rho")
         self.beta = np.clip(draw("beta"), 0.05, 12.0)
         self.lambda_j = np.clip(draw("lambda_j"), 0.0, 1.0)
+        # [v0.8.0 §7] fg 기저에서만 활성. f 기저에서는 0 상수 → 항이 소멸하여
+        # 우도가 v0.6.6 과 비트 단위 동일(하위호환 보장).
+        if self._fg:
+            self.omega = np.clip(draw("omega"), -3.0, 3.0)
+            self.eta = np.clip(draw("eta"), -3.0, 3.0)
+        else:
+            self.omega = np.zeros(self.N)
+            self.eta = np.zeros(self.N)
         self.weights = np.ones(self.N) / self.N
         if getattr(self, "_beta_clamp_val", None) is not None:
             self.beta[:] = self._beta_clamp_val
@@ -145,21 +182,56 @@ class OpponentInversion:
         환경(§VP)에서는 호출 시점의 보수를 반영(맥락-의존 ToM 공감항)."""
         return C_empathy_shift(self.lambda_j, self.my_cooperation_rate)
 
-    def _pC(self, f: float) -> np.ndarray:
-        """각 입자의 상대 협력확률."""
-        logit = self.beta * (self.alpha + self.rho * f + self._empathy_shift())
+    def _pC(self, f: float, g: float = 0.0) -> np.ndarray:
+        """각 입자의 상대 협력확률.
+
+        f 기저 : σ(β(α + ρf + s))                       — ω=η=0 이므로 g 무시
+        fg 기저: σ(β(α + ρf + ωg + η·fg + s))           — §7.2
+        """
+        logit = self.beta * (self.alpha + self.rho * f
+                             + self.omega * g + self.eta * f * g
+                             + self._empathy_shift())
         return _logistic(logit)
+
+    # ================================================================ 시제 표
+    # [v0.8.0 §7.2] f·g 의 시제(tense) 규약 — **오프바이원 재발 방지**.
+    #
+    # 동시행동 게임에서 라운드 k 에 관측되는 상대 행동은 opp_{k−1} 이며, 이는
+    # 상대가 **직전에 본 것**에 반응한 결과다. 따라서:
+    #
+    #   경로     | 대상            | f (내 직전행동)   | g (상대 직전행동)
+    #   ---------|-----------------|-------------------|-------------------
+    #   갱신용   | 관측 opp_{k−1}  | my_{k−2}          | opp_{k−2}
+    #   결정용   | 예측 opp_k      | my_{k−1}(=최신)   | opp_{k−1}(=최신)
+    #
+    # 즉 갱신 경로의 f·g 는 **둘 다 한 시점 더 과거**를 가리킨다(v0.6.6 이 f 에
+    # 대해 수정한 것과 동일한 시제 원칙을 g 에 그대로 적용). 호출부(agent.py)가
+    # ctx.my_last_action / ctx.their_last_action 에 올바른 시제를 담아 넘긴다.
+    # 데이터-수준 일치도는 §7.4 검증 1(TFT·WSLS)에서 필수 확인한다.
 
     @staticmethod
     def _feature(ctx: Optional[ObservationContext]) -> float:
+        """f = 내 직전 행동의 호혜신호 (+1 협력, −1 배신, 0 이력없음)."""
         if ctx is None or ctx.my_last_action is None:
             return 0.0
         return 1.0 - 2.0 * ctx.my_last_action   # C=0 → +1, D=1 → -1
 
+    @staticmethod
+    def _feature_g(ctx: Optional[ObservationContext]) -> float:
+        """g = 상대 자신의 직전 행동 (+1 협력, −1 배신, 0 이력없음).
+
+        `ObservationContext.their_last_action` 은 v0.6.6 에도 이미 존재했으나
+        우도가 사용하지 않았다(§7.2). fg 기저에서 비로소 소비된다.
+        """
+        if ctx is None or ctx.their_last_action is None:
+            return 0.0
+        return 1.0 - 2.0 * ctx.their_last_action
+
     def update(self, opp_action: int, ctx: ObservationContext) -> InversionState:
         """관측된 상대 행동으로 가중치를 갱신."""
         f = self._feature(ctx)
-        pC = self._pC(f)
+        g = self._feature_g(ctx) if self._fg else 0.0
+        pC = self._pC(f, g)
         lik = pC if opp_action == COOP else (1.0 - pC)
         self.weights = self.weights * np.clip(lik, _EPS, 1.0)
         s = self.weights.sum()
@@ -187,6 +259,12 @@ class OpponentInversion:
 
         self.alpha = jit(self.alpha, "alpha")
         self.rho = jit(self.rho, "rho")
+        if self._fg:
+            self.omega = jit(self.omega, "omega", -3.0, 3.0)
+            self.eta = jit(self.eta, "eta", -3.0, 3.0)
+        else:
+            self.omega = self.omega[idx]
+            self.eta = self.eta[idx]
         if self._beta_clamp_val is not None:
             self.beta[:] = self._beta_clamp_val
         else:
@@ -195,28 +273,42 @@ class OpponentInversion:
         self.weights = np.ones(self.N) / self.N
 
     # ------------------------------------------------------------ 예측/요약
-    def predict_coop(self, f: float) -> float:
-        """posterior-weighted 상대 협력확률."""
-        return float(np.clip(np.sum(self.weights * self._pC(f)), _EPS, 1 - _EPS))
+    def predict_coop(self, f: float, g: Optional[float] = None) -> float:
+        """posterior-weighted 상대 협력확률.
+
+        g : fg 기저의 상대 직전행동 신호(±1). None 이면 0(중립) — f 기저에서는
+            ω=η=0 이므로 어차피 무영향이다.
+        """
+        gg = 0.0 if g is None else float(g)
+        return float(np.clip(np.sum(self.weights * self._pC(f, gg)),
+                             _EPS, 1 - _EPS))
 
     def predict_action(self, ctx: Optional[ObservationContext]) -> np.ndarray:
         f = self._feature(ctx)
-        pc = self.predict_coop(f)
+        g = self._feature_g(ctx) if self._fg else 0.0
+        pc = self.predict_coop(f, g)
         return np.array([pc, 1.0 - pc])
 
     def posterior_means(self) -> Dict[str, float]:
-        return {
+        out = {
             "alpha": float(np.sum(self.weights * self.alpha)),
             "rho": float(np.sum(self.weights * self.rho)),
             "beta": float(np.sum(self.weights * self.beta)),
             "lambda_j": float(np.sum(self.weights * self.lambda_j)),
         }
+        if self._fg:
+            out["omega"] = float(np.sum(self.weights * self.omega))
+            out["eta"] = float(np.sum(self.weights * self.eta))
+        return out
 
     def posterior_stds(self) -> Dict[str, float]:
         m = self.posterior_means()
         out = {}
-        for ax, arr in (("alpha", self.alpha), ("rho", self.rho),
-                        ("beta", self.beta), ("lambda_j", self.lambda_j)):
+        pairs = [("alpha", self.alpha), ("rho", self.rho),
+                 ("beta", self.beta), ("lambda_j", self.lambda_j)]
+        if self._fg:
+            pairs += [("omega", self.omega), ("eta", self.eta)]
+        for ax, arr in pairs:
             v = np.sum(self.weights * (arr - m[ax]) ** 2)
             out[ax] = float(np.sqrt(max(v, 0.0)))
         return out
@@ -240,8 +332,9 @@ class OpponentInversion:
         model-based fMRI regressor 로 사용 가능.
         """
         cur = self.posterior_means()
-        scale = {"alpha": 2.0, "rho": 1.2, "beta": 1.8, "lambda_j": 0.3}
-        d = [(cur[a] - prev_means.get(a, cur[a])) / scale[a] for a in THETA_AXES]
+        scale = {"alpha": 2.0, "rho": 1.2, "beta": 1.8, "lambda_j": 0.3,
+                 "omega": 1.0, "eta": 1.0}
+        d = [(cur[a] - prev_means.get(a, cur[a])) / scale[a] for a in self.axes]
         return float(np.sqrt(np.sum(np.square(d))))
 
     def snapshot(self) -> InversionState:
@@ -253,12 +346,14 @@ class OpponentInversion:
         )
 
     # ------------------------------------------------------------ epistemic
-    def expected_infogain(self, my_action: int, f_next: float) -> float:
+    def expected_infogain(self, my_action: int, f_next: float,
+                          g_next: float = 0.0) -> float:
         """
         내가 my_action 을 둘 때(→ 다음 호혜신호 f_next) 상대 다음 행동 관측으로부터
         기대되는 θ 정보이득(엔트로피 감소). social EFE 의 epistemic 항.
+        g_next : fg 기저의 상대 직전행동 신호(f 기저에서는 무영향).
         """
-        pC = self._pC(f_next)
+        pC = self._pC(f_next, g_next)
         p_obsC = float(np.sum(self.weights * pC))
         H0 = self._param_entropy()
 
