@@ -47,7 +47,9 @@ def _is_aif(agent) -> bool:
 def run_dyad(agent, opponent, n_rounds: int = 100,
              verbose: bool = False,
              env_err_a: float = 0.0, env_err_b: float = 0.0,
-             noise_seed: Optional[int] = None) -> Dict[str, np.ndarray]:
+             noise_seed: Optional[int] = None,
+             partner_id_a: Optional[int] = None,
+             partner_id_b: Optional[int] = None) -> Dict[str, np.ndarray]:
     """
     focal `agent` vs `opponent` 동시행동 IPD.
 
@@ -66,6 +68,15 @@ def run_dyad(agent, opponent, n_rounds: int = 100,
     """
     hist = {"my_act": [], "opp_act": [], "state": [],
             "my_payoff": [], "opp_payoff": []}
+    # [§3.6 재정의] identity 관측 통지: 모든 상호작용 상대는 identity 를 노출한다.
+    # 환경이 각 측에 상대의 identity 를 알린다(다이애드 기본: 1↔2. 집단 실행은
+    # 호출부가 안정적 member id 를 넘길 수 있음).
+    pid_a = 1 if partner_id_a is None else int(partner_id_a)
+    pid_b = 2 if partner_id_b is None else int(partner_id_b)
+    if hasattr(agent, "begin_partner"):
+        agent.begin_partner(pid_a)
+    if hasattr(opponent, "begin_partner"):
+        opponent.begin_partner(pid_b)
     prev_state = None
     prev_state_mirror = None
     if env_err_a > 0 or env_err_b > 0:
@@ -354,7 +365,10 @@ def run_population_spec(spec: dict) -> Dict:
             a = build(i, dyad_id)
             b = build(j, dyad_id)
             dyad_id += 1
-            h = run_dyad(a, b, n_rounds)
+            # [§3.6 재정의] 안정적 member index 를 identity 로 통지(현행은 다이애드
+            # 마다 fresh agent 라 세션 내 재조우 기억은 미발현 — 설계 노트 참조).
+            h = run_dyad(a, b, n_rounds,
+                         partner_id_a=1000 + j, partner_id_b=1000 + i)
             cc_cnt = int(np.sum(h["state"] == CC))
             total_cc += cc_cnt; m_cc += cc_cnt
             total_rounds += n_rounds; m_rounds += n_rounds

@@ -169,10 +169,17 @@ def stable_seed(*key) -> int:
 #   실험이 스펙에 명시한 값(H5 절제의 legacy 팔, RR 의 rr=False 팔 등)은
 #   전역보다 우선한다 — 절제/음성대조 설계가 기본값 반전에도 보존되는 이유.
 MODEL_REVISION = {
-    "disposition_mode": "counterfactual",   # §1 반사실 귀인
+    "disposition_mode": "counterfactual",   # §1 반사실 귀인 (legacy allostasis 경로에서만 의미)
     "likelihood_basis": "fg",               # §7 우도 기저 완전화
     "rollout_reciprocity": True,            # §3 rollout ρ 전파
     "planning_horizon": 2,                  # §3 rollout 실효화 (1 이면 rollout 없음)
+    # [v0.9.0] 조절 계층·EFE 경로 선택. 기본 = v0.9.0 (2계층 allostasis + 엄밀 EFE).
+    #   --allostasis-legacy / --legacy-efe 로 구(v0.8.2) 경로 A/B 복원.
+    "allostasis_legacy": False,             # §9.1 SelfModel+CoreAffect (기본) vs leaky 적분기
+    "legacy_efe": False,                    # §4~7 엄밀 EFE (기본) vs w_epi·1/2혼합
+    # [§10 개정 옵션] 초기 λ_base 캘리브레이션 목표(None=§10 발달 prior 그대로).
+    #   0.24 = Albarracin CC-slope 부호역전 경계 — 행동적 중립 초기화.
+    "target_lambda_base": None,
 }
 
 # [v0.8.1] VP/ORE 실행 예산 **명시화**.
@@ -197,8 +204,15 @@ def agent_spec(kind: str, seed: int, **kw) -> dict:
         base["likelihood_basis"] = MODEL_REVISION["likelihood_basis"]
         base["rollout_reciprocity"] = MODEL_REVISION["rollout_reciprocity"]
         base["planning_horizon"] = MODEL_REVISION["planning_horizon"]
+        base["legacy_efe"] = MODEL_REVISION["legacy_efe"]   # §4~7
     if kind == "adaptive":
         base["disposition_mode"] = MODEL_REVISION["disposition_mode"]
+        base["allostasis_legacy"] = MODEL_REVISION["allostasis_legacy"]  # §9.1
+        if MODEL_REVISION.get("target_lambda_base") is not None:
+            smk = dict(base.get("selfmodel_kwargs") or {})
+            smk.setdefault("target_lambda_base",
+                           float(MODEL_REVISION["target_lambda_base"]))
+            base["selfmodel_kwargs"] = smk
     base.update(kw)
     # [v0.8.2] fg 입자 자동 상향: 6축(α,ρ,ω,η,β,λ_j)은 4축보다 차원이 커서
     # 400 입자로는 사후가 성기다. 실험이 n_particles 를 명시하지 않았으면 600.
@@ -502,9 +516,31 @@ def exp_H5(seeds, rounds, jobs, backend):
     t_def, t_pay = new["defense"], new["payoff"]
     h5_i, h5_ii = new["h5_i"], new["h5_ii"]
     p_joint = new["p_joint"]
-    register_primary("H5", "결합: 방어(즉각>정교) ∧ 보수(즉각<정교) [반사실 정의]",
-                     p_joint, bool(h5_i and h5_ii),
-                     f"방어 {fmt_es(t_def['es'], 'dz')} | 보수 {fmt_es(t_pay['es'], 'dz')}")
+
+    # [v0.9.0 §9.7] 조작화 무효 감지 — 2계층 allostasis 에서 λ 조절은 RPE 귀인이
+    # 전담하므로 dd_charges·disposition_mode(legacy 조절기 개념)로 가른 즉각/정교
+    # 유형이 **동일 CoreAffect 궤적**을 갖는다. 착취자 상대 방어량이 양형 모두
+    # 포화해 짝지은 차가 전부 0 → dz·CI 가 nan 이 된다. 이를 강요된 판정 대신
+    # '조작화 무효(재정의 대기)'로 정직 보고한다.
+    def _degenerate(raw_a, raw_b, tol=1e-9):
+        d = np.asarray(raw_a, float) - np.asarray(raw_b, float)
+        return bool(np.all(np.abs(d) < tol))
+
+    h5_void = (_degenerate(new["raw"]["defense_imm"], new["raw"]["defense_soph"])
+               and _degenerate(new["raw"]["payoff_imm"], new["raw"]["payoff_soph"]))
+    if h5_void:
+        LOGGER.warning(
+            "[H5][§9.7] legacy 조작화 무효: 2계층 allostasis 에서 즉각/정교 유형이 "
+            "동일 RPE-귀인 궤적을 가져 방어·보수 짝지은 차가 모두 0(dz 미정의). "
+            "확증 판정을 '조작화 무효 → 미지지'로 보고. H5 재정의(§11.6)는 별도 과제.")
+        register_primary(
+            "H5", "결합: 방어(즉각>정교) ∧ 보수(즉각<정교) [§9.7 조작화 무효]",
+            1.0, False, "dz 미정의(양형 동일 궤적) — RPE 모형서 재정의 대기")
+    else:
+        register_primary(
+            "H5", "결합: 방어(즉각>정교) ∧ 보수(즉각<정교) [반사실 정의]",
+            p_joint, bool(h5_i and h5_ii),
+            f"방어 {fmt_es(t_def['es'], 'dz')} | 보수 {fmt_es(t_pay['es'], 'dz')}")
     # legacy 조작화 결과는 탐색으로 병기 — 기존 결과 보존·대조
     register_exploratory("H5", "결합가설 [legacy dd_charges 정의] (조작화 절제)",
                          ops_out["legacy"]["p_joint"],
@@ -611,7 +647,9 @@ def exp_H5(seeds, rounds, jobs, backend):
                     "fd_imm": [int(x) for x in ti], "fd_cens_imm": ci_.tolist(),
                     "fd_soph": [int(x) for x in ts], "fd_cens_soph": cs.tolist()},
             "sub": {"h5_i": bool(h5_i), "h5_ii": bool(h5_ii)},
-            "supported": bool(h5_i and h5_ii), "traces": traces}
+            "void_operationalization": bool(h5_void),   # §9.7
+            "supported": (False if h5_void else bool(h5_i and h5_ii)),
+            "traces": traces}
 
 
 # ================================================================== H6
@@ -3812,6 +3850,580 @@ def exp_ORE(seeds, rounds, jobs, backend):
                           "C_ORE2": bool(pooled_sw_ore.mean() > 0 and t_ore2["p"] < 0.05)}}
 
 
+# ================================================================== V9
+# [v0.9.0 §11] 신 검증 배터리 — 구 골든 무효화에 따른 필수 신규 검증 3종.
+#   V9.1 RPE 스케일 민감성 : 페이오프 (3,5,0,1)→(3,10,0,1) 시 CoreAffect 의
+#        deficit·λ 반응이 스케일에 비례하는가. (구 CD-라벨 설계는 무반응 = 대조.)
+#   V9.2 setpoint drift     : ALLD 만 오래(≥W_admit) 만난 뒤 λ_base 가 하향
+#        이동하는가. boundary 내 엔트리는 불변인가(발달 고정).
+#   V9.3 귀인 분기 행동      : 동일 RPE 크기라도 contextual vs dispositional
+#        귀인에서 후속 λ 궤적·협력률이 갈리는가.
+#   V9.4 epistemic 부활      : h=2 에서 IG_self 가 두 행동 간 비상쇄(≠0)인가(S2 해결).
+# 본 실험은 계층 내부 상태(λ_base, q(z), deficit, RPE)를 직접 관측해야 하므로
+# 워커 병렬 대신 **주 프로세스에서 직접 다이애드**를 실행한다(페이오프 전역 조작·
+# 계층 상태 접근이 필요). 계산량은 작다(seeds×수십 라운드).
+def exp_V9(seeds, rounds, jobs, backend):
+    from AIF_IPD.ipd.agent import AdaptiveAgent
+    from AIF_IPD.ipd.env import make_opponent
+    from AIF_IPD.ipd.sim import run_dyad
+    from AIF_IPD.core.constants import (
+        set_payoff_matrix, reset_payoffs, PAYOFF_SELF)
+    from AIF_IPD.core.allostasis_v9 import W_ADMIT_DEFAULT
+
+    LOGGER.info("[V9] v0.9.0 신 검증 배터리 (§11.1~4)")
+    S = int(min(seeds, 40))
+    S = max(S, 4)
+    R_full = int(rounds if isinstance(rounds, int) else max(rounds))
+
+    def _build(seed, legacy_allo=False, lam_base=LAM_BASE):
+        return AdaptiveAgent(
+            lam_base=lam_base, lam_max=LAM_MAX, likelihood_basis="fg",
+            rollout_reciprocity=True, planning_horizon=2, seed=seed,
+            disposition_mode="counterfactual", allostasis_legacy=legacy_allo,
+            n_particles=250)
+
+    def _tail_mean(x, k=15):
+        x = np.asarray(x, float)
+        return float(x[-k:].mean() if len(x) >= k else x.mean())
+
+    # ---------------------------------------------------- V9.1 RPE 스케일 민감성
+    # 사건을 기대보상 RPE 로 정의한 v0.9.0 은 페이오프 스케일(T=5→10)에 |RPE| 가
+    # 자동 비례한다. 구 CD-라벨 설계(legacy)는 RPE 신호가 **구조적으로 부재**
+    # (rpe≡0)하므로 스케일에 무반응이다 — 이것이 §11.1 의 핵심 대조다.
+    #   · 포화(full exploiter) 상태에서는 deficit·λ 가 양 레짐에서 모두 포화해
+    #     스케일 차가 가려진다. 따라서 **비포화** 상대(noisy_tft: 협력 유지 +
+    #     간헐 배신)로 측정한다 — sucker 사건의 부적 RPE 크기가 T 에 비례해 벌어진다.
+    #   · 1차 지표: mean|RPE| (스케일 비례). 부차: deficit·λ_drop.
+    regimes = {"T5": (3.0, 5.0, 0.0, 1.0), "T10": (3.0, 10.0, 0.0, 1.0)}
+    scale = {"v9": {}, "legacy": {}}
+    for arm, legacy in (("v9", False), ("legacy", True)):
+        for rk, mat in regimes.items():
+            rpes, defs, drops = [], [], []
+            for s in range(S):
+                set_payoff_matrix(*mat)
+                try:
+                    ag = _build(1000 + s, legacy_allo=legacy)
+                    opp = make_opponent("noisy_tft", seed=2000 + s, error=0.20)
+                    run_dyad(ag, opp, n_rounds=min(R_full, 60))
+                    rpes.append(float(np.mean(np.abs(ag.log["rpe"]))))
+                    defs.append(_tail_mean(ag.log["deficit"]))
+                    drops.append(float(LAM_BASE_of(ag) - _tail_mean(ag.log["lam"])))
+                finally:
+                    reset_payoffs()
+            scale[arm][rk] = {"abs_rpe": mean_sd(rpes), "deficit": mean_sd(defs),
+                              "lam_drop": mean_sd(drops), "abs_rpe_raw": rpes}
+    # 스케일 비례성: T10 의 |RPE| 가 T5 보다 큰가 (v0.9.0). legacy 는 구조적 무반응.
+    v9_pri = paired_stats(scale["v9"]["T10"]["abs_rpe_raw"],
+                          scale["v9"]["T5"]["abs_rpe_raw"], "greater", seed=901)
+    register_primary("V9", "RPE 스케일 민감성 |RPE|(T10)>|RPE|(T5)",
+                     v9_pri["p"], v9_pri["mean_a"] > v9_pri["mean_b"],
+                     fmt_es(v9_pri["es"], "dz"))
+    lg_expl = paired_stats(scale["legacy"]["T10"]["abs_rpe_raw"],
+                           scale["legacy"]["T5"]["abs_rpe_raw"], "two-sided", seed=902)
+    register_exploratory(
+        "V9", "legacy |RPE| 스케일 무반응(구조적 대조)", lg_expl["p"],
+        f"legacy|RPE|≈{scale['legacy']['T5']['abs_rpe'][0]:.3f} (rpe≡0)")
+
+    # ---------------------------------------------------- V9.2 setpoint drift
+    # ALLD 를 W_admit 이상 만난 뒤 λ_base 하향 이동 + boundary 엔트리 불변 검증.
+    drift_T = max(R_full, int(3 * W_ADMIT_DEFAULT))     # 최소 3회 편입 창
+    lb_start, lb_end, far_start, far_end, bnd_frozen = [], [], [], [], []
+    lb_traces = []
+    for s in range(S):
+        ag = _build(3000 + s, legacy_allo=False)
+        sm = ag.self_model
+        b0 = [(e.identity, e.p_noncoop) for e in sm.boundary_entries()]
+        far0 = sm.snapshot()["far_p_noncoop"]
+        opp = make_opponent("alld", seed=4000 + s, error=0.03)
+        run_dyad(ag, opp, n_rounds=drift_T)
+        lbt = np.asarray(ag.log["lam_base"], float)
+        lb_traces.append(lbt)
+        lb_start.append(float(lbt[0])); lb_end.append(float(_tail_mean(lbt, 10)))
+        b1 = [(e.identity, e.p_noncoop) for e in sm.boundary_entries()]
+        far_start.append(float(far0)); far_end.append(sm.snapshot()["far_p_noncoop"])
+        bnd_frozen.append(float(all(abs(p0 - p1) < 1e-9
+                                    for (_, p0), (_, p1) in zip(b0, b1))))
+    drift_pri = paired_stats(lb_end, lb_start, "less", seed=903)
+    register_primary("V9", "setpoint drift λ_base 하향(ALLD 지속)", drift_pri["p"],
+                     drift_pri["mean_a"] < drift_pri["mean_b"],
+                     fmt_es(drift_pri["es"], "dz"))
+    register_exploratory("V9", "boundary 엔트리 발달고정(불변율)",
+                         0.0 if np.mean(bnd_frozen) >= 0.999 else 1.0,
+                         f"frozen={np.mean(bnd_frozen):.3f}")
+
+    # ---------------------------------------------------- V9.3 귀인 분기 행동
+    # dispositional(ALLD) vs contextual(random 잡음) — 둘 다 부적 RPE 유발하나
+    # 귀인이 갈려 λ·cc 궤적이 분기해야 한다.
+    branch = {}
+    for label, opp_kind, err in (("dispositional", "alld", 0.05),
+                                 ("contextual", "random", 0.0)):
+        lam_f, cc_f, qdisp, qctx = [], [], [], []
+        lam_tr = []
+        for s in range(S):
+            ag = _build(5000 + s, legacy_allo=False)
+            opp = make_opponent(opp_kind, seed=6000 + s, error=err)
+            h = run_dyad(ag, opp, n_rounds=min(R_full, 60))
+            lam = np.asarray(ag.log["lam"], float)
+            lam_tr.append(lam)
+            lam_f.append(_tail_mean(lam)); cc_f.append(float(np.mean(h["state"] == CC)))
+            qdisp.append(_tail_mean(ag.log["disp_credence"]))
+            qctx.append(_tail_mean(ag.log["ctx_credence"]))
+        branch[label] = {"lam_final": mean_sd(lam_f), "cc": mean_sd(cc_f),
+                         "q_disp": mean_sd(qdisp), "q_ctx": mean_sd(qctx),
+                         "lam_raw": lam_f, "lam_trace": np.stack(
+                             [a[:min(len(a) for a in lam_tr)] for a in lam_tr])}
+    br_pri = paired_stats(branch["contextual"]["lam_raw"],
+                          branch["dispositional"]["lam_raw"], "greater", seed=904)
+    register_primary("V9", "귀인 분기 λ(contextual)>λ(dispositional)", br_pri["p"],
+                     br_pri["mean_a"] > br_pri["mean_b"], fmt_es(br_pri["es"], "dz"))
+
+    # ---------------------------------------------------- V9.4 epistemic 부활
+    # h=2 rollout 에서 두 행동의 전축 IG_self 가 비상쇄(≠0)임을 직접 확인.
+    from AIF_IPD.ipd.tom.inversion import ObservationContext
+    ig_c, ig_d = [], []
+    for s in range(S):
+        ag = _build(7000 + s, legacy_allo=False)
+        opp = make_opponent("tit_for_tat", seed=8000 + s, error=0.05)
+        run_dyad(ag, opp, n_rounds=min(R_full, 40))
+        inv = ag.inversion
+        gnext = 0.0
+        ig_c.append(inv.expected_infogain_allaxis(COOP, +1.0, gnext))
+        ig_d.append(inv.expected_infogain_allaxis(DEFECT, -1.0, gnext))
+    reset_payoffs()
+    epi_alive = float(np.mean([(c + d) > 1e-6 for c, d in zip(ig_c, ig_d)]))
+    register_exploratory("V9", "epistemic 부활 IG_self(h2)≠0",
+                         0.0 if epi_alive >= 0.5 else 1.0,
+                         f"alive_frac={epi_alive:.2f}, "
+                         f"IG_C={np.mean(ig_c):.3f} IG_D={np.mean(ig_d):.3f}")
+
+    supported = {
+        "V9_1_rpe_scale": bool(v9_pri["mean_a"] > v9_pri["mean_b"]
+                               and v9_pri["p"] < 0.05),
+        "V9_2_drift": bool(drift_pri["mean_a"] < drift_pri["mean_b"]
+                           and drift_pri["p"] < 0.05),
+        "V9_2_boundary_frozen": bool(np.mean(bnd_frozen) >= 0.999),
+        "V9_3_branch": bool(br_pri["mean_a"] > br_pri["mean_b"]
+                            and br_pri["p"] < 0.05),
+        "V9_4_epistemic_alive": bool(epi_alive >= 0.5),
+    }
+    return {
+        "scale": scale, "scale_primary": v9_pri, "scale_legacy": lg_expl,
+        "drift": {"lam_base_start": mean_sd(lb_start),
+                  "lam_base_end": mean_sd(lb_end),
+                  "far_p_noncoop_start": mean_sd(far_start),
+                  "far_p_noncoop_end": mean_sd(far_end),
+                  "boundary_frozen_frac": float(np.mean(bnd_frozen)),
+                  "primary": drift_pri},
+        "branch": {k: {kk: vv for kk, vv in v.items() if kk != "lam_trace"}
+                   for k, v in branch.items()},
+        "branch_primary": br_pri,
+        "epistemic": {"ig_self_coop": mean_sd(ig_c),
+                      "ig_self_defect": mean_sd(ig_d),
+                      "alive_frac": epi_alive},
+        "supported": supported,
+        "seeds": S, "T": R_full,
+        "traces": {"lam_base_drift": np.stack(
+            [t[:min(len(x) for x in lb_traces)] for t in lb_traces]),
+            "lam_dispositional": branch["dispositional"]["lam_trace"],
+            "lam_contextual": branch["contextual"]["lam_trace"]},
+    }
+
+
+def LAM_BASE_of(agent) -> float:
+    """v0.9.0 agent 의 초기 λ_base (SelfModel setpoint) 또는 lam_base."""
+    sm = getattr(agent, "self_model", None)
+    if sm is not None:
+        return float(sm.lambda_base())
+    return float(getattr(agent, "lam_base", LAM_BASE))
+
+
+# ================================================================== V10
+# [v0.10.0] valence+uncertainty affect 재정초 검증 배터리.
+#   구 V9(RPE-귀인 모형)의 검증 중 귀인-의존(V9.3)은 폐기되고, 새 모형의
+#   핵심 주장을 직접 겨냥한 5종으로 재편한다. 주 프로세스 직접 다이애드 실행.
+#   V10.1 valence 단조성 : λ_final 이 상대 협력성에 단조증가(valence 구동).
+#   V10.2 하방불확실 방어 : 평균보상이 같아도 **하방분산 큰** 상대에 λ 더 낮음
+#         (uncertainty 항이 방어를 주도 — 구 g_disp 비대칭의 내생적 대체).
+#   V10.3 expectile 무편향: 중앙(η=0.5) expectile 이 quantile 격자평균보다 참
+#         E[r]에 가깝다(valence 신호의 편향 제거).
+#   V10.4 SelfModel 함의 초기화: 험한 환경(낮은 λ_base) → 낮은 초기 기대분포중심
+#         E0=P+λ_base(R−P) → 착취에 더 빠른 λ 붕괴.
+#   V10.5 identity 분포기억 : 재조우 시 학습된 (E,σ) 복원(지시3 재배선).
+def exp_V10(seeds, rounds, jobs, backend):
+    from AIF_IPD.ipd.agent import AdaptiveAgent
+    from AIF_IPD.ipd.env import make_opponent
+    from AIF_IPD.ipd.sim import run_dyad
+    from AIF_IPD.core.allostasis_v9 import QuantileValue, CODE_EXPECTILE
+
+    LOGGER.info("[V10] valence+uncertainty affect 검증 배터리")
+    S = int(min(seeds, 40)); S = max(S, 4)
+    R_full = int(rounds if isinstance(rounds, int) else max(rounds))
+    T = min(R_full, 60)
+
+    def _build(seed, target=0.24, **ck):
+        return AdaptiveAgent(
+            lam_base=0.4, lam_max=0.8, likelihood_basis="fg",
+            rollout_reciprocity=True, planning_horizon=2, seed=seed,
+            disposition_mode="counterfactual", n_particles=250,
+            selfmodel_kwargs=dict(target_lambda_base=target),
+            core_affect_kwargs=ck or None)
+
+    def _tail(x, k=15):
+        x = np.asarray(x, float); return float(x[-k:].mean())
+
+    # ---------------------------------------------------- V10.1 valence 단조성
+    ladder = [("alld", 0.05), ("random", 0.0), ("noisy_tft", 0.2),
+              ("tit_for_tat", 0.05), ("allc", 0.02)]
+    lam_by = {}
+    for opp, err in ladder:
+        vals = []
+        for s in range(S):
+            ag = _build(1000 + s)
+            run_dyad(ag, make_opponent(opp, seed=2000 + s, error=err), n_rounds=T)
+            vals.append(_tail(ag.log["lam"]))
+        lam_by[opp] = vals
+    # 단조성: Spearman ρ(협력성순위, λ) > 0. 확증은 양끝 ALLD<ALLC 짝지음.
+    order = [o for o, _ in ladder]
+    rank = {o: i for i, o in enumerate(order)}
+    xs, ys = [], []
+    for o in order:
+        for v in lam_by[o]:
+            xs.append(rank[o]); ys.append(v)
+    rho = float(np.corrcoef(xs, ys)[0, 1])
+    mono_pri = paired_stats(lam_by["allc"], lam_by["alld"], "greater", seed=1001)
+    register_primary("V10", "valence 단조성 λ(ALLC)>λ(ALLD)", mono_pri["p"],
+                     mono_pri["mean_a"] > mono_pri["mean_b"], fmt_es(mono_pri["es"], "dz"))
+    register_exploratory("V10", "λ–협력성 순위상관", 0.0 if rho > 0 else 1.0,
+                         f"pearson_rank_r={rho:.3f}")
+
+    # ---------------------------------------------------- V10.2 하방불확실 방어
+    # 같은 기대보상, 다른 하방분산: 두 확률적 상대를 구성.
+    #   저분산: noisy_tft(err=0.1) — 대체로 협력, 드문 배신.
+    #   고분산: random — 협력/배신 50:50 (같은 평균대라도 하방 넓음).
+    # 평균보상을 근사 정렬하기 위해 random 은 그대로, 저분산은 noisy_tft(0.1) 사용.
+    low_var, high_var = [], []
+    uU_low, uU_high = [], []
+    for s in range(S):
+        a1 = _build(3000 + s)
+        run_dyad(a1, make_opponent("noisy_tft", seed=4000 + s, error=0.1), n_rounds=T)
+        low_var.append(_tail(a1.log["lam"])); uU_low.append(a1.core_affect.last_uncertainty)
+        a2 = _build(3000 + s)
+        run_dyad(a2, make_opponent("random", seed=4000 + s, error=0.0), n_rounds=T)
+        high_var.append(_tail(a2.log["lam"])); uU_high.append(a2.core_affect.last_uncertainty)
+    defense_pri = paired_stats(high_var, low_var, "less", seed=1002)   # 고분산 λ 낮음
+    register_primary("V10", "하방불확실 방어 λ(고분산)<λ(저분산)", defense_pri["p"],
+                     defense_pri["mean_a"] < defense_pri["mean_b"], fmt_es(defense_pri["es"], "dz"))
+    register_exploratory("V10", "고분산 U 상승 확인",
+                         0.0 if np.mean(uU_high) > np.mean(uU_low) else 1.0,
+                         f"U_high={np.mean(uU_high):.3f} > U_low={np.mean(uU_low):.3f}")
+
+    # ---------------------------------------------------- V10.3 expectile 무편향
+    rng = np.random.default_rng(1234)
+    err_exp, err_qnt = [], []
+    for s in range(S):
+        p_def = float(rng.uniform(0.1, 0.5))
+        truth = (1 - p_def) * 3.0 + p_def * 0.0
+        qe = QuantileValue(m=21, alpha=0.05, code=CODE_EXPECTILE, init_center=1.5, init_spread=0.5)
+        qq = QuantileValue(m=21, alpha=0.05, code="quantile", init_center=1.5, init_spread=0.5)
+        r = np.random.default_rng(9000 + s)
+        for _ in range(3000):
+            x = 0.0 if r.random() < p_def else 3.0
+            qe.update(x); qq.update(x)
+        err_exp.append(abs(qe.mean - truth)); err_qnt.append(abs(qq.mean - truth))
+    unbias_pri = paired_stats(err_exp, err_qnt, "less", seed=1003)   # expectile 오차 작음
+    register_primary("V10", "expectile 무편향 |E−truth|(exp)<(quant)", unbias_pri["p"],
+                     unbias_pri["mean_a"] < unbias_pri["mean_b"], fmt_es(unbias_pri["es"], "dz"))
+
+    # ---------------------------------------------------- V10.4 SelfModel 초기화
+    E0_by = {}
+    collapse_by = {}
+    for target in (0.15, 0.30, 0.50):
+        E0s, halfs = [], []
+        for s in range(S):
+            ag = _build(5000 + s, target=target)
+            E0s.append(float(ag.core_affect.value._E0))
+            run_dyad(ag, make_opponent("alld", seed=6000 + s, error=0.05), n_rounds=T)
+            lam = np.asarray(ag.log["lam"], float)
+            # 붕괴 반감점: λ 가 초기의 절반 아래로 처음 떨어진 라운드
+            half = np.argmax(lam <= 0.5 * lam[0]) if np.any(lam <= 0.5 * lam[0]) else len(lam)
+            halfs.append(int(half))
+        E0_by[target] = mean_sd(E0s); collapse_by[target] = mean_sd(halfs)
+    # 검증: E0 = P + λ_base(R−P) 정확(무관측), 낮은 target → 빠른 붕괴(작은 half).
+    init_ok = all(abs(E0_by[t][0] - (1.0 + t * 2.0)) < 0.02 for t in (0.15, 0.30, 0.50))
+    register_exploratory("V10", "초기화 E0=P+λ_base(R−P) 정확",
+                         0.0 if init_ok else 1.0,
+                         f"E0(.15/.30/.50)={E0_by[0.15][0]:.2f}/{E0_by[0.30][0]:.2f}/{E0_by[0.50][0]:.2f}")
+    register_exploratory("V10", "험한 환경(낮은 λ_base) 빠른 붕괴",
+                         0.0 if collapse_by[0.15][0] <= collapse_by[0.50][0] else 1.0,
+                         f"half(.15)={collapse_by[0.15][0]:.1f} ≤ half(.50)={collapse_by[0.50][0]:.1f}")
+
+    # ---------------------------------------------------- V10.5 identity 분포기억
+    restore_gap, novel_gap = [], []
+    for s in range(S):
+        ag = _build(7000 + s)
+        run_dyad(ag, make_opponent("allc", seed=8000 + s, error=0.03), n_rounds=T)
+        e = ag.self_model.entry_for_identity(1)
+        if e is None or e.learned_reward is None:
+            continue
+        E_star = float(e.learned_reward[0])
+        # belief 리셋 후 재조우 → 복원폭
+        ag.core_affect.value = QuantileValue(m=21, code=CODE_EXPECTILE,
+                                             init_center=1.48, init_spread=0.4)
+        pre = ag.core_affect.value.mean
+        ag.begin_partner(1)
+        restore_gap.append(abs(ag.core_affect.value.mean - E_star))
+        # 신규 identity → 무변
+        mid = ag.core_affect.value.mean
+        ag.begin_partner(99999)
+        novel_gap.append(abs(ag.core_affect.value.mean - mid))
+    id_ok = (np.mean(restore_gap) < 1e-6 and np.mean(novel_gap) < 1e-6)
+    register_exploratory("V10", "identity 재조우 (E,σ) 복원·신규 무변",
+                         0.0 if id_ok else 1.0,
+                         f"restore_gap={np.mean(restore_gap):.2e} novel_gap={np.mean(novel_gap):.2e}")
+
+    # ------------------------------------------- V10.6 가변-payoff expectile 우위
+    # V10.3(정적)의 경계조건. payoff **스케일**이 레짐마다 변하는 비정상 환경에서
+    # expectile(L2, 비례 추적)이 quantile(Huber clip, 포화)보다 참 기대보상을
+    # 정확히 추적하는가. (a) 격리된 분포추적기 스트림 + (b) 전체 AdaptiveAgent
+    # 가변-payoff 다이애드 두 수준에서 검증.
+    from AIF_IPD.core.constants import (
+        set_payoff_matrix as _spm, reset_payoffs as _rp, PAYOFF_SELF as _PS)
+
+    # (a) 격리 스트림: 레짐마다 P(defect)·보수스케일 hi 가 변하는 비정상 관측열.
+    def _stream_err(code, seed, T=1000, regime=80):
+        r = np.random.default_rng(seed)
+        qv = QuantileValue(m=21, alpha=0.1, code=code, init_center=1.5, init_spread=0.5)
+        errs = []
+        p_def, hi = 0.3, 3.0
+        for t in range(T):
+            if t % regime == 0:
+                p_def = r.uniform(0.1, 0.6); hi = r.choice([3.0, 5.0, 10.0])
+            truth = (1 - p_def) * hi
+            qv.update(0.0 if r.random() < p_def else hi)
+            errs.append(abs(qv.mean - truth))
+        return float(np.mean(errs))
+
+    strm_exp = [_stream_err(CODE_EXPECTILE, 9100 + s) for s in range(S)]
+    strm_qnt = [_stream_err("quantile", 9100 + s) for s in range(S)]
+    strm_pri = paired_stats(strm_exp, strm_qnt, "less", seed=1006)
+    register_primary("V10", "가변-payoff 추적 |E−truth|(exp)<(quant)", strm_pri["p"],
+                     strm_pri["mean_a"] < strm_pri["mean_b"], fmt_es(strm_pri["es"], "dz"))
+
+    # (b) 전체 AdaptiveAgent: T(유혹) 레짐 스위칭 다이애드에서 분포추적오차.
+    S_ag = min(S, 8)      # 전체 에이전트는 비싸므로 상한
+    Tvals = [5, 10, 3, 8]
+
+    def _agent_track(code, seed, T=90, regime=25):
+        _spm(3, 5, 0, 1)
+        try:
+            ag = AdaptiveAgent(
+                lam_base=0.4, seed=seed, disposition_mode="counterfactual",
+                planning_horizon=2, likelihood_basis="fg", rollout_reciprocity=True,
+                n_particles=150, selfmodel_kwargs=dict(target_lambda_base=0.24),
+                core_affect_kwargs=dict(code=code))
+            opp = make_opponent("tit_for_tat", seed=seed + 500, error=0.1)
+            ag.begin_partner(1)
+            te, realized, state = [], [], None
+            for t in range(T):
+                _spm(3, Tvals[(t // regime) % 4], 0, 1)
+                a = ag.step(state); oa = opp.act(); opp.observe(a)
+                st = (0 if (a == 0 and oa == 0) else 1 if (a == 0 and oa == 1)
+                      else 2 if (a == 1 and oa == 0) else 3)
+                state = st; realized.append(float(_PS[st]))
+                if t >= 10:
+                    te.append(abs(ag.core_affect.value.mean - np.mean(realized[-10:])))
+            return float(np.mean(te))
+        finally:
+            _rp()
+
+    ag_exp = [_agent_track(CODE_EXPECTILE, 9300 + s) for s in range(S_ag)]
+    ag_qnt = [_agent_track("quantile", 9300 + s) for s in range(S_ag)]
+    _rp()
+    ag_pri = paired_stats(ag_exp, ag_qnt, "less", seed=1007)
+    register_exploratory(
+        "V10", "가변-payoff AdaptiveAgent 추적오차 exp<quant",
+        ag_pri["p"], f"exp={ag_pri['mean_a']:.3f} < quant={ag_pri['mean_b']:.3f} "
+        f"({fmt_es(ag_pri['es'], 'dz')})")
+
+    supported = {
+        "V10_1_valence_monotonic": bool(mono_pri["mean_a"] > mono_pri["mean_b"]
+                                        and mono_pri["p"] < 0.05 and rho > 0),
+        "V10_2_downside_defense": bool(defense_pri["mean_a"] < defense_pri["mean_b"]
+                                       and defense_pri["p"] < 0.05),
+        "V10_3_expectile_unbiased_static": bool(unbias_pri["mean_a"] < unbias_pri["mean_b"]
+                                                and unbias_pri["p"] < 0.05),
+        "V10_4_selfmodel_init": bool(init_ok),
+        "V10_5_identity_memory": bool(id_ok),
+        "V10_6_expectile_variable": bool(strm_pri["mean_a"] < strm_pri["mean_b"]
+                                         and strm_pri["p"] < 0.05),
+        "V10_6_agent_variable": bool(ag_pri["mean_a"] < ag_pri["mean_b"]
+                                     and ag_pri["p"] < 0.05),
+    }
+    return {
+        "monotonic": {"lam_by": {o: mean_sd(lam_by[o]) for o in order},
+                      "rank_r": rho, "primary": mono_pri, "order": order},
+        "defense": {"lam_high_var": mean_sd(high_var), "lam_low_var": mean_sd(low_var),
+                    "U_high": mean_sd(uU_high), "U_low": mean_sd(uU_low),
+                    "primary": defense_pri},
+        "unbiased": {"err_expectile": mean_sd(err_exp), "err_quantile": mean_sd(err_qnt),
+                     "primary": unbias_pri},
+        "init": {"E0_by": {str(k): v for k, v in E0_by.items()},
+                 "collapse_half_by": {str(k): v for k, v in collapse_by.items()}},
+        "identity": {"restore_gap": float(np.mean(restore_gap)) if restore_gap else None,
+                     "novel_gap": float(np.mean(novel_gap)) if novel_gap else None},
+        "variable": {"stream_expectile": mean_sd(strm_exp),
+                     "stream_quantile": mean_sd(strm_qnt), "stream_primary": strm_pri,
+                     "agent_expectile": mean_sd(ag_exp),
+                     "agent_quantile": mean_sd(ag_qnt), "agent_primary": ag_pri},
+        "supported": supported, "seeds": S, "T": R_full,
+    }
+
+
+# ================================================================== V12
+# [v0.11.1] context-dependency 개인특질 w_cd 스윕 배터리.
+#   λ_base = (1−w_cd)·λ_baseSelf + w_cd·λ_baseContext(θ_j) 에서 w_cd 는
+#   "상대에 얼마나 맞춰 반응하는가"의 개인차다. 스윕으로 행동 표현형 차이를 검증:
+#   V12.1 분화(differentiation): w_cd↑ → 상대별 λ_final 의 시드내 SD↑
+#         (맥락 민감 개체는 상대를 더 강하게 구별).
+#   V12.2 anticipatory 방어: w_cd↑ → λ_final(ALLD)↓ (θ-예측 착취자에 setpoint 하강).
+#   V12.3 공감 확장: w_cd↑ → λ_final(ALLC)↑.
+#   V12.4 (탐색) 방어의 보수 실익: w_cd↑ → vs ALLD 평균보수↑ (착취손실 감소).
+#   V12.5 (탐색) w_cd=0 구조 검증: λ_base 가 상대 무관(λ_baseSelf 로 축약).
+def exp_V12(seeds, rounds, jobs, backend):
+    from AIF_IPD.ipd.agent import AdaptiveAgent
+    from AIF_IPD.ipd.env import make_opponent
+    from AIF_IPD.ipd.sim import run_dyad
+
+    LOGGER.info("[V12] w_cd(context-dependency) 스윕 배터리")
+    S = int(min(seeds, 30)); S = max(S, 4)
+    R_full = int(rounds if isinstance(rounds, int) else max(rounds))
+    T = min(R_full, 60)
+    WCD = [0.0, 0.25, 0.5, 0.75, 1.0]
+    OPPS = [("alld", 0.05), ("tit_for_tat", 0.05), ("allc", 0.02)]
+
+    def _run(wcd, opp, err, seed):
+        ag = AdaptiveAgent(
+            lam_base=0.4, lam_max=0.8, likelihood_basis="fg",
+            rollout_reciprocity=True, planning_horizon=2, seed=seed,
+            disposition_mode="counterfactual", n_particles=250,
+            selfmodel_kwargs=dict(target_lambda_base=0.24, w_cd=wcd))
+        h = run_dyad(ag, make_opponent(opp, seed=seed + 700, error=err),
+                     n_rounds=T)
+        lam = np.asarray(ag.log["lam"], float)
+        lb = np.asarray(ag.log["lam_base"], float)
+        pay = float(np.mean(h["my_payoff"]))
+        return (float(lam[-10:].mean()), float(lb[-10:].mean()), pay,
+                float(np.mean(np.asarray(h["state"]) == CC)))
+
+    res = {w: {o: {"lam": [], "lam_base": [], "pay": [], "cc": []}
+               for o, _ in OPPS} for w in WCD}
+    diff_by_w = {w: [] for w in WCD}     # 시드별 상대간 λ 분화(SD)
+    for s in range(S):
+        for w in WCD:
+            lams = []
+            for opp, err in OPPS:
+                lam_f, lb_f, pay, cc = _run(w, opp, err, 1000 + s)
+                r = res[w][opp]
+                r["lam"].append(lam_f); r["lam_base"].append(lb_f)
+                r["pay"].append(pay); r["cc"].append(cc)
+                lams.append(lam_f)
+            diff_by_w[w].append(float(np.std(lams)))
+
+    # V12.1 분화 단조: diff(w=1.0) > diff(w=0.0) 짝지음 + 순위상관
+    diff_pri = paired_stats(diff_by_w[1.0], diff_by_w[0.0], "greater", seed=1201)
+    xs, ys = [], []
+    for w in WCD:
+        for v in diff_by_w[w]:
+            xs.append(w); ys.append(v)
+    diff_r = float(np.corrcoef(xs, ys)[0, 1])
+    register_primary("V12", "분화 SD_opp(λ) w_cd=1>0", diff_pri["p"],
+                     diff_pri["mean_a"] > diff_pri["mean_b"], fmt_es(diff_pri["es"], "dz"))
+    register_exploratory("V12", "분화–w_cd 상관", 0.0 if diff_r > 0 else 1.0,
+                         f"r={diff_r:.3f}")
+
+    # V12.2 방어: λ(ALLD) w=1 < w=0
+    d_pri = paired_stats(res[1.0]["alld"]["lam"], res[0.0]["alld"]["lam"],
+                         "less", seed=1202)
+    register_primary("V12", "anticipatory 방어 λ_ALLD(w=1)<(w=0)", d_pri["p"],
+                     d_pri["mean_a"] < d_pri["mean_b"], fmt_es(d_pri["es"], "dz"))
+
+    # V12.3 공감 확장: λ(ALLC) w=1 > w=0
+    e_pri = paired_stats(res[1.0]["allc"]["lam"], res[0.0]["allc"]["lam"],
+                         "greater", seed=1203)
+    register_primary("V12", "공감확장 λ_ALLC(w=1)>(w=0)", e_pri["p"],
+                     e_pri["mean_a"] > e_pri["mean_b"], fmt_es(e_pri["es"], "dz"))
+
+    # V12.4 (탐색) 방어의 보수 실익 vs ALLD
+    p_pri = paired_stats(res[1.0]["alld"]["pay"], res[0.0]["alld"]["pay"],
+                         "greater", seed=1204)
+    register_exploratory("V12", "vs ALLD 보수 w_cd=1>0", p_pri["p"],
+                         f"pay {p_pri['mean_a']:.3f} vs {p_pri['mean_b']:.3f} "
+                         f"({fmt_es(p_pri['es'], 'dz')})")
+
+    # V12.5 (탐색) w_cd=0 구조: 상대간 λ_base 분화 ≈ 0
+    lb_spread0 = [float(np.std([res[0.0][o]["lam_base"][s] for o, _ in OPPS]))
+                  for s in range(S)]
+    struct_ok = bool(np.mean(lb_spread0) < 0.02)
+    register_exploratory("V12", "w_cd=0 → λ_base 상대무관(축약)",
+                         0.0 if struct_ok else 1.0,
+                         f"mean SD_opp(λ_base)={np.mean(lb_spread0):.4f}")
+
+    supported = {
+        "V12_1_differentiation": bool(diff_pri["mean_a"] > diff_pri["mean_b"]
+                                      and diff_pri["p"] < 0.05 and diff_r > 0),
+        "V12_2_anticipatory_defense": bool(d_pri["mean_a"] < d_pri["mean_b"]
+                                           and d_pri["p"] < 0.05),
+        "V12_3_empathy_expansion": bool(e_pri["mean_a"] > e_pri["mean_b"]
+                                        and e_pri["p"] < 0.05),
+        "V12_5_wcd0_reduction": struct_ok,
+    }
+    return {
+        "wcd": WCD, "opps": [o for o, _ in OPPS],
+        "by": {str(w): {o: {k: mean_sd(v) for k, v in res[w][o].items()}
+                        for o, _ in OPPS} for w in WCD},
+        "differentiation": {str(w): mean_sd(diff_by_w[w]) for w in WCD},
+        "diff_primary": diff_pri, "diff_r": diff_r,
+        "defense_primary": d_pri, "expansion_primary": e_pri,
+        "payoff_expl": p_pri, "wcd0_lb_spread": mean_sd(lb_spread0),
+        "supported": supported, "seeds": S, "T": T,
+    }
+
+
+def fig_V12(d, tag=""):
+    """[v0.11.1] w_cd 스윕 3패널."""
+    _kfont()
+    fig, ax = plt.subplots(1, 3, figsize=(15.5, 4.2))
+    WCD = d["wcd"]; opps = d["opps"]
+
+    # (0) 상대별 λ_final vs w_cd
+    for o, c in zip(opps, ["C3", "C0", "C2"]):
+        m = [d["by"][str(w)][o]["lam"][0] for w in WCD]
+        sd = [d["by"][str(w)][o]["lam"][1] for w in WCD]
+        ax[0].errorbar(WCD, m, yerr=sd, marker="o", capsize=3, color=c, label=o)
+    ax[0].set_xlabel("w_cd (context-dependency)"); ax[0].set_ylabel("λ_final")
+    ax[0].set_title("상대별 λ 표현형\n(방어↓·확장↑ 분기)", fontsize=9)
+    ax[0].legend(fontsize=8)
+
+    # (1) 분화 SD_opp(λ) vs w_cd
+    m = [d["differentiation"][str(w)][0] for w in WCD]
+    sd = [d["differentiation"][str(w)][1] for w in WCD]
+    ax[1].errorbar(WCD, m, yerr=sd, marker="s", capsize=3, color="C4")
+    ax[1].set_xlabel("w_cd"); ax[1].set_ylabel("SD_opp(λ_final)")
+    ax[1].set_title("V12.1 분화(differentiation)\n(r=%.2f)" % d["diff_r"], fontsize=9)
+
+    # (2) vs ALLD 보수 (방어 실익)
+    m = [d["by"][str(w)]["alld"]["pay"][0] for w in WCD]
+    sd = [d["by"][str(w)]["alld"]["pay"][1] for w in WCD]
+    ax[2].errorbar(WCD, m, yerr=sd, marker="^", capsize=3, color="C3")
+    ax[2].set_xlabel("w_cd"); ax[2].set_ylabel("평균 보수 (vs ALLD)")
+    ax[2].set_title("V12.4 방어의 보수 실익", fontsize=9)
+
+    fig.tight_layout()
+    _save(fig, f"v12_wcd_sweep{tag}",
+          "v0.11.1 w_cd(context-dependency) 스윕: 상대별 λ 표현형·분화·방어 실익.",
+          n_note=f"seeds={d.get('seeds')}")
+
+
 # =================================================================== 시각화
 def _kfont():
     try:
@@ -5379,6 +5991,125 @@ def fig_ORE_confirmatory(d, tag=""):
           f"seeds={d['seeds']}, T={d['T']}, replicate=시드×레짐")
 
 
+def fig_V9(d, tag=""):
+    """[v0.9.0 §11] 신 검증 배터리 4패널."""
+    _kfont()
+    fig, ax = plt.subplots(1, 4, figsize=(20, 4.2))
+
+    # (0) V9.1 RPE 스케일 민감성 — v9 vs legacy 의 T5/T10 mean|RPE|
+    s = d["scale"]
+    groups = ["v9\nT5", "v9\nT10", "legacy\nT5", "legacy\nT10"]
+    means = [s["v9"]["T5"]["abs_rpe"][0], s["v9"]["T10"]["abs_rpe"][0],
+             s["legacy"]["T5"]["abs_rpe"][0], s["legacy"]["T10"]["abs_rpe"][0]]
+    sds = [s["v9"]["T5"]["abs_rpe"][1], s["v9"]["T10"]["abs_rpe"][1],
+           s["legacy"]["T5"]["abs_rpe"][1], s["legacy"]["T10"]["abs_rpe"][1]]
+    xs = np.arange(4)
+    ax[0].bar(xs, means, yerr=sds, capsize=4,
+              color=["C0", "C0", "0.6", "0.6"], alpha=0.85)
+    ax[0].set_xticks(xs); ax[0].set_xticklabels(groups, fontsize=8)
+    ax[0].set_ylabel("mean |RPE|")
+    ax[0].set_title("V9.1 RPE 스케일 민감성\n(v0.9.0 T↑→|RPE|↑; legacy rpe≡0)",
+                    fontsize=9)
+
+    # (1) V9.2 setpoint drift — λ_base 궤적
+    t = d["traces"]
+    band(ax[1], t["lam_base_drift"], "λ_base (ALLD 지속)", color="C3")
+    ax[1].set_title("V9.2 setpoint drift\n(발달고정율 %.2f)"
+                    % d["drift"]["boundary_frozen_frac"], fontsize=9)
+    ax[1].set_xlabel("라운드"); ax[1].set_ylabel("λ_base")
+    ax[1].legend(fontsize=8)
+
+    # (2) V9.3 귀인 분기 — λ 궤적 (dispositional vs contextual)
+    band(ax[2], t["lam_dispositional"], "dispositional (ALLD)", color="C3")
+    band(ax[2], t["lam_contextual"], "contextual (noisy)", color="C2", ls="--")
+    ax[2].set_title("V9.3 귀인 분기 행동\n(같은 부적 RPE, 갈리는 λ)", fontsize=9)
+    ax[2].set_xlabel("라운드"); ax[2].set_ylabel("λ")
+    ax[2].legend(fontsize=8)
+
+    # (3) V9.4 epistemic 부활 — IG_self(C) vs IG_self(D)
+    e = d["epistemic"]
+    xs2 = np.arange(2)
+    ax[3].bar(xs2, [e["ig_self_coop"][0], e["ig_self_defect"][0]],
+              yerr=[e["ig_self_coop"][1], e["ig_self_defect"][1]],
+              capsize=4, color=["C0", "C1"], alpha=0.85)
+    ax[3].set_xticks(xs2); ax[3].set_xticklabels(["IG_self(C)", "IG_self(D)"])
+    ax[3].set_ylabel("전축 histogram IG")
+    ax[3].set_title("V9.4 epistemic 부활 (h=2)\n(비상쇄율 %.2f)"
+                    % e["alive_frac"], fontsize=9)
+
+    fig.tight_layout()
+    _save(fig, f"v9_validation{tag}",
+          "v0.9.0 신 검증 배터리(§11): RPE 스케일 민감성·setpoint drift·"
+          "귀인 분기 행동·epistemic 부활.",
+          n_note=f"seeds={d.get('seeds')}")
+
+
+def fig_V10(d, tag=""):
+    """[v0.10.0] valence+uncertainty affect 검증 4패널."""
+    _kfont()
+    fig, ax = plt.subplots(1, 4, figsize=(20, 4.2))
+
+    # (0) V10.1 valence 단조성 — 상대 협력성 사다리별 λ_final
+    mono = d["monotonic"]; order = mono["order"]
+    means = [mono["lam_by"][o][0] for o in order]
+    sds = [mono["lam_by"][o][1] for o in order]
+    xs = np.arange(len(order))
+    ax[0].bar(xs, means, yerr=sds, capsize=4, color="C0", alpha=0.85)
+    ax[0].set_xticks(xs); ax[0].set_xticklabels(order, rotation=30, fontsize=8, ha="right")
+    ax[0].set_ylabel("λ_final")
+    ax[0].set_title("V10.1 valence 단조성\n(순위상관 r=%.2f)" % mono["rank_r"], fontsize=9)
+
+    # (1) V10.2 하방불확실 방어 — 저분산 vs 고분산 λ + U
+    de = d["defense"]
+    xs2 = np.arange(2)
+    ax[1].bar(xs2 - 0.18, [de["lam_low_var"][0], de["lam_high_var"][0]],
+              yerr=[de["lam_low_var"][1], de["lam_high_var"][1]], width=0.36,
+              capsize=3, color="C0", alpha=0.85, label="λ_final")
+    ax[1].bar(xs2 + 0.18, [de["U_low"][0], de["U_high"][0]],
+              yerr=[de["U_low"][1], de["U_high"][1]], width=0.36,
+              capsize=3, color="C3", alpha=0.85, label="uncertainty U")
+    ax[1].set_xticks(xs2); ax[1].set_xticklabels(["저분산", "고분산"])
+    ax[1].set_title("V10.2 하방불확실 방어\n(고분산 U↑ → λ↓)", fontsize=9)
+    ax[1].legend(fontsize=8)
+
+    # (2) V10.3/V10.6 expectile: 정적(무차) vs 가변(우위) — 경계조건 대비
+    ub = d["unbiased"]; va = d.get("variable")
+    labels = ["정적\nexp", "정적\nquant"]
+    means = [ub["err_expectile"][0], ub["err_quantile"][0]]
+    sds = [ub["err_expectile"][1], ub["err_quantile"][1]]
+    colors = ["C0", "0.6"]
+    if va is not None:
+        labels += ["가변\nexp", "가변\nquant"]
+        means += [va["stream_expectile"][0], va["stream_quantile"][0]]
+        sds += [va["stream_expectile"][1], va["stream_quantile"][1]]
+        colors += ["C0", "0.6"]
+    xs = np.arange(len(means))
+    ax[2].bar(xs, means, yerr=sds, capsize=3, color=colors, alpha=0.85)
+    ax[2].set_xticks(xs); ax[2].set_xticklabels(labels, fontsize=8)
+    ax[2].set_ylabel("|E[r] − truth|")
+    ax[2].set_title("V10.3/6 expectile: 정적 무차,\n가변-payoff서 우위", fontsize=9)
+
+    # (3) V10.4 초기화 — target별 E0 (선형) + 붕괴 반감점
+    ini = d["init"]
+    ts = [0.15, 0.30, 0.50]
+    E0s = [ini["E0_by"][str(t)][0] for t in ts]
+    halfs = [ini["collapse_half_by"][str(t)][0] for t in ts]
+    ax[3].plot(ts, E0s, "o-", color="C0", label="초기 E0")
+    ax[3].plot(ts, [1 + t * 2 for t in ts], "--", color="0.5", label="P+λ(R−P)")
+    ax3b = ax[3].twinx()
+    ax3b.plot(ts, halfs, "s-", color="C3", label="붕괴 반감점")
+    ax[3].set_xlabel("target λ_base"); ax[3].set_ylabel("E0 (기대분포중심)")
+    ax3b.set_ylabel("ALLD 붕괴 반감 라운드", color="C3")
+    ax[3].set_title("V10.4 SelfModel 함의 초기화\n(험한 환경→빠른 붕괴)", fontsize=9)
+    ax[3].legend(fontsize=7, loc="upper left")
+
+    fig.tight_layout()
+    _save(fig, f"v10_validation{tag}",
+          "v0.10.0 affect 재정초 검증: valence 단조성·하방불확실 방어·"
+          "expectile 무편향·SelfModel 함의 초기화.",
+          n_note=f"seeds={d.get('seeds')}")
+
+
 EXPERIMENTS = {
     "H1": (exp_H1, fig_H1),
     "H2H3": (exp_H2_H3, fig_H2_H3),
@@ -5399,9 +6130,15 @@ EXPERIMENTS = {
     "VP": (exp_VP, fig_VP),
     "ABA": (exp_ABA, fig_ABA),
     "ORE": (exp_ORE, fig_ORE),
+    # [v0.9.0 §11] 신 검증 배터리 (§11.1~4)
+    "V9": (exp_V9, fig_V9),
+    # [v0.10.0] valence+uncertainty affect 검증 배터리
+    "V10": (exp_V10, fig_V10),
+    # [v0.11.1] w_cd(context-dependency) 스윕 배터리
+    "V12": (exp_V12, fig_V12),
 }
 # FG 는 자체 기저 스윕(f vs fg)을 내부에서 수행 — rounds 목록 통째 전달
-GLOBAL_EXPERIMENTS = {"H7H", "H8E", "H12", "VP", "ABA", "ORE", "FG"}   # 내부 err/T/레짐 스윕 — rounds 목록을 통째로 전달
+GLOBAL_EXPERIMENTS = {"H7H", "H8E", "H12", "VP", "ABA", "ORE", "FG", "V9", "V10", "V12"}   # 내부 err/T/레짐 스윕 — rounds 목록을 통째로 전달
 
 
 def _jsonable(o):
@@ -5592,6 +6329,19 @@ def main():
                     help="[v0.8.2] 전 실험 기본 planning horizon (기본 2 — "
                          "rollout 실효화; 1 이면 rollout 구조적 무영향). "
                          "실험이 자체 지정하면(RR) 그쪽 우선")
+    # ---- [v0.9.0] 조절 계층·EFE 경로 토글 (기본=v0.9.0) ----
+    ap.add_argument("--allostasis-legacy",
+                    action=argparse.BooleanOptionalAction, default=False,
+                    help="[v0.9.0 §9.1] True 면 구 leaky 이중적분기(CoreAllostaticBeliefState"
+                         "+LambdaRegulator) 복원. 기본 False = SelfModel+CoreAffect 2계층")
+    ap.add_argument("--legacy-efe",
+                    action=argparse.BooleanOptionalAction, default=False,
+                    help="[v0.9.0 §4~7] True 면 구 EFE(w_epi 가중·[0.5r,0.2r] IG_other·"
+                         "1/2 depth 혼합) 복원. 기본 False = 엄밀 EFE(전축 histogram IG)")
+    ap.add_argument("--target-lambda-base", type=float, default=None,
+                    help="[§10 개정 옵션] 초기 λ_base 캘리브레이션 목표. "
+                         "0.24 = Albarracin CC-slope 부호역전 경계(행동적 중립 출발). "
+                         "미지정 시 §10 발달 prior 그대로(≈0.546)")
     ap.add_argument("--summary-out", default="summary.json",
                     help="[v0.8.2] 요약 파일명 — horizon 1/2 별도 실행 후 "
                          "compare_versions.py 대조용 (예: summary_h1.json)")
@@ -5613,6 +6363,11 @@ def main():
     MODEL_REVISION["likelihood_basis"] = args.likelihood_basis
     MODEL_REVISION["rollout_reciprocity"] = bool(args.rollout_reciprocity)
     MODEL_REVISION["planning_horizon"] = max(1, int(args.planning_horizon))
+    MODEL_REVISION["allostasis_legacy"] = bool(args.allostasis_legacy)
+    MODEL_REVISION["legacy_efe"] = bool(args.legacy_efe)
+    MODEL_REVISION["target_lambda_base"] = (
+        None if args.target_lambda_base is None
+        else float(args.target_lambda_base))
     if args.check_equivalence:
         from AIF_IPD.core.pymdp_backend import PymdpEFE, pymdp_available
         if not pymdp_available():
@@ -5629,7 +6384,7 @@ def main():
             EXP_BUDGET[k] = v
             setattr(args, k, v)
     Ts = sorted(set(args.rounds))
-    LOGGER.info("=== HalloReg v0.8.2 — seeds=%d rounds=%s jobs=%d backend=%s ===",
+    LOGGER.info("=== HalloReg v0.11.1 — seeds=%d rounds=%s jobs=%d backend=%s ===",
                 args.seeds, Ts, args.jobs, args.backend)
     LOGGER.info("실험 예산: VP T=%d seeds=%d | ORE T=%d seeds=%d",
                 EXP_BUDGET["vp_rounds"], EXP_BUDGET["vp_seeds"],

@@ -108,104 +108,172 @@ class SocialEFEResult:
 
 class RecursiveSocialEFE:
     """
-    재귀적 social EFE 계산기.
+    재귀적 social EFE 계산기 — **v0.9.0 엄밀화(§4~7)**.
 
-    G_social(a_i) = (1-λ)·G_self(a_i | q(a_j))
-                    + λ·E_{q(a_j)}[ G_other(a_j) ]                       (R: pragmatic)
-                    − w_epi_self  · IG_self(a_i)                          (내 epistemic)
-                    − λ·w_epi_other · IG_other(a_i)                       (R2: 상대 epistemic)
+    최종형(§7):
+        G_social(a_i) = (1−λ)·( prag_self(a_i) − IG_self(a_i) )
+                        +  λ ·( prag_other(a_i) − IG_other(a_i) )
 
-    q(a_j) 는 GatedToM 예측이며, recursive_depth=2 면 상대가 나를 best-response 하는
-    한 단계를 추가로 정련한다(R1).
+      · prag_* : **EFE pragmatic 키만**(§4). 상태 엔트로피 H[dist] 는 제외(→ §5 로
+                 일원화). 비용형이라 −기대효용으로 부호정합(작을수록 선호).
+      · IG_self : 전축 histogram, θ̂(상대) (§5).
+      · IG_other: 전축 histogram, θ̂_self(자기-사영) (§6.1). 손튜닝 [0.5r,0.2r] 폐기.
+      · 가중은 (1−λ), λ 뿐 — 별도 epistemic 가중 없음(§7, w_epi 삭제).
+      · q(a_j) 는 depth-2 자연내장된 GatedToM 예측(§6.2). 1/2 후혼합 폐기.
+
+    하위호환: legacy_efe=True 면 v0.8.2 형(w_epi·[0.5r,0.2r] IG_other·1/2 혼합)을
+    복원한다. 기본은 v0.9.0.
     """
 
     def __init__(self, gated_tom: GatedToM, inversion: OpponentInversion,
                  empathy_factor: float = 0.4, beta_self: float = 4.0,
                  w_epi_self: float = 0.6, w_epi_other: float = 0.3,
-                 recursive_depth: int = 2):
+                 recursive_depth: int = 2,
+                 self_inversion: Optional[OpponentInversion] = None,
+                 legacy_efe: bool = False):
         self.gated = gated_tom
         self.inversion = inversion
+        # [v0.9.0 §6.1] 자기-사영 필터 θ̂_self ("상대가 나를 이렇게 추론할 것이다").
+        self.self_inversion = self_inversion
         self.lam = empathy_factor
         self.beta_self = beta_self
-        self.w_epi_self = w_epi_self
-        self.w_epi_other = w_epi_other
+        self.w_epi_self = w_epi_self          # legacy 경로에서만 사용
+        self.w_epi_other = w_epi_other        # legacy 경로에서만 사용
         self.recursive_depth = recursive_depth
+        self.legacy_efe = bool(legacy_efe)
         self.my_coop_rate = 0.5
 
-    # ---- 재귀적 상대 예측 (R1) ----
-    def _recursive_opponent_prediction(self, ctx: Optional[ObservationContext],
-                                       my_last_action: int) -> np.ndarray:
-        q = self.gated.predict_opponent_action(ctx)   # depth-1 (gated)
-        if self.recursive_depth >= 2:
-            # depth-2: 상대가 '나'를 best-response 한다고 가정하고 상대 예측을 정련.
-            # 상대가 믿는 내 정책 π_i 를, 내 협력율(level-0) 로부터 한 단계 best-response
-            # (상대는 내가 상대에게 최적반응한다고 가정) 하여 갱신.
+    # ---- 상대 예측: depth-2 자연내장 (§6.2) ----
+    def _opponent_prediction(self, ctx: Optional[ObservationContext],
+                             my_last_action: int) -> np.ndarray:
+        """
+        GatedToM 예측에 depth-2 를 **자연 내장**한다(§6.2). 상대가 '나를 어떻게
+        볼까'를 θ̂_self 사영으로 계산해 상대의 believed_my_policy 로 직접 주입하고,
+        그 조건 하의 상대 우도를 q 로 쓴다. 신뢰도 r 은 learned/static 보간(GatedToM
+        본연)에만 쓰이고, depth 혼합용 0.5r 은 사라진다.
+        """
+        r = self.inversion.reliability()
+        q_static = self.gated.tom.predict_opponent_action()
+        q_learned = self.inversion.predict_action(ctx)
+
+        if self.legacy_efe or self.recursive_depth < 2:
+            q = r * q_learned + (1 - r) * q_static
+            if not self.legacy_efe:
+                return q / q.sum()
+            # legacy: 1/2 후혼합 재현
             tom = self.gated.tom
             tom.update_my_policy_belief(self.my_coop_rate)
-            # 상대가 예상하는 나의 best-response: 내 G_self 최소화 행동
-            pc_learned = float(q[COOP])  # 상대 협력확률 추정
+            pc_learned = float(q[COOP])
             g_self = efe_terms(pc_learned, PAYOFF_SELF)["G"]
             my_br = softmax(-g_self, temperature=1.0 / self.beta_self)
-            # 상대는 이 π_i 로 자기 EFE 를 다시 계산 → 정련된 q(a_j)
             q2 = tom.predict_opponent_action(believed_my_policy=my_br)
-            r = self.inversion.reliability()
-            # 신뢰도만큼 재귀 정련을 반영
             q = (1 - 0.5 * r) * q + 0.5 * r * q2
-            q = q / q.sum()
-        return q
+            return q / q.sum()
 
-    def compute(self, ctx: Optional[ObservationContext],
-                my_last_action: int, lam: Optional[float] = None) -> SocialEFEResult:
-        lam = self.lam if lam is None else lam
-        q = self._recursive_opponent_prediction(ctx, my_last_action)
+        # ---- v0.9.0 §6.2: θ̂_self 사영을 believed_my_policy 로 주입 ----
+        # '상대가 믿는 내 정책'을 자기-사영 필터의 예측 협력확률로 구성한다.
+        if self.self_inversion is not None:
+            # 상대가 관측한 나의 직전 호혜신호 = 상대의 직전 행동(their_last).
+            f_me = (0.0 if ctx is None or ctx.their_last_action is None
+                    else 1.0 - 2.0 * float(ctx.their_last_action))
+            g_me = (0.0 if ctx is None or ctx.my_last_action is None
+                    else 1.0 - 2.0 * float(ctx.my_last_action))
+            my_pc = self.self_inversion.predict_coop(f_me, g=g_me)
+        else:
+            my_pc = float(self.my_coop_rate)
+        believed_my = np.array([my_pc, 1.0 - my_pc])
+        tom = self.gated.tom
+        # 그 조건 하의 상대 우도 자체가 q_learned 를 정련 → depth-2 자연내장.
+        q_static_cond = tom.predict_opponent_action(believed_my_policy=believed_my)
+        q = r * q_learned + (1 - r) * q_static_cond
+        return q / q.sum()
+
+    # ---- 공유 per-step EFE 항 (planner 와 depth-EFE 경로 일치, §5.3) ----
+    def step_terms(self, ctx: Optional[ObservationContext],
+                   q: np.ndarray, lam: float,
+                   my_action_for_igother: Optional[int] = None) -> dict:
+        """
+        상대 예측 q 하에서 각 내 행동의 v0.9.0 social EFE 분해.
+        planner 의 각 rollout 스텝과 depth-EFE 경로가 **같은 항 구성**을 쓰도록
+        일원화한다(§5.3: 순수 깊이 대조).
+        """
         pc = float(q[COOP])
-
-        # 내 EFE (pc 하에서)
-        G_self = efe_terms(pc, PAYOFF_SELF)["G"]
-
-        # 상대 pragmatic EFE: 내가 a_i 를 두고 상대가 q 로 반응할 때 상대 보수
-        G_other = np.zeros(2)
+        # prag_self: EFE pragmatic 키만(§4). 비용형 = −기대효용.
+        prag_self = -efe_terms(pc, PAYOFF_SELF)["pragmatic"]         # (2,)
+        # prag_other: 상대 기대보수의 비용형(§4, 대칭화).
+        prag_other = np.zeros(2)
         for a_i in (COOP, DEFECT):
             val = 0.0
             for a_j in (COOP, DEFECT):
                 _, other_payoff = PD_PAYOFFS[(a_i, a_j)]
                 val += q[a_j] * other_payoff
-            G_other[a_i] = -val   # EFE(작을수록 선호) = -기대보수
-        G_other_expected = G_other  # 이미 내 행동별로 정리됨
+            prag_other[a_i] = -val
 
-        # 내 epistemic: 내가 a_i 를 둘 때 상대 다음행동으로부터 θ 정보이득
-        # [v0.8.0 §7] fg 기저에서는 상대 직전행동 g 도 조건에 들어간다(일관 전파).
-        f_next = np.array([+1.0, -1.0])  # COOP→+1, DEFECT→-1
+        # IG_self: 전축 histogram, θ̂(상대) (§5).
+        f_next = np.array([+1.0, -1.0])
         g_next = (0.0 if ctx is None or ctx.their_last_action is None
                   else 1.0 - 2.0 * float(ctx.their_last_action))
-        IG_self = np.array([
-            self.inversion.expected_infogain(COOP, f_next[COOP], g_next),
-            self.inversion.expected_infogain(DEFECT, f_next[DEFECT], g_next),
-        ])
+        if self.legacy_efe:
+            IG_self = np.array([
+                self.w_epi_self * self.inversion.expected_infogain(
+                    COOP, f_next[COOP], g_next),
+                self.w_epi_self * self.inversion.expected_infogain(
+                    DEFECT, f_next[DEFECT], g_next)])
+            r = self.inversion.reliability()
+            IG_other = lam * self.w_epi_other * np.array([r * 0.5, r * 0.2])
+        else:
+            IG_self = np.array([
+                self.inversion.expected_infogain_allaxis(
+                    COOP, f_next[COOP], g_next),
+                self.inversion.expected_infogain_allaxis(
+                    DEFECT, f_next[DEFECT], g_next)])
+            # IG_other: 전축 histogram, θ̂_self 자기-사영 (§6.1).
+            IG_other = np.zeros(2)
+            if self.self_inversion is not None:
+                f_me = (0.0 if ctx is None or ctx.their_last_action is None
+                        else 1.0 - 2.0 * float(ctx.their_last_action))
+                g_me = (0.0 if ctx is None or ctx.my_last_action is None
+                        else 1.0 - 2.0 * float(ctx.my_last_action))
+                for a_i in (COOP, DEFECT):
+                    IG_other[a_i] = self.self_inversion.observed_infogain_allaxis(
+                        a_i, f_me, g_me)
+        return {"prag_self": prag_self, "prag_other": prag_other,
+                "IG_self": IG_self, "IG_other": IG_other, "pc": pc}
 
-        # 상대 epistemic (R2): 상대가 '나'를 학습하며 얻는 정보이득.
-        # 대칭 근사 — 상대 관점에서 내 행동이 상대에게 주는 정보이득은, 내가 협력/배신을
-        # 얼마나 예측가능하게(=상대의 나에 대한 불확실성 감소) 하는가로 근사한다.
-        # 협력(예측된 관계)일수록 상대의 나에 대한 posterior 를 더 잘 정련한다고 본다.
-        r = self.inversion.reliability()
-        IG_other = np.array([r * 0.5, r * 0.2])  # C 가 D 보다 상대에게 더 정보적
+    def compute(self, ctx: Optional[ObservationContext],
+                my_last_action: int, lam: Optional[float] = None) -> SocialEFEResult:
+        lam = self.lam if lam is None else lam
+        q = self._opponent_prediction(ctx, my_last_action)
+        terms = self.step_terms(ctx, q, lam)
+        pc = terms["pc"]
 
-        G_epi_self = -self.w_epi_self * IG_self
-        G_epi_other = -lam * self.w_epi_other * IG_other
+        G_self_full = efe_terms(pc, PAYOFF_SELF)["G"]   # 진단·로깅용(H 포함)
+        G_other_full = terms["prag_other"]
 
-        G_social = ((1 - lam) * G_self
-                    + lam * G_other_expected
-                    + G_epi_self
-                    + G_epi_other)
+        if self.legacy_efe:
+            G_social = ((1 - lam) * G_self_full + lam * terms["prag_other"]
+                        - terms["IG_self"] - terms["IG_other"])
+            G_epi_self = -terms["IG_self"]
+            G_epi_other = -terms["IG_other"]
+        else:
+            # v0.9.0 §7 최종형 — 가중은 (1−λ), λ 뿐.
+            self_branch = terms["prag_self"] - terms["IG_self"]
+            other_branch = terms["prag_other"] - terms["IG_other"]
+            G_social = (1 - lam) * self_branch + lam * other_branch
+            G_epi_self = -terms["IG_self"]
+            G_epi_other = -terms["IG_other"]
 
         return SocialEFEResult(
             G_social=G_social,
-            G_self=G_self,
-            G_other_pragmatic=G_other_expected,
+            G_self=G_self_full,
+            G_other_pragmatic=G_other_full,
             G_epistemic_self=G_epi_self,
             G_epistemic_other=G_epi_other,
             q_response=q,
-            info={"pc": pc, "lam": lam, "reliability": r},
+            info={"pc": pc, "lam": lam,
+                  "reliability": self.inversion.reliability(),
+                  # [v0.9.0 §3.1] 단일 r_pred 계약: 선택 행동의 pragmatic 키.
+                  "pragmatic_self": efe_terms(pc, PAYOFF_SELF)["pragmatic"]},
         )
 
     def select_action(self, ctx: Optional[ObservationContext],
@@ -218,4 +286,6 @@ class RecursiveSocialEFE:
         action = COOP if rng.random() < q_pi[COOP] else DEFECT
         res.info["q_pi"] = q_pi
         res.info["action"] = action
+        # [v0.9.0 §3.1] 단일 r_pred 계약 — 선택 행동의 pragmatic 기대보수.
+        res.info["r_pred"] = float(res.info["pragmatic_self"][action])
         return action, res

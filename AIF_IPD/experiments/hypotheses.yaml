@@ -343,3 +343,58 @@ hypotheses:
       식별 요구 증가는 fg_centered 복원 배터리로 동반 검증(§7.3, 필수).
       토글 기본 "f"(기존 보존). 대부분 상대(TFT/GTFT/ALLC/ALLD)는 ω≈η≈0 이라 큰
       변화가 없어야 하나(음성 대조), WSLS 포함 실험은 실질 변화 예상 → 정직 보고.
+
+# =============================================================================
+# [v0.10.0] valence+uncertainty affect 재정초에 따른 가설 재분류
+# =============================================================================
+# CoreAffect 가 β-deficit·q_z 귀인을 폐기하고 분포적 valence/uncertainty 로 λ 를
+# 구동하게 되면서, 가설을 다음과 같이 재분류한다. 확증 검정은 V10 배터리가 새
+# 표준이며, 구 RPE-귀인 검증(V9)은 legacy_attrib A/B 재현용으로만 유효하다.
+reclassification_v10:
+  still_valid:            # 새 모형에서 그대로 검증 가능(재기준선만 필요)
+    - H1   # 착취 자기보호 adaptive<fixed — valence↓+U↑ 로 λ 붕괴, 기제 무관하게 성립
+    - H2   # λ_final(noisy_tft)>λ_final(exploiter) — valence 서열로 직접 성립
+    - H3   # β 판별 — ToM 입자필터 소관, affect 재정초와 독립
+    - H4   # CC 비열등 — 행동 결과 지표, 기제 무관
+  redefined:             # 새 모형 축으로 맞춤 수정
+    V9_1_rpe_scale:      # → V10 valence 스케일: 페이오프↑ 시 valence 진폭↑
+    V9_2_setpoint_drift: # 유지(SelfModel 소관) — identity 편입으로 접지(§3.6 재정의)
+    V9_3_attrib_branch:  # 폐기 → V10.2 하방불확실 방어로 대체(귀인 없이 방어 분기)
+    V9_4_epistemic:      # 유지(EFE 소관, affect 무관)
+  deprecated:            # 새 모형에서 검증 불가(기제 폐기)
+    H5:                  # 즉각형(vmPFC)/정교형(rmPFC) 반사실 귀인 구분
+      reason: >
+        귀인(counterfactual dispositional attribution) 자체를 폐기했으므로 즉각/정교
+        유형 구분이 무의미. §9.7 조작화-무효 가드가 이미 이를 정직 보고(dz 미정의→
+        미지지). 대안 재정의(선택): 즉각형=k_U 큰 하방과민 affect, 정교형=k_U 작은
+        affect — 그러나 이는 귀인이 아니라 이득 파라미터 차이이므로 H5 의 원 주장
+        (반사실 인과추론)과 다른 가설이다. 강제 재사상하지 않고 폐기로 둔다.
+  new_primary_battery: V10   # valence 단조성·하방불확실 방어·expectile·초기화·identity
+
+# =============================================================================
+# [v0.11.1] θ-잔차 affect + λ_base self/context 중재에 따른 가설 재분류
+# =============================================================================
+reclassification_v0_11_1:
+  still_valid:            # 새 모형에서 그대로 검증 가능(재기준선)
+    - H1   # 착취 자기보호 — v0.11.0 서 방향 역전됐으나 v0.11.1 λ_baseContext
+           # (anticipatory)로 복원(dz=-2.31, 방향성립). 기제는 affect→setpoint 로 이동.
+    - H2   # λ 서열 — λ_baseContext(θ) 단조성으로 성립(V12 패널 0 참조)
+    - H3   # β 판별 — ToM 입자필터 소관, 불변
+    - H4   # CC 비열등 — 행동 결과 지표
+  redefined:
+    V10_1_valence_monotonic: >
+      λ 단조성의 기제가 affect(valence)에서 λ_baseContext(θ)로 이동. 검증은 유지되나
+      해석을 'θ-예측 협력성의 setpoint 사상 단조성'으로 재규정.
+    V10_2_downside_defense: >
+      U 의 의미가 하방반편차→θ epistemic(입자간) std 로, 역할이 가산항→게이팅
+      (|Δλ| 축소)으로 변경. '고분산→λ↓' 대신 '고 epistemic U→|Δλ| 축소'가 검증 대상.
+    V10_4_selfmodel_init: 유지(분포 초기화 E0=P+λ_base(R−P) 불변)
+    V10_5_identity_memory: 유지((E,σ) 저장·복원 불변)
+    V10_6_expectile_variable: 유지(expectile 코어 불변)
+  new_battery:
+    V12: >
+      w_cd(context-dependency) 개인특질 스윕 — 분화(V12.1)·anticipatory 방어(V12.2)·
+      공감확장(V12.3)·보수실익(V12.4)·w_cd=0 축약(V12.5).
+      seeds=6 예비 실행 전 항목 지지(Holm): dz=13.5/-3.2/24.2, r=0.98, pay .84>.69.
+  deprecated:
+    H5: 유지 폐기(§9.7) — 귀인 기제 부재

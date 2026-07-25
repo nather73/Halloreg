@@ -52,6 +52,7 @@ class ToMEmpathicAgent:
                  use_pymdp: bool = False, prior_opp_coop: float = 0.5,
                  likelihood_basis: str = "f",
                  rollout_reciprocity: bool = False,
+                 legacy_efe: bool = False,
                  name: str = "ToMEmpathic", seed: int = 0):
         self.name = name
         self.lam_base = float(lam_base)
@@ -62,17 +63,27 @@ class ToMEmpathicAgent:
         self.likelihood_basis = likelihood_basis
         # [v0.7.1 §3] rollout ρ 전파 토글 (horizon≥2 에서만 유효).
         self.rollout_reciprocity = bool(rollout_reciprocity)
+        # [v0.9.0 §4~7] EFE 엄밀화 경로. legacy_efe=True 면 v0.8.2 형 복원.
+        self.legacy_efe = bool(legacy_efe)
         self.rng = np.random.default_rng(seed + 991)
+        self.beta_self = float(beta_self)
 
         # ToM 구성요소
         self.inversion = OpponentInversion(n_particles=n_particles, seed=seed,
                                            likelihood_basis=likelihood_basis)
+        # [v0.9.0 §6.1] 자기-사영 필터 θ̂_self — 내 행동 이력에 동일한 fg 역추론기를
+        # 나 자신에게 적용("상대가 나를 이렇게 추론할 것이다"). IG_other·depth-2 를
+        # 원리화한다. 별도 seed 로 독립.
+        self.self_inversion = OpponentInversion(
+            n_particles=max(n_particles // 2, 200), seed=seed + 7,
+            likelihood_basis=likelihood_basis)
         self.tom = TheoryOfMind(beta_other=beta_other)
         self.gated = GatedToM(self.tom, self.inversion)
         self.social_efe = RecursiveSocialEFE(
             self.gated, self.inversion, empathy_factor=self.lam_base,
             beta_self=beta_self, w_epi_self=w_epi_self,
-            w_epi_other=w_epi_other, recursive_depth=recursive_depth)
+            w_epi_other=w_epi_other, recursive_depth=recursive_depth,
+            self_inversion=self.self_inversion, legacy_efe=self.legacy_efe)
 
         # 선택적 pymdp 백엔드
         self._pymdp = None
@@ -92,6 +103,10 @@ class ToMEmpathicAgent:
         # 사용된다(§1 §7). opp_actions[k] = 라운드 k 에서 관측된 상대 행동.
         self.opp_actions: List[int] = []
         self.pred_coop_prev = 0.5
+        # [v0.9.0 §3.1] 단일 r_pred 계약 — 직전 행동선택 시의 pragmatic 기대보수.
+        # 다음 라운드 관측 보수와의 차가 RPE 가 된다. R(상호협력)로 초기화.
+        from AIF_IPD.core.constants import R as _R0
+        self._last_r_pred = float(_R0)
         self._prev_means = self.inversion.posterior_means()
 
         self.log: Dict[str, list] = {
@@ -111,6 +126,13 @@ class ToMEmpathicAgent:
             "control": [], "w_other": [], "sPE": [], "oPE": [],
             # [v0.7.0 §1.4] 유발분(provoked) — 반사실 귀인 진단용.
             "provoked": [],
+            # [v0.9.0 §2~3] 2계층 allostasis 진단.
+            #   lam_base   : SelfModel setpoint (§2.2)
+            #   delta_lam  : CoreAffect Δλ_drive (§3.5)
+            #   rpe        : 기대보상 부적 예측오차 (§3.1)
+            #   deficit    : 기대보상 분포 하락폭 [0,1] (§3.2)
+            #   q_disp/q_ctx : 원인 귀인 posterior (§3.3, disp_credence/ctx_credence 재활용)
+            "lam_base": [], "delta_lam": [], "rpe": [], "deficit": [],
         }
 
     # ------------------------------------------------------------ 조절 훅
@@ -200,20 +222,33 @@ class ToMEmpathicAgent:
         lam = self._current_lambda()
         if self.planning_horizon > 1:
             action = self._plan_action(ctx, lam)
-            res_info = {}
-            q_coop = self.inversion.predict_coop(
-                +1.0 if self.my_last == COOP else -1.0,
-                g=(self._feature_g_val(ctx)))
+            # depth-2 예측 협력확률과 선택행동의 pragmatic 기대보수(r_pred)를
+            # social_efe 로 일관 계산(§3.1 단일 r_pred 계약).
+            res = self.social_efe.compute(ctx, self.my_last, lam=lam)
+            res_info = res.info
+            q_coop = res.info["pc"]
+            r_pred = float(res.info["pragmatic_self"][action])
         else:
             action, res = self.social_efe.select_action(
                 ctx, self.my_last, lam=lam, rng=self.rng)
             res_info = res.info
             q_coop = res.info["pc"]
+            r_pred = float(res.info.get("r_pred", res.info["pragmatic_self"][action]))
+
+        # [v0.9.0 §6.1] 자기-사영 필터 갱신 — 내 선택행동을 관측으로, 내가 반응한
+        # 상대 직전행동을 호혜신호 f 로, 내 직전행동을 g 로. (상대가 나를 추론하는
+        # 필터의 시제와 정합.)
+        self_ctx = ObservationContext(
+            my_last_action=(self.opp_actions[-1] if self.opp_actions else None),
+            their_last_action=self.my_last,
+            round_number=len(self.my_actions))
+        self.self_inversion.update(action, self_ctx)
 
         # (5) 상태 갱신 + 로깅
         self.my_last = action
         self.my_actions.append(action)
         self.pred_coop_prev = q_coop
+        self._last_r_pred = r_pred
         self.social_efe.my_coop_rate = float(np.mean(self.my_actions))
         self.tom.update_my_policy_belief(self.social_efe.my_coop_rate)
         self.inversion.my_cooperation_rate = self.social_efe.my_coop_rate
@@ -246,6 +281,11 @@ class ToMEmpathicAgent:
         self.log["sPE"].append(reg_info.get("sPE", 0.0))
         self.log["oPE"].append(reg_info.get("oPE", 0.0))
         self.log["provoked"].append(reg_info.get("provoked", 0.0))
+        # [v0.9.0] 2계층 allostasis 진단
+        self.log["lam_base"].append(reg_info.get("lam_base", self.lam_base))
+        self.log["delta_lam"].append(reg_info.get("delta_lam", 0.0))
+        self.log["rpe"].append(reg_info.get("rpe", 0.0))
+        self.log["deficit"].append(reg_info.get("deficit", 0.0))
         return action
 
     def _plan_action(self, ctx: ObservationContext, lam: float) -> int:
@@ -257,7 +297,8 @@ class ToMEmpathicAgent:
                                inversion=self.inversion)
         planner = SophisticatedPlanner(
             sim, empathy_factor=lam, horizon=self.planning_horizon,
-            beta_self=self.social_efe.beta_self)
+            beta_self=self.social_efe.beta_self,
+            social_efe=self.social_efe, base_ctx=ctx)   # [v0.9.0 §5.3] IG-in-rollout
         q_action, _, _ = planner.plan(lam=lam)
         return COOP if self.rng.random() < q_action[COOP] else DEFECT
 
@@ -292,55 +333,183 @@ class AdaptiveAgent(ToMEmpathicAgent):
                  disposition_mode: str = "legacy",
                  cf_g_handling: str = "marginalize",
                  cf_attr_gate_dedup: bool = True,
+                 allostasis_legacy: bool = False,
+                 selfmodel_kwargs: Optional[dict] = None,
+                 identity_memory: bool = True,
+                 core_affect_kwargs: Optional[dict] = None,
                  name: str = "Adaptive", **kwargs):
         super().__init__(lam_base=lam_base, name=name, **kwargs)
         self.regulate_lambda = regulate_lambda
         self.disposition_mode = disposition_mode
+        # [v0.9.0 §9.1] 조절 계층 선택. 기본 v0.9.0(SelfModel+CoreAffect); legacy 는
+        # A/B 용 토글로만 보존.
+        self.allostasis_legacy = bool(allostasis_legacy)
 
-        # core allostatic belief state (개인별 상이)
-        self.core = CoreAllostaticBeliefState(
-            kappa=kappa, attribution_target=attribution_target,
-            prior_reliability=prior_reliability)
-        # 초기 신뢰도 가중치를 입자필터에 반영(사전 재표집: 귀인 성향이 사전을 조형)
-        self.inversion.set_reliability(self.core.reliability_weights(), reinit=True)
-
-        # 자기/타인 통제권 귀인 (Spiering 2025; 선택적 — 기본 off 로 H1–H12 보존)
+        # 자기/타인 통제권 귀인 (Spiering 2025; 선택적 — 기본 off).
         self.controllability = (
             ControllabilityAttribution(**(controllability_kwargs or {}))
             if controllability else None)
 
-        # λ 조절기 (vmPFC/rmPFC/dmPFC 통합)
-        reg_kw = dict(lam_base=lam_base, lam_max=lam_max,
-                      sophisticated=sophisticated, kappa=kappa,
-                      forgiveness=forgiveness,
-                      dd_charges=dd_charges_grievance,
-                      disposition_mode=disposition_mode,
-                      cf_g_handling=cf_g_handling,
-                      cf_attr_gate_dedup=cf_attr_gate_dedup)
-        if grievance_decay is not None:      # H7H 히스테리시스 조작용
-            reg_kw["decay"] = float(grievance_decay)
-        self.regulator = LambdaRegulator(**reg_kw)
-        if beta_clamp:                       # H2 절제 대조: β 축 동결
+        if beta_clamp:                       # H2 절제 대조: β 축 동결(필터 수준)
             self.inversion.clamp_beta()
-        self.lam = lam_base
+            self.self_inversion.clamp_beta()
+
+        if self.allostasis_legacy:
+            # ---- 구 조절 계층 (leaky 이중 적분기) ----
+            self.core = CoreAllostaticBeliefState(
+                kappa=kappa, attribution_target=attribution_target,
+                prior_reliability=prior_reliability)
+            self.inversion.set_reliability(self.core.reliability_weights(),
+                                           reinit=True)
+            reg_kw = dict(lam_base=lam_base, lam_max=lam_max,
+                          sophisticated=sophisticated, kappa=kappa,
+                          forgiveness=forgiveness,
+                          dd_charges=dd_charges_grievance,
+                          disposition_mode=disposition_mode,
+                          cf_g_handling=cf_g_handling,
+                          cf_attr_gate_dedup=cf_attr_gate_dedup)
+            if grievance_decay is not None:
+                reg_kw["decay"] = float(grievance_decay)
+            self.regulator = LambdaRegulator(**reg_kw)
+            self.self_model = None
+            self.core_affect = None
+        else:
+            # ---- v0.9.0 2계층 allostasis ----
+            from AIF_IPD.core.allostasis_v9 import SelfModel, CoreAffect
+            from AIF_IPD.core.constants import R as _R, T as _T, S as _S, P as _P
+            self.self_model = SelfModel(**(selfmodel_kwargs or {}))
+            self.core_affect = CoreAffect(
+                self.self_model, payoffs=(_R, _T, _S, _P),
+                lambda_max=lam_max, regulate=regulate_lambda,
+                **(core_affect_kwargs or {}))
+            # setpoint 에서 출발 (lam_base 는 이제 학습됨, §9.3).
+            self.lam_base = self.self_model.lambda_base()   # 초기: 상대 미상 → self
+            self.core = None
+            self.regulator = None
+
+        self.lam = self.lam_base
+        # [§3.6 재정의] identity 관측 채널: 환경(run_dyad)이 begin_partner 로
+        # 상대 identity 를 알려준다. 미통지 시 기본 1 (다이애드 단일 상대).
+        self.identity_memory = bool(identity_memory)
+        self._partner_identity: int = 1
+
+    def begin_partner(self, ident: int) -> None:
+        """
+        [§3.6 재정의] 상대 identity 관측 통지(환경 호출). 저장된 boundary-내
+        identity 와의 **재조우**면 belief q(z) 를 저장된 잠재 z 로 즉시 초기화
+        (조기 보정 실효화). 신규 identity 는 boundary 밖에서 관계 형성 시작.
+        """
+        self._partner_identity = int(ident)
+        if self.identity_memory and self.core_affect is not None:
+            self.self_model.observe_identity(int(ident))
+            self.core_affect.reset_for_partner(int(ident))
 
     def _current_lambda(self) -> float:
         return self.lam
 
+    # ------------------------------------------------------------ 조절
     def _regulate(self, observed_state: int, opp_action: int,
                   inferred: dict) -> dict:
-        betrayal = (observed_state == CD)          # 내 협력에 대한 배신(sucker)
-        opp_cooperated = observed_state in (CC, DC)
-        opp_defected = (observed_state == DD)      # 상호배신 — 약한 증거
+        if self.allostasis_legacy:
+            return self._regulate_legacy(observed_state, opp_action, inferred)
+        return self._regulate_v9(observed_state, opp_action, inferred)
 
-        # 상대 행동 예측 서프라이즈(현저성)
+    # ---- [v0.9.0] 2계층 조절 ----
+    def _regulate_v9(self, observed_state: int, opp_action: int,
+                     inferred: dict) -> dict:
+        from AIF_IPD.core.constants import (
+            PAYOFF_SELF, R as _R, T as _T, S as _S, P as _P)
+        # 가변 페이오프 환경 정합: 생성모형 모수를 현재 보수로 갱신(§11.1, VP).
+        self.core_affect.set_payoffs((_R, _T, _S, _P))
+
+        # RPE = 실현보수 − 직전 선택의 pragmatic 기대보수(§3.1 단일 r_pred 계약).
+        r_obs = float(PAYOFF_SELF[observed_state])
+        beta_sd = float(self.inversion.posterior_stds().get("beta", 0.0))
+        # boundary 조기보정용 dispositional 배신확률 근사(legacy §3.6 경로용).
+        disp_hint = float(1.0 - np.clip(inferred.get("lambda_j", 0.5), 0, 1))
+
+        # [v0.11.0 §θ-잔차] 직전 행동(my_last)이 만든 관측보수를 θ 로 설명한 잔차.
+        #   ctx 는 필터갱신과 동일 시제(f=my_{t-2}, g=opp_{t-2}) — 상대는 1라운드
+        #   지연으로 내 직전행동에 반응하므로.
+        theta_rmean = theta_epi = None
+        theta_coop_now = None
+        try:
+            from AIF_IPD.ipd.tom.inversion import ObservationContext as _OC
+            f_prev = (self.my_actions[-2] if len(self.my_actions) >= 2
+                      else self.my_last)
+            g_prev = (self.opp_actions[-1] if self.opp_actions else None)
+            ctx_prev = _OC(my_last_action=f_prev, their_last_action=g_prev,
+                           round_number=len(self.my_actions))
+            E_th, epi, _ale = self.inversion.theta_reward_moments(
+                self.my_last, ctx_prev, PAYOFF_SELF)
+            theta_rmean, theta_epi = E_th, epi
+            # θ-예측 상대 협력확률 — identity θ 기록·λ_base 갱신용.
+            g_now = (self.opp_actions[-1] if self.opp_actions else None)
+            theta_coop_now = float(self.inversion.predict_coop(
+                self.my_last, g_now if self.inversion._fg else None))
+        except Exception:
+            theta_rmean = theta_epi = None
+            theta_coop_now = None
+
+        # [§3.6 재정의] identity 경로: 관측된 상대 identity 로 prior·관계형성.
+        pid = (self._partner_identity if getattr(self, "identity_memory", True)
+               else None)
+        out = self.core_affect.step(
+            r_pred=self._last_r_pred, r_obs=r_obs, inferred=inferred,
+            beta_sd=beta_sd, identity_disp=disp_hint,
+            partner_identity=pid,
+            opp_defected=(opp_action == DEFECT),
+            theta_reward_mean=theta_rmean,
+            theta_epistemic_std=theta_epi,
+            theta_coop=theta_coop_now,
+            theta_lambda_j=float(np.clip(inferred.get("lambda_j", 0.5), 0.0, 1.0)))
+        self.lam = out["lam"]
+        # social_efe 의 empathy_factor 도 동기(로깅/재귀예측 일관).
+        self.social_efe.lam = self.lam
+
+        # 통제권 귀인(선택) — 로깅 호환용.
+        ctrl_info = {"control": 1.0, "w_other": 1.0, "sPE": 0.0, "oPE": 0.0}
+        if self.controllability is not None:
+            surprise = -np.log(max(
+                self.pred_coop_prev if opp_action == COOP
+                else (1 - self.pred_coop_prev), 1e-6))
+            emitted = my_action_from_state(observed_state)
+            ci = self.controllability.update(
+                intended_action=self.my_last, emitted_action=emitted,
+                observed_state=observed_state, total_pe=surprise)
+            ctrl_info.update({k: ci[k] for k in ("control", "w_other", "sPE", "oPE")})
+
+        q_disp = out["q_dispositional"]
+        q_ctx = out["q_contextual"]
+        deficit = out["deficit"]
+        # 구 지표(grievance/trust)로의 사상 — 하위호환 로깅/지표.
+        #   grievance ← dispositional 자기보호 압력 (q_disp·deficit)
+        #   trust     ← contextual 유지/회복 (q_ctx·(1−deficit))
+        return {
+            "grievance": float(np.clip(q_disp * deficit, 0.0, 1.0)),
+            "trust": float(np.clip(q_ctx * (1.0 - deficit), 0.0, 1.0)),
+            "provoked": 0.0,                       # §9.6 재해석: 독립 코드 폐기
+            "disp_credence": q_disp,
+            "ctx_credence": q_ctx,
+            "lam_base": out["lam_base"],
+            "delta_lam": out["delta_lambda"],
+            "rpe": out["rpe"],
+            "deficit": deficit,
+            "control": ctrl_info["control"],
+            "w_other": ctrl_info["w_other"],
+            "sPE": ctrl_info["sPE"],
+            "oPE": ctrl_info["oPE"],
+        }
+
+    # ---- [legacy] 구 조절 계층 (A/B 토글 보존) ----
+    def _regulate_legacy(self, observed_state: int, opp_action: int,
+                         inferred: dict) -> dict:
+        betrayal = (observed_state == CD)
+        opp_cooperated = observed_state in (CC, DC)
+        opp_defected = (observed_state == DD)
         surprise = -np.log(max(
             self.pred_coop_prev if opp_action == COOP else (1 - self.pred_coop_prev),
             1e-6))
-
-        # (a0) 자기/타인 통제권 귀인 (Spiering 2025): 결과가 자기-기인인지 타인-기인인지
-        #      분할해 타인-귀인 가중치 w_other 를 산출. intended=직전 선택 행동,
-        #      emitted=관측 상태에 인코딩된 실제 방출 행동(환경오류 반영).
         attr_gate = 1.0
         ctrl_info = {"control": 1.0, "w_other": 1.0, "sPE": 0.0, "oPE": 0.0,
                      "self_caused": 0.0}
@@ -350,16 +519,9 @@ class AdaptiveAgent(ToMEmpathicAgent):
                 intended_action=self.my_last, emitted_action=emitted,
                 observed_state=observed_state, total_pe=surprise)
             attr_gate = ctrl_info["w_other"]
-
-        # (a) core allostatic belief 갱신 (원인 귀인 분포)
         self.core.update(betrayal, opp_cooperated, inferred, surprise,
                          opp_defected=opp_defected, attr_gate=attr_gate)
-        # (b) 갱신된 신뢰도 가중치를 입자필터 jitter 에 반영(온라인; 재표집 없음)
         self.inversion.set_reliability(self.core.reliability_weights())
-
-        # (c) λ 위계적 조절 (즉각형은 DD 도 기질 증거로 충전 — H5 조작화)
-        # [v0.7.0 §1] 반사실 귀인은 β̂·α̂·λ̂·ρ̂ 외에 내 협력율 p(공감항 s(λ_j,p) 계산)
-        # 와 상대 자기행동 분포 g(§7.5 주변화)를 필요로 한다.
         out = self.regulator.step(
             betrayal, opp_cooperated, inferred, self.pred_coop_prev,
             self.core, regulate=self.regulate_lambda, opp_defected=opp_defected,
@@ -367,13 +529,17 @@ class AdaptiveAgent(ToMEmpathicAgent):
             my_coop_rate=self.inversion.my_cooperation_rate,
             g_prob_coop=self._opp_coop_rate())
         self.lam = out["lam"]
-
+        self.social_efe.lam = self.lam
         return {
             "grievance": out["grievance"],
             "trust": out["trust"],
             "provoked": out.get("provoked", 0.0),
             "disp_credence": self.core.dispositional_credence(),
             "ctx_credence": self.core.contextual_credence(),
+            "lam_base": self.lam_base,
+            "delta_lam": out["lam"] - self.lam_base,
+            "rpe": 0.0,
+            "deficit": out["grievance"],
             "control": ctrl_info["control"],
             "w_other": ctrl_info["w_other"],
             "sPE": ctrl_info["sPE"],

@@ -30,7 +30,7 @@ Albarracin et al. (2026) 의 particle-based inversion 및 참조 저장소
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Tuple
 
 import numpy as np
 
@@ -289,6 +289,37 @@ class OpponentInversion:
         pc = self.predict_coop(f, g)
         return np.array([pc, 1.0 - pc])
 
+    def theta_reward_moments(self, my_action: int, ctx: Optional[ObservationContext],
+                             payoff_self) -> Tuple[float, float, float]:
+        """
+        [v0.11.0 §θ-잔차] 내 행동 a_i 에 대한 **θ-조건부 예상보수**의 입자 분해.
+
+        각 입자 θ_k 로 상대 협력확률 pc_k = P(coop|θ_k, ctx) 을 얻고, 내 행동에서의
+        예상보수 r̂_k = pc_k·U(a_i,C) + (1−pc_k)·U(a_i,D) 를 계산한다. 반환:
+          · E_θ[r]        = Σ w_k r̂_k               (θ 가 설명하는 기대보수)
+          · epistemic_std = √Σ w_k (r̂_k − E_θ[r])²   (입자간 분산 = θ 불확실성)
+          · aleatoric_std = √Σ w_k Var_k[r]          (입자내 보수분산 — 참고용, 미사용)
+        RPE 잔차화에서 관측보수 r_obs 대비 잔여 mean=r_obs−E_θ[r]→valence,
+        epistemic_std→uncertainty 로 귀인된다(입자간 분산만 반영, 사양).
+        payoff_self : PAYOFF_SELF 배열 (상태 CC/CD/DC/DD → 내 보수).
+        """
+        f = self._feature(ctx)
+        g = self._feature_g(ctx) if self._fg else 0.0
+        pc = self._pC(f, g)                       # (N,) 입자별 상대 협력확률
+        # 상태 인덱스: 내 행동(0=C,1=D) × 상대(0=C,1=D) → CC/CD/DC/DD = 0/1/2/3
+        if int(my_action) == 0:                    # 내가 협력
+            u_if_coop, u_if_def = payoff_self[0], payoff_self[1]   # CC, CD
+        else:                                      # 내가 배신
+            u_if_coop, u_if_def = payoff_self[2], payoff_self[3]   # DC, DD
+        r_hat = pc * float(u_if_coop) + (1.0 - pc) * float(u_if_def)   # (N,)
+        w = self.weights
+        E_theta = float(np.sum(w * r_hat))
+        epi_var = float(np.sum(w * (r_hat - E_theta) ** 2))
+        # 입자내 aleatoric: 각 입자의 베르누이 보수분산
+        ale_var = float(np.sum(w * pc * (1.0 - pc)
+                               * (float(u_if_coop) - float(u_if_def)) ** 2))
+        return E_theta, float(np.sqrt(max(epi_var, 0.0))), float(np.sqrt(max(ale_var, 0.0)))
+
     def posterior_means(self) -> Dict[str, float]:
         out = {
             "alpha": float(np.sum(self.weights * self.alpha)),
@@ -344,6 +375,124 @@ class OpponentInversion:
             ess=float(1.0 / np.sum(self.weights ** 2)),
             means=self.posterior_means(),
         )
+
+    # ------------------------------------------------ [v0.9.0 §5] histogram IG
+    # 축별 히스토그램 구간(§5.2 확정 규약).
+    #   · 무계 축: 입자 posterior 의 적응적 범위 [q05 − pad, q95 + pad], nb 빈.
+    #   · λ_j 는 자연구간 [0,1] 유지.
+    #   · pad = pad_frac · SD.  IG 는 이산 상호정보라 비음 자동 보장.
+    _HIST_NB = 11          # 빈 수 nb (§10)
+    _HIST_PAD_FRAC = 0.5   # pad = 0.5·SD (§10)
+    _NAT_RANGE = {"lambda_j": (0.0, 1.0)}   # 자연구간 축
+
+    def _axis_arr(self, axis: str) -> np.ndarray:
+        return getattr(self, axis)
+
+    def _weighted_hist_entropy(self, arr: np.ndarray, weights: np.ndarray,
+                               axis: str) -> Tuple[float, tuple]:
+        """가중 빈질량의 Shannon 엔트로피 −Σ b·log b 와 사용한 구간(edges) 반환."""
+        m = float(np.sum(weights * arr))
+        v = float(np.sum(weights * (arr - m) ** 2))
+        sd = float(np.sqrt(max(v, 1e-12)))
+        if axis in self._NAT_RANGE:
+            lo, hi = self._NAT_RANGE[axis]
+        else:
+            q05, q95 = self._weighted_quantiles(arr, weights, (0.05, 0.95))
+            pad = self._HIST_PAD_FRAC * sd
+            lo, hi = q05 - pad, q95 + pad
+        if hi - lo < 1e-9:
+            hi = lo + 1e-6
+        edges = np.linspace(lo, hi, self._HIST_NB + 1)
+        idx = np.clip(np.digitize(arr, edges) - 1, 0, self._HIST_NB - 1)
+        b = np.zeros(self._HIST_NB)
+        np.add.at(b, idx, weights)
+        s = b.sum()
+        if s <= _EPS:
+            return 0.0, (lo, hi)
+        b = b / s
+        nz = b[b > _EPS]
+        return float(-np.sum(nz * np.log(nz))), (lo, hi)
+
+    @staticmethod
+    def _weighted_quantiles(arr: np.ndarray, weights: np.ndarray,
+                            qs) -> np.ndarray:
+        order = np.argsort(arr)
+        a = arr[order]
+        w = weights[order]
+        cw = np.cumsum(w)
+        cw = cw / max(cw[-1], _EPS)
+        return np.interp(qs, cw, a)
+
+    def _allaxis_entropy(self, weights: np.ndarray) -> float:
+        """전 6축(무계는 적응구간, λ_j 자연구간) 주변 히스토그램 엔트로피 합(§5.1)."""
+        total = 0.0
+        for axis in self.axes:
+            h, _ = self._weighted_hist_entropy(self._axis_arr(axis), weights, axis)
+            total += h
+        return total
+
+    def _current_allaxis_entropy(self) -> float:
+        """H0 = _allaxis_entropy(self.weights) 의 메모이제이션.
+
+        플래너가 한 라운드 내 여러 행동가지·정책에 대해 IG 를 반복 평가할 때
+        H0 는 (신념 불변) 매번 동일하지만 축별 argsort+히스토그램을 재계산하게
+        된다. weights 배열 **객체 자체를 캐시에 참조로 보유**해 id 재활용을 막고,
+        동일 객체일 때 재사용한다 — 수치 완전 동일, 순수 속도 개선.
+        """
+        cache = getattr(self, "_h0_cache", None)
+        if cache is not None and cache[0] is self.weights:
+            return cache[1]
+        h0 = self._allaxis_entropy(self.weights)
+        self._h0_cache = (self.weights, h0)   # 참조 보유 → id 재활용 방지
+        return h0
+
+    def expected_infogain_allaxis(self, my_action: int, f_next: float,
+                                  g_next: float = 0.0) -> float:
+        """
+        [v0.9.0 §5] 전축 histogram 기대 정보이득.
+
+        내가 my_action 을 둘 때(→ 다음 호혜신호 f_next) 상대 다음 행동 관측이
+        상대 θ̂ posterior 를 얼마나 좁히는가의 기대 엔트로피 감소를, **전 6축**
+        (α,ρ,ω,η,β,λ_j) 주변 히스토그램으로 계산한다(§5.1~5.2). f 기저에서는
+        ω·η 가 상수축이라 자동 0 기여(하위호환).
+        """
+        pC = self._pC(f_next, g_next)
+        p_obsC = float(np.sum(self.weights * pC))
+        H0 = self._current_allaxis_entropy()
+
+        def post_entropy(obs_lik):
+            w2 = self.weights * obs_lik
+            ssum = w2.sum()
+            if ssum <= _EPS:
+                return H0
+            return self._allaxis_entropy(w2 / ssum)
+
+        H_ifC = post_entropy(pC)
+        H_ifD = post_entropy(1.0 - pC)
+        H_exp = p_obsC * H_ifC + (1.0 - p_obsC) * H_ifD
+        # 이산 상호정보라 비음 자동 보장(§5.2) — 수치 잔차만 클램프.
+        return max(0.0, H0 - H_exp)
+
+    def observed_infogain_allaxis(self, obs_action: int, f: float,
+                                  g: float = 0.0) -> float:
+        """
+        [v0.9.0 §6.1] **실현** 정보이득 — 특정 관측 행동 obs_action 이 이 필터의
+        전축 θ̂ posterior 를 얼마나 좁히는가.
+
+        IG_other 에 쓰인다: self-projection 필터(상대가 나를 추론)에서, 내가
+        obs_action 을 두면(내 행동은 결정론적으로 알려짐) 상대의 θ̂_self 가 얼마나
+        좁아지는가. 기대(expected)가 아니라 실현 관측 기반이라는 점이 IG_self 와
+        다르다("나는 내가 무엇을 둘지 안다").
+        """
+        pC = self._pC(f, g)
+        obs_lik = pC if obs_action == COOP else (1.0 - pC)
+        H0 = self._current_allaxis_entropy()
+        w2 = self.weights * obs_lik
+        ssum = w2.sum()
+        if ssum <= _EPS:
+            return 0.0
+        H1 = self._allaxis_entropy(w2 / ssum)
+        return max(0.0, H0 - H1)
 
     # ------------------------------------------------------------ epistemic
     def expected_infogain(self, my_action: int, f_next: float,
