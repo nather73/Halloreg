@@ -45,8 +45,12 @@ import numpy as np
 # 구현 결정 잠금표 (명세서 §10). 값은 초기 제안이며 명명 상수로 노출한다.
 D_BOUNDARY_DEFAULT = 1.0          # Self boundary 거리 임계
 TAU_DIST_DEFAULT = 0.5            # 거리 커널 폭
-LAMBDA_FLOOR_DEFAULT = 0.1        # λ_base 하한
-LAMBDA_CEIL_DEFAULT = 0.7         # λ_base 상한
+# [v0.11.2] 좌표계 통일 — λ_baseSelf·λ_ctx·λ 모두 동일 [floor, ceil]=[0.0, 0.8]
+#   구 버전은 λ_baseSelf 가 affine[0.1,0.7], target 캘리브레이션은 항등[0,1],
+#   λ_ctx 는 또 [0.1,0.7] 로 좌표계가 이질적이었다(설계 부채). 전 성분을 단일
+#   [0.0, 0.8] 로 통일하여 self/ctx/affect 가 같은 척도에서 합성·중재된다.
+LAMBDA_FLOOR_DEFAULT = 0.0        # λ 하한(통일)
+LAMBDA_CEIL_DEFAULT = 0.8         # λ 상한(통일, λ_max 와 동일)
 LAMBDA_MAX_DEFAULT = 0.8          # λ 상한
 W_ADMIT_DEFAULT = 40.0            # 먼 Other 편입 누적 상호작용 임계(라운드)
 ETA_SLOW_DEFAULT = 0.02           # 느린 갱신 학습률
@@ -151,6 +155,10 @@ class SelfEntry:
     learned_reward: Optional[tuple] = None  # [v0.9.3] 그 상대에 대해 학습한 (E,σ)
     theta_coop: Optional[float] = None      # [v0.11.1] θ-예측 협력확률 ĉ_θ (즉시 반영)
     theta_lambda_j: Optional[float] = None  # [v0.11.1] 상대가 나를 향한 공감 λ̂_j
+    # [v0.11.2] 그 상대에 대한 **model-free** 표상: Z_i(s,a) 8분포 스냅샷 (4,2,M).
+    #   SelfModel 은 이제 (id, dist, p^nc, Z_i(s,a))를 함께 기록한다 —
+    #   model-based(OpponentInversion→p^nc)와 model-free(CoreAffect→Z)의 통합 명부.
+    z_sa: Optional[np.ndarray] = None
 
 
 # [§3.6 재정의] identity 관계형성 상수.
@@ -167,7 +175,11 @@ ETA_IDENTITY_DEFAULT = 0.05       # per-identity 보조 EMA(맥락지분 등) �
 #   w_cd  : focal agent 고유 context-dependency(맥락 민감성 개인특질).
 #   m_recip: λ_baseContext 상호성 혼합 — ĉ_θ 와 λ̂_j(상대의 나를 향한 공감) 가중.
 W_CD_DEFAULT = 0.5                # 맥락 의존성(0=순수 self trait, 1=순수 상대맞춤)
-M_RECIPROCAL_DEFAULT = 0.35       # 상호성 혼합비(λ̂_j 반영 정도)
+# [v0.11.2] m_reciprocal 폐기 — λ_ctx 는 오직 ĉ_θ 로 결정된다. 근거: ĉ_θ 의 정책
+#   로짓에 이미 empathy shift(λ 관련 항)가 포함되어 있어 m·λ̂_j 를 다시 더하면
+#   λ 정보가 이중 계상된다.
+M_RECIPROCAL_DEFAULT = 0.0        # [DEPRECATED v0.11.2] 미사용(하위호환 인자만 유지)
+W_Z_DEFAULT = 1.0                 # [v0.11.2] U 의 aleatoric 결합비(전분산 법칙 자연값)
 
 
 class SelfModel:
@@ -243,8 +255,15 @@ class SelfModel:
         거리가 W_oth(=흔들림 진폭)를 정한다. 해가 [0,1] 밖이면 그 Other 구조로는
         target 도달 불가 → ValueError(조용한 근사 금지; Other 거리 조정 안내).
         """
-        # 항등 사상 강제 — 경계 상수 제거.
-        self.lambda_floor, self.lambda_ceil = 0.0, 1.0
+        # [v0.11.2] 좌표계 통일 — 항등 강제(구 동작)를 폐기하고 통일 [floor,ceil]
+        #   위에서 폐형해를 푼다. 목표 협력비율 frac* = (target−floor)/(ceil−floor).
+        span_lc = max(self.lambda_ceil - self.lambda_floor, 1e-9)
+        target_frac = (float(target) - self.lambda_floor) / span_lc
+        if not (-1e-9 <= target_frac <= 1.0 + 1e-9):
+            raise ValueError(
+                f"target λ_base={target} 는 통일 좌표계 "
+                f"[{self.lambda_floor}, {self.lambda_ceil}] 밖이다.")
+        target = float(np.clip(target_frac, 0.0, 1.0))   # 이하 frac 좌표로 해를 푼다
 
         # Other 구조 결정: 명시 entries(비-Self) > anchor_others 인자 > 중간앵커 기본.
         if explicit_entries is not None:
@@ -300,13 +319,14 @@ class SelfModel:
 
     def lambda_base_context(self, ident: Optional[int] = None) -> Optional[float]:
         """
-        [v0.11.1] λ_baseContext(θ_j) — 현재 상대 identity 의 θ 에 맞춤형 setpoint.
+        [v0.11.2] λ_ctx(θ_j) — 현재 상대 identity 의 θ 에 맞춤형 setpoint.
 
-        **상호적(reciprocal) 사상**: 상대의 예측 협력확률 ĉ_θ 와, 상대가 나를 향해
-        갖는 공감 λ̂_j 를 함께 반영한다("나에게 공감하는 이에게 공감한다"):
+            λ_ctx = λ_floor + (λ_ceil − λ_floor)·ĉ_θ
 
-            base_j = (1 − m_recip)·ĉ_θ + m_recip·λ̂_j
-            λ_ctx  = λ_floor + (λ_ceil − λ_floor)·base_j
+        **ĉ_θ 단독 결정**(v0.11.2 개정). 구 상호적 사상 `(1−m)ĉ_θ + m·λ̂_j` 는
+        폐기됐다 — ĉ_θ 의 정책 로짓 σ(β(α + ρf + ωg + η·fg + **s_empathy**)) 에
+        이미 empathy shift(λ 관련 항)가 들어 있어 λ̂_j 를 다시 더하면 λ 정보가
+        **이중 계상**되기 때문이다. θ̂_lambda_j 는 진단용으로만 기록된다.
 
         거리와 **무관**하게 θ 를 직접 반영하므로, 예측된 착취자에 대해 setpoint 가
         즉시 낮아진다(anticipatory 방어 — affect 가 θ 로 설명돼 침묵해도 작동).
@@ -318,23 +338,20 @@ class SelfModel:
         if e is None or e.theta_coop is None:
             return None
         c_hat = float(np.clip(e.theta_coop, 0.0, 1.0))
-        lam_j = e.theta_lambda_j
-        if lam_j is None:
-            base_j = c_hat
-        else:
-            m = float(self.m_reciprocal)
-            base_j = (1.0 - m) * c_hat + m * float(np.clip(lam_j, 0.0, 1.0))
         return float(self.lambda_floor
-                     + (self.lambda_ceil - self.lambda_floor) * base_j)
+                     + (self.lambda_ceil - self.lambda_floor) * c_hat)
 
     def lambda_base(self, ident: Optional[int] = None) -> float:
         """
-        [v0.11.1] self/context 중재 setpoint (§2.2 개정).
+        setpoint 중재(affect 제외) — 분포 초기화·진단·하위호환용.
 
-            λ_base = (1 − w_cd)·λ_baseSelf + w_cd·λ_baseContext(θ_j)
+            λ_base = (1 − w_cd)·λ_baseSelf + w_cd·λ_ctx(θ_j)
 
-        w_cd = focal agent 고유의 **context-dependency**(맥락 민감성 개인특질).
-        상대 θ 정보가 없으면 λ_baseSelf 로 자연 축약된다.
+        [v0.11.2 주의] **최종 λ 합성은 여기가 아니라 `CoreAffect.step` 에서** 이뤄진다:
+            λ_self = λ_baseSelf + λ_affect  →  λ = (1−w_cd)·λ_self + w_cd·λ_ctx
+        즉 affect 는 self 축에 귀속되고(정서는 '나의 반응'이지 '상대의 맥락'이
+        아니다), 그 뒤에 맥락 의존성 w_cd 로 중재된다. 본 함수는 affect=0 인
+        경우의 중재값이며, CoreAffect 는 λ_baseSelf/λ_ctx 를 개별 조회해 합성한다.
         """
         lam_self = self.lambda_base_self()
         lam_ctx = self.lambda_base_context(ident)
@@ -565,6 +582,118 @@ class QuantileValue:
     def std(self) -> float:
         return float(np.std(self.z))
 
+    # ------------------------------------------- [v0.11.2] 분포적 TD 오차 δ_i
+    def td_errors(self, r_obs: float) -> np.ndarray:
+        """분포적 TD 오차 δ_i = r_obs − z_i (§3.1 스칼라 계약 폐기의 핵심 양)."""
+        return float(r_obs) - self.z
+
+    def td_weights(self, delta: np.ndarray) -> np.ndarray:
+        """expectile 비대칭 가중 α_i = |η_i − 1{δ_i<0}| (하방 비대칭 자동 반영)."""
+        return np.abs(self.taus - (np.asarray(delta) < 0).astype(float))
+
+    def td_moments(self, r_obs: float) -> Tuple[float, float]:
+        """
+        [v0.11.2] 가중 분포적 RPE 의 (mean, var).
+
+            δ_i = r_obs − z_i,  α_i = |η_i − 1{δ_i<0}|
+            mean = Σ α_i δ_i / Σ α_i
+            var  = Σ α_i (δ_i − mean)² / Σ α_i     ← Var^α_Z[δ] (U 의 aleatoric 성분)
+
+        α 가중이 expectile 의 하방 비대칭을 그대로 물려받으므로, 하방으로 벌어진
+        분포일수록 var 가 커진다(구 downside_semidev 정신의 계승).
+        """
+        d = self.td_errors(r_obs)
+        a = self.td_weights(d)
+        s = float(a.sum())
+        if s <= 1e-12:
+            return 0.0, 0.0
+        m = float((a * d).sum() / s)
+        v = float((a * (d - m) ** 2).sum() / s)
+        return m, v
+
+    # ------------------------------------------------------ 스냅샷/복원(기억)
+    def snapshot(self) -> np.ndarray:
+        return np.array(self.z, dtype=float, copy=True)
+
+    def restore(self, z: np.ndarray) -> None:
+        z = np.asarray(z, dtype=float)
+        if z.shape == self.z.shape:
+            self.z = np.array(z, copy=True)
+
+
+# ============================================ [v0.11.2] Z_i(s,a) 조건부 분포뱅크
+class SAValueBank:
+    """
+    상태·행동 조건부 기대보상 분포 Z_i(s,a) — **8개 분포**(4상태 × 2행동).
+
+    근거(§3.3 개정): `OpponentInversion` 의 입력이 이미 (직전 공동상태 f, 상대
+    이력 g)를 포함하므로, model-free 측 `CoreAffect` 도 동일 좌표계로 (s,a)
+    조건부 분포를 학습해야 두 표상이 정합한다. 무조건부 Z 는 (i) θ-예측이
+    a-조건부인데 비교 기준은 a-무관인 비대칭, (ii) CC/DC 등 이질 보수의 혼재로
+    분산이 인위적으로 부풀려지는 문제가 있었다 — 조건부화로 둘 다 해소된다.
+
+    갱신은 **정준적 on-policy**: 매 라운드 실제 관측된 (s_{t−1}, a_{t−1}) 셀
+    **하나만** 갱신한다(off-policy 일반화 없음).
+    """
+
+    N_STATES = 4      # CC, CD, DC, DD
+    N_ACTIONS = 2     # COOP, DEFECT
+
+    def __init__(self, m: int = M_QUANTILE_DEFAULT,
+                 alpha: float = ALPHA_DIST_DEFAULT,
+                 code: str = CODE_EXPECTILE,
+                 init_center: float = 0.0,
+                 init_spread: float = 0.0):
+        self.M, self.alpha, self.code = int(m), float(alpha), str(code)
+        self._E0 = float(init_center)
+        self.cells = [[QuantileValue(m=m, alpha=alpha, code=code,
+                                     init_center=init_center,
+                                     init_spread=init_spread)
+                       for _ in range(self.N_ACTIONS)]
+                      for _ in range(self.N_STATES)]
+
+    def _key(self, s: Optional[int], a: Optional[int]) -> Tuple[int, int]:
+        si = 0 if s is None else int(np.clip(int(s), 0, self.N_STATES - 1))
+        ai = 0 if a is None else int(np.clip(int(a), 0, self.N_ACTIONS - 1))
+        return si, ai
+
+    def cell(self, s: Optional[int], a: Optional[int]) -> QuantileValue:
+        si, ai = self._key(s, a)
+        return self.cells[si][ai]
+
+    def update(self, s: Optional[int], a: Optional[int], r_obs: float) -> None:
+        """관측된 (s,a) 셀 **하나만** 갱신(on-policy)."""
+        self.cell(s, a).update(r_obs)
+
+    def td_moments(self, s: Optional[int], a: Optional[int],
+                   r_obs: float) -> Tuple[float, float]:
+        return self.cell(s, a).td_moments(r_obs)
+
+    @property
+    def mean(self) -> float:
+        """전 셀 평균(로깅·하위호환용 요약)."""
+        return float(np.mean([c.mean for row in self.cells for c in row]))
+
+    @property
+    def std(self) -> float:
+        return float(np.mean([c.std for row in self.cells for c in row]))
+
+    @property
+    def downside_std(self) -> float:
+        return float(np.mean([c.downside_std for row in self.cells for c in row]))
+
+    def snapshot(self) -> np.ndarray:
+        """(4,2,M) 배열 — SelfEntry 에 identity 별로 저장되는 Z_i(s,a)."""
+        return np.stack([[c.snapshot() for c in row] for row in self.cells])
+
+    def restore(self, arr) -> None:
+        arr = np.asarray(arr, dtype=float)
+        if arr.shape != (self.N_STATES, self.N_ACTIONS, self.M):
+            return
+        for si in range(self.N_STATES):
+            for ai in range(self.N_ACTIONS):
+                self.cells[si][ai].restore(arr[si, ai])
+
 
 # ==================================================================CoreAffect
 class CoreAffect:
@@ -595,7 +724,8 @@ class CoreAffect:
                  k_uncertainty: float = K_UNCERTAINTY_DEFAULT,
                  sigma_ref_frac: float = SIGMA_REF_FRAC_DEFAULT,
                  k_affect: float = K_AFFECT_DEFAULT,
-                 u_gate_ref_frac: float = U_GATE_REF_DEFAULT):
+                 u_gate_ref_frac: float = U_GATE_REF_DEFAULT,
+                 w_z: float = W_Z_DEFAULT):
         self.self_model = self_model
         self.lambda_max = float(lambda_max)
         self.g_disp = float(g_disp)                 # legacy 경로용
@@ -611,6 +741,7 @@ class CoreAffect:
         self.sigma_ref_frac = float(sigma_ref_frac)
         self.k_affect = float(k_affect)
         self.u_gate_ref_frac = float(u_gate_ref_frac)
+        self.w_z = float(w_z)            # [v0.11.2] U 의 aleatoric(Var^α_Z) 결합비
         self.m_quantile = int(m_quantile)
         self.alpha_dist = float(alpha_dist)
         self.set_payoffs(payoffs)
@@ -629,6 +760,12 @@ class CoreAffect:
         self.last_delta = 0.0
         self.last_valence = 0.0
         self.last_uncertainty = 0.0
+        # [v0.11.2] 분포적 RPE·λ 합성 진단
+        self.last_rpe_dist_mean = 0.0
+        self.last_var_z = 0.0
+        self.last_lambda_affect = 0.0
+        self.last_lambda_self = 0.0
+        self.last_lambda_ctx = None
         self.lam = self.self_model.lambda_base()
         self.lam_base = self.lam
 
@@ -641,6 +778,11 @@ class CoreAffect:
             return QuantileValue(m=self.m_quantile, alpha=self.alpha_dist,
                                  code=self.code, init_value=self.R)
         E0, spread = self.self_model.implied_reward_belief(self.R, self.P)
+        if self.affect_mode == "theta_residual":
+            # [v0.11.2] Z_i(s,a) — 4상태×2행동 8분포. 전 셀을 SelfModel 함의
+            #   (E0, spread)로 동일 초기화(관측 전에는 상태·행동 구분 근거 없음).
+            return SAValueBank(m=self.m_quantile, alpha=self.alpha_dist,
+                               code=self.code, init_center=E0, init_spread=spread)
         return QuantileValue(m=self.m_quantile, alpha=self.alpha_dist,
                              code=self.code, init_center=E0, init_spread=spread)
 
@@ -689,12 +831,26 @@ class CoreAffect:
         e = self.self_model.entry_for_identity(int(ident))
         if e is None or e.distance > self.self_model.d_boundary + 1e-9:
             return
+        z_sa = getattr(e, "z_sa", None)
+        if z_sa is not None and hasattr(self.value, "restore"):
+            # [v0.11.2] 재조우: 저장된 Z_i(s,a) 8분포를 그대로 복원(우선 경로).
+            self.value.restore(z_sa)
+            if self.affect_mode == "legacy_attrib":
+                c = float(np.clip(e.contextual_share, 0.05, 0.95))
+                self.q_z = np.array([c, 1.0 - c])
+            return
         er = getattr(e, "learned_reward", None)
         if er is not None:
             E_star, sig_star = float(er[0]), float(er[1])
-            self.value = QuantileValue(
-                m=self.m_quantile, alpha=self.alpha_dist, code=self.code,
-                init_center=E_star, init_spread=sig_star)
+            if isinstance(self.value, SAValueBank):
+                # [v0.11.2] Z(s,a) 스냅샷이 없을 때의 축약 복원 — 전 셀을 (E,σ)로.
+                self.value = SAValueBank(
+                    m=self.m_quantile, alpha=self.alpha_dist, code=self.code,
+                    init_center=E_star, init_spread=sig_star)
+            else:
+                self.value = QuantileValue(
+                    m=self.m_quantile, alpha=self.alpha_dist, code=self.code,
+                    init_center=E_star, init_spread=sig_star)
         # legacy_attrib 경로 호환: q_z 도 저장 c 로(있으면).
         if self.affect_mode == "legacy_attrib":
             c = float(np.clip(e.contextual_share, 0.05, 0.95))
@@ -707,6 +863,9 @@ class CoreAffect:
         e = self.self_model.entry_for_identity(int(ident))
         if e is not None:
             e.learned_reward = (float(self.value.mean), float(self.value.std))
+            # [v0.11.2] model-free 표상 Z_i(s,a) 8분포 전체를 identity 에 기록.
+            if hasattr(self.value, "snapshot"):
+                e.z_sa = self.value.snapshot()
 
     def set_prior_from_selfmodel(self, disp_prob: float) -> None:
         """
@@ -771,7 +930,9 @@ class CoreAffect:
              theta_reward_mean: Optional[float] = None,
              theta_epistemic_std: Optional[float] = None,
              theta_coop: Optional[float] = None,
-             theta_lambda_j: Optional[float] = None) -> dict:
+             theta_lambda_j: Optional[float] = None,
+             state_prev: Optional[int] = None,
+             action_prev: Optional[int] = None) -> dict:
         """
         한 라운드 λ 조절.
 
@@ -794,36 +955,67 @@ class CoreAffect:
         rpe = float(r_obs) - float(r_pred)
         self.last_rpe = rpe
 
-        # ---- (2) 기대보상 분포 갱신(§3.2, expectile code 기본) ----
-        self.value.update(r_obs)
-        deficit = self._deficit()
-        self.last_deficit = deficit
-
-        # ============= [v0.11.0 §θ-잔차] θ-설명 잔차 affect + U 게이팅 =========
+        # ============= [v0.11.2 §θ-잔차] 분포적 RPE → θ-잔차 affect ============
         if self.affect_mode == "theta_residual":
             span = max(self.R - self.P, 1e-6)
-            # (2') RPE 를 θ 로 잔차화: 관측보수에서 θ-조건부 기대보수를 회귀 제거.
-            #   θ 예측이 없으면(초기·미제공) SelfModel setpoint E0 로 fallback.
+
+            # (2) **분포적 TD 오차**(§3.1 스칼라 계약 폐기). 관측된 (s_{t−1}, a_{t−1})
+            #     셀의 Z_i(s,a) 에서 δ_i = r_obs − z_i 와 그 α-가중 모먼트를 얻는다.
+            #     갱신은 정준적 on-policy — 그 셀 하나만.
+            rpe_mean_d, var_z = self.value.td_moments(state_prev, action_prev, r_obs)
+            self.value.update(state_prev, action_prev, r_obs)
+            deficit = self._deficit()
+            self.last_deficit = deficit
+            self.last_rpe_dist_mean = rpe_mean_d
+            self.last_var_z = var_z
+
+            # (3) θ 회귀 제거 — 잔차 mean → valence.
+            #     δ_i 와 θ-예측 δ̂_i 는 −z_i 를 공유해 상쇄되므로 잔차 mean 은
+            #     r_obs − E_θ[r] 로 귀결된다(격자 독립). θ 미제공 시 셀의 E0 fallback.
             E_theta = (float(theta_reward_mean) if theta_reward_mean is not None
-                       else float(getattr(self.value, "_E0", self.R)))
+                       else float(getattr(self.value.cell(state_prev, action_prev),
+                                          "_E0", self.R)))
             epi_std = (float(theta_epistemic_std)
                        if theta_epistemic_std is not None else 0.0)
-            # 잔여 RPE mean → valence, θ 입자간(epistemic) std → uncertainty.
             valence = float((r_obs - E_theta) / span)
+
+            # (4) 잔차 std → uncertainty. **전분산 법칙**으로 두 원천을 재결합:
+            #       U = √(σ²_epi + w_Z·Var^α_Z[δ]) / σ_ref
+            #     σ_epi = θ 입자간 분산(epistemic, '상대를 모름'),
+            #     Var^α_Z[δ] = 그 (s,a) 기대분포의 α-가중 폭(aleatoric, '결과가 흔들림').
+            #     α_i 가 expectile 하방 비대칭을 물려받아 하방 위험이 U 를 더 키운다.
             u_ref = max(self.u_gate_ref_frac * span, 1e-6)
-            U = float(np.clip(epi_std / u_ref, 0.0, 1.0))
+            U = float(np.clip(
+                np.sqrt(max(epi_std ** 2 + self.w_z * max(var_z, 0.0), 0.0)) / u_ref,
+                0.0, 1.0))
             self.last_valence, self.last_uncertainty = valence, U
 
-            # (5') Δλ = k · V · (1 − U): V 부호=방향, U=확신도 게이트.
-            #   확실(U↓)한 협력/배신 → |Δλ|↑ ; 불확실(U↑) → |Δλ|↓(조심).
-            delta = self.k_affect * valence * (1.0 - U)
-            self.last_delta = delta
+            # (5) λ_affect = k·V·(1−U) — V 부호=방향, U=확신도 게이트.
+            lam_affect = self.k_affect * valence * (1.0 - U)
+            self.last_delta = lam_affect
+            self.last_lambda_affect = lam_affect
+
+            # (5') **λ 합성(v0.11.2)**: affect 는 self 축에 귀속된다.
+            #        λ_self = λ_baseSelf + λ_affect
+            #        λ      = (1−w_cd)·λ_self + w_cd·λ_ctx(θ_j)
+            #     정서는 '나의 반응'이지 '상대의 맥락'이 아니므로 self 에 더해지고,
+            #     그 뒤 맥락 의존성 w_cd 로 상대맞춤 setpoint 와 중재된다.
+            lam_self_base = self.self_model.lambda_base_self()
+            lam_ctx = self.self_model.lambda_base_context(partner_identity)
+            lam_self = lam_self_base + lam_affect
+            if lam_ctx is None:
+                lam_mix = lam_self                    # 상대 θ 미상 → self 축약
+            else:
+                w = float(np.clip(self.self_model.w_cd, 0.0, 1.0))
+                lam_mix = (1.0 - w) * lam_self + w * float(lam_ctx)
+            self.last_lambda_self = lam_self
+            self.last_lambda_ctx = (None if lam_ctx is None else float(lam_ctx))
             if self.regulate:
-                self.lam = float(np.clip(self.lam_base + delta, 0.0, self.lambda_max))
+                self.lam = float(np.clip(lam_mix, 0.0, self.lambda_max))
             else:
                 self.lam = float(self.lam_base)
 
-            # (6') SelfModel 상향: identity θ 기록·거리 극완만 접근 (agent 가 θ 주입).
+            # (6) SelfModel 상향: identity θ 기록 + **Z_i(s,a) 기록**(model-free 표상).
             if partner_identity is not None:
                 self.self_model.update_identity(
                     int(partner_identity),
@@ -838,7 +1030,11 @@ class CoreAffect:
 
             return {
                 "lam": self.lam, "lam_base": self.lam_base,
-                "delta_lambda": delta, "rpe": rpe, "deficit": deficit,
+                "lam_self": lam_self, "lam_self_base": lam_self_base,
+                "lam_ctx": self.last_lambda_ctx,
+                "lambda_affect": lam_affect,
+                "delta_lambda": lam_affect, "rpe": rpe, "deficit": deficit,
+                "rpe_dist_mean": rpe_mean_d, "var_z": var_z,
                 "valence": valence, "uncertainty": U,
                 "theta_reward_mean": E_theta, "theta_epistemic_std": epi_std,
                 "q_dispositional": float(np.clip(-valence, 0.0, 1.0)),
@@ -846,6 +1042,11 @@ class CoreAffect:
                 "value_mean": self.value.mean,
                 "value_downside_std": self.value.downside_std,
             }
+
+        # ---- (2) 기대보상 분포 갱신(§3.2, expectile code 기본) — 구 경로 ----
+        self.value.update(r_obs)
+        deficit = self._deficit()
+        self.last_deficit = deficit
 
         # ================= [v0.10.0] valence+uncertainty affect ================
         if self.affect_mode != "legacy_attrib":

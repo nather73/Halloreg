@@ -1,3 +1,24 @@
+# HalloReg v0.11.2 — 구현 노트 (implementation note)
+
+> **v0.11.2: 분포적 TD 오차 · Z_i(s,a) 8분포 · λ 합성 재편.** 다섯 변경:
+> (1) λ_ctx = ĉ_θ **단독**(m·λ̂_j 이중계상 제거), (2) SelfModel 이 (id, dist,
+> p^nc, **Z_i(s,a)**)를 기록 — model-based/free 통합 명부, (3) §3.1 스칼라 계약
+> 폐기 → **분포적 TD 오차 δ_i = r_obs − z_i** + Z(s,a) 4상태×2행동 8분포(결정
+> 시점 상태 s_{t−2} 조건, on-policy 갱신) + **좌표계 [0.0, 0.8] 통일**,
+> (4) **λ_self = λ_baseSelf + λ_affect → λ = (1−w_cd)λ_self + w_cd·λ_ctx**
+> (affect 를 self 축에 귀속), (5) λ_affect = k·V·(1−U) 에서
+> **U = √(σ²_epi + w_Z·Var^α_Z[δ])/σ_ref** (전분산 법칙으로 epistemic+aleatoric
+> 재결합, α 가중이 하방 비대칭 계승).
+>
+> ⚠ **구 골든 무효화**: 좌표계 통일로 기본 λ_baseSelf 0.5459→0.5945, legacy A/B
+> 도 비트동일 아님(0.144/0.793). 사양의 불가피한 귀결 — §9.8 재기준선 대상.
+>
+> 전문: `AIF_IPD/docs/CHANGELOG_v0.11.2.md`.
+
+---
+
+## [이하 v0.11.1 이력]
+
 # HalloReg v0.11.1 — 구현 노트 (implementation note)
 
 > **v0.11.1: λ_base 의 self/context 중재 + 순수 trial 거리 + EMA 제거.**

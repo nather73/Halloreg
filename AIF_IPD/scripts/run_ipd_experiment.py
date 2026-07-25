@@ -4157,26 +4157,32 @@ def exp_V10(seeds, rounds, jobs, backend):
                          0.0 if collapse_by[0.15][0] <= collapse_by[0.50][0] else 1.0,
                          f"half(.15)={collapse_by[0.15][0]:.1f} ≤ half(.50)={collapse_by[0.50][0]:.1f}")
 
-    # ---------------------------------------------------- V10.5 identity 분포기억
+    # ------------------------------------- V10.5 identity 분포기억 (v0.11.2: Z(s,a))
+    #   저장·복원 대상이 (E,σ) 스칼라쌍에서 **Z_i(s,a) 8분포 전체**로 확장됐다.
+    #   검증: 재조우 시 8분포가 정확 복원(격자 단위 최대오차 0), 신규 id 는 무변.
+    from AIF_IPD.core.allostasis_v9 import SAValueBank as _SAB
     restore_gap, novel_gap = [], []
     for s in range(S):
         ag = _build(7000 + s)
         run_dyad(ag, make_opponent("allc", seed=8000 + s, error=0.03), n_rounds=T)
         e = ag.self_model.entry_for_identity(1)
-        if e is None or e.learned_reward is None:
+        if e is None or getattr(e, "z_sa", None) is None:
             continue
-        E_star = float(e.learned_reward[0])
-        # belief 리셋 후 재조우 → 복원폭
-        ag.core_affect.value = QuantileValue(m=21, code=CODE_EXPECTILE,
-                                             init_center=1.48, init_spread=0.4)
-        pre = ag.core_affect.value.mean
+        z_star = np.asarray(e.z_sa, float)              # 학습된 Z_i(s,a)
+        # 분포 리셋 후 재조우 → 복원 정확도(전 격자 최대오차)
+        bank = ag.core_affect.value
+        ag.core_affect.value = _SAB(m=bank.M, alpha=bank.alpha, code=bank.code,
+                                    init_center=1.48, init_spread=0.4)
         ag.begin_partner(1)
-        restore_gap.append(abs(ag.core_affect.value.mean - E_star))
+        restore_gap.append(float(np.max(np.abs(
+            ag.core_affect.value.snapshot() - z_star))))
         # 신규 identity → 무변
-        mid = ag.core_affect.value.mean
+        mid = ag.core_affect.value.snapshot()
         ag.begin_partner(99999)
-        novel_gap.append(abs(ag.core_affect.value.mean - mid))
-    id_ok = (np.mean(restore_gap) < 1e-6 and np.mean(novel_gap) < 1e-6)
+        novel_gap.append(float(np.max(np.abs(
+            ag.core_affect.value.snapshot() - mid))))
+    id_ok = (bool(restore_gap) and np.mean(restore_gap) < 1e-9
+             and np.mean(novel_gap) < 1e-9)
     register_exploratory("V10", "identity 재조우 (E,σ) 복원·신규 무변",
                          0.0 if id_ok else 1.0,
                          f"restore_gap={np.mean(restore_gap):.2e} novel_gap={np.mean(novel_gap):.2e}")
@@ -6384,7 +6390,7 @@ def main():
             EXP_BUDGET[k] = v
             setattr(args, k, v)
     Ts = sorted(set(args.rounds))
-    LOGGER.info("=== HalloReg v0.11.1 — seeds=%d rounds=%s jobs=%d backend=%s ===",
+    LOGGER.info("=== HalloReg v0.11.2 — seeds=%d rounds=%s jobs=%d backend=%s ===",
                 args.seeds, Ts, args.jobs, args.backend)
     LOGGER.info("실험 예산: VP T=%d seeds=%d | ORE T=%d seeds=%d",
                 EXP_BUDGET["vp_rounds"], EXP_BUDGET["vp_seeds"],

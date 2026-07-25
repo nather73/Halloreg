@@ -431,6 +431,16 @@ class AdaptiveAgent(ToMEmpathicAgent):
         # [v0.11.0 §θ-잔차] 직전 행동(my_last)이 만든 관측보수를 θ 로 설명한 잔차.
         #   ctx 는 필터갱신과 동일 시제(f=my_{t-2}, g=opp_{t-2}) — 상대는 1라운드
         #   지연으로 내 직전행동에 반응하므로.
+        # [v0.11.2] Z_i(s,a) 의 **결정 시점 상태** s_dec: a_{t−1} 을 고를 때 관측하고
+        #   있던 공동상태 = joint(a_{t−2}, opp_{t−2}) = 2·my_{t−2} + opp_{t−2}.
+        #   (결과 상태 s_{t−1} 을 쓰면 보수 자신이 조건이 되어 순환이 된다.)
+        #   이 시점 opp_actions 는 아직 opp_{t−1} 미append 이므로 [-1]=opp_{t−2}.
+        #   이력 부족(초기 1~2R)이면 None → CC(0) 초기상태 관례.
+        if len(self.my_actions) >= 2 and self.opp_actions:
+            s_decision = int(2 * int(self.my_actions[-2]) + int(self.opp_actions[-1]))
+        else:
+            s_decision = None
+
         theta_rmean = theta_epi = None
         theta_coop_now = None
         try:
@@ -462,7 +472,8 @@ class AdaptiveAgent(ToMEmpathicAgent):
             theta_reward_mean=theta_rmean,
             theta_epistemic_std=theta_epi,
             theta_coop=theta_coop_now,
-            theta_lambda_j=float(np.clip(inferred.get("lambda_j", 0.5), 0.0, 1.0)))
+            theta_lambda_j=float(np.clip(inferred.get("lambda_j", 0.5), 0.0, 1.0)),
+            state_prev=s_decision, action_prev=int(self.my_last))
         self.lam = out["lam"]
         # social_efe 의 empathy_factor 도 동기(로깅/재귀예측 일관).
         self.social_efe.lam = self.lam
