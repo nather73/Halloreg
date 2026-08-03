@@ -2,523 +2,358 @@
 ipd.tom.inversion
 =================
 
-상대 특성 파라미터 θ_j 에 대한 **입자필터(particle filter) 기반 베이지안 추론**.
+**OpponentInversion — 상대 특성 θ_j 에 대한 입자필터(particle filter) 베이지안 추론.**
 
-각 입자는 parametric behavioral profile 을 담는다:
+초록의 (i) *perspective-taking, approximated via particle filter Bayesian inference
+over the opponent's model parameters* 에 해당하는 모듈이다.
 
-    P(a_j = C | h_t, θ_k) = σ( β_k · ( α_k + ρ_k·f(h_t) + s(λ_k, p) ) )
+[생성 우도 — (1, f, g, f·g) 기저]
+각 입자는 하나의 행동 프로파일 가설 θ_k 를 담는다.
 
-  α : 협력편향(cooperation bias)   — 높으면 ALLC 성향, 낮으면 ALLD 성향
-  ρ : 호혜성(reciprocity)          — 양수면 TFT 성향(내 직전 행동에 반응)
-  β : 행동정밀도(precision)        — 높으면 '의도적/결정론적', 낮으면 '잡음(맥락 불확실)'
-  λ_j : 상대 공감(opponent empathy) — 상대가 내 후생을 얼마나 중시하는가(재귀적 잠재변수)
-  f(h_t) : 직전 내 행동에 대한 호혜신호 (+1 협력, -1 배신, 0 이력없음)
-  s(λ_k, p) : 상대의 공감이 협력에 주는 social-EFE 이득
-              (PD 보수에서 유도: 5·λ_j − p − 1, p=내 협력율에 대한 상대의 믿음)
+    P(a_j = C | h_t, θ_k)
+        = σ( β_k · ( α_k + ρ_k·f + ω_k·g + η_k·f·g + s(λ_k, p) ) )
 
-Albarracin et al. (2026) 의 particle-based inversion 및 참조 저장소
-`mahault/empathy-prisonner-dilemma` 의 inversion.py 를 pymdp 비의존 numpy 로 재구성하고,
-**HalloReg 확장**을 추가했다:
+    f      : 내(focal) 직전 행동의 호혜신호.  협력 → +1, 배신 → −1, 이력없음 → 0
+    g      : 상대 **자신의** 직전 행동 신호.  협력 → +1, 배신 → −1
+    α      : 협력 편향 (높으면 ALLC 성향, 낮으면 ALLD 성향)
+    ρ      : 호혜성 (양수면 TFT 성향 — 내 직전 행동에 반응)
+    ω      : 관성/자기일관성 (자기 직전 행동을 반복하는 경향)
+    η      : 결과-조건성 (f·g 상호작용 — WSLS 의 시그니처)
+    β      : 행동정밀도 (높으면 의도적/결정론적, 낮으면 잡음 = 맥락적)
+    λ_j    : 상대의 공감 가중 (재귀적 잠재변수)
+    s(λ,p) : 상대의 공감이 협력에 주는 이득. core.constants.empathy_shift 참조.
 
-  * 귀인 개인차의 우도-수준 반영: core allostatic belief 가 산출한 축별 신뢰도
-    가중치 w_θ 로 (i) 초기 입자 사전 분산과 (ii) 리샘플링 jitter 를 변조한다.
-    → 특정 파라미터(예: β)에 높은 신뢰도를 둔 개인은 그 축의 변동을 암시하는
-      예측못한 관측에 더 빠르고 즉각적으로 반응한다(사양서의 '논리적 방식').
-  * λ_j 를 잠재변수로 명시하여 재귀적 ToM(상대도 내 특성을 추론)에 사용.
+[왜 (1, f, g, f·g) 기저가 필수인가 — H1 의 식별가능성]
+기억-1(memory-one) 전략의 행동은 (자기 직전행동, 상대 직전행동) 4개 조합 위의
+협력확률로 완전히 결정된다. 이 4차원 공간을 스팬하려면 기저가 4개 자유도를
+가져야 하고, (1, f, g, f·g) 가 정확히 그것이다. 특히:
+
+    WSLS : 상대(j)는 "이겼으면 유지, 졌으면 전환" 한다. j 의 승리는 focal 이
+           협력했을 때(f = +1)이므로,
+               a_j = (자기 직전행동)      if f = +1
+                     (자기 직전행동의 반전) if f = −1
+           부호로 쓰면 next_sign = f · g. → **순수 η 축**으로 표현된다.
+
+즉 (1, f) 기저만 쓰면 WSLS 는 α·ρ 로 표현할 수 없어 필연적으로 오분류된다.
+H1 이 WSLS 를 포함하므로 본 판의 기본 기저는 "fg" 이다.
+
+[시제(tense) 규약 — off-by-one 재발 방지]
+동시행동 게임에서 라운드 k 에 관측되는 상대 행동은 opp_{k−1} 이며, 이는 상대가
+**직전에 본 것**에 반응한 결과다. 따라서:
+
+    경로     | 대상            | f (내 직전행동)  | g (상대 직전행동)
+    ---------|-----------------|------------------|-------------------
+    갱신용   | 관측 opp_{k−1}  | my_{k−2}         | opp_{k−2}
+    결정용   | 예측 opp_k      | my_{k−1} (최신)  | opp_{k−1} (최신)
+
+갱신 경로의 f·g 는 **둘 다 한 시점 더 과거**를 가리킨다. 호출부(agent.py)가
+ObservationContext 에 올바른 시제를 담아 넘길 책임을 진다.
+
+[SelfModel 연동]
+`set_prior(prior)` 로 SelfModel 이 보관한 (theta, dist) 를 주입받아 입자를 재표집한다.
+신규 상대면 무정보 사전, 재조우면 과거 관계 지점에서 출발한다.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Optional, List, Dict, Tuple
+from dataclasses import dataclass
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 
-from AIF_IPD.core.constants import COOP, empathy_shift as C_empathy_shift, DEFECT
+from AIF_IPD.core.constants import COOP, empathy_shift
 
 _EPS = 1e-10
 
-# θ 축 순서 (core.allostasis 의 마스크와 일치)
-THETA_AXES = ("alpha", "rho", "beta", "lambda_j")
+# θ 축 순서 — core.self_model.THETA_AXES 와 반드시 일치해야 한다.
+THETA_AXES = ("alpha", "rho", "omega", "eta", "beta", "lambda_j")
 
-# [v0.8.0 §7] fg 기저 확장 축. 기저 (1, f, g, fg) 는 기억-1 시그니처 전 공간
-# (4자유도)을 스팬한다 → 기억-1 상대(WSLS 포함)는 모두 표현 가능해진다.
-THETA_AXES_FG = ("alpha", "rho", "omega", "eta", "beta", "lambda_j")
-
-
-def theta_axes(basis: str = "f"):
-    """likelihood_basis 에 따른 θ 축 튜플."""
-    return THETA_AXES_FG if basis == "fg" else THETA_AXES
+# 축별 물리적 허용 범위 (입자 클리핑).
+#   β > 0  : 정밀도는 양수.
+#   λ_j ∈ [0,1] : 볼록결합 가중.
+#   ρ, ω, η 는 로짓 계수라 유계일 필요는 없으나, 수치 폭주 방지를 위해 넉넉히 자른다.
+_BOUNDS = {
+    "alpha": (-6.0, 6.0),
+    "rho": (-4.0, 4.0),
+    "omega": (-4.0, 4.0),
+    "eta": (-4.0, 4.0),
+    "beta": (0.05, 12.0),
+    "lambda_j": (0.0, 1.0),
+}
 
 
 def _logistic(x: np.ndarray) -> np.ndarray:
+    """수치안정 로지스틱 σ(x)."""
     return np.where(x >= 0, 1.0 / (1.0 + np.exp(-x)),
                     np.exp(x) / (1.0 + np.exp(x)))
 
 
-def _sigmoid(x: float, center: float = 0.0, scale: float = 1.0) -> float:
-    return 1.0 / (1.0 + np.exp(-(x - center) / scale))
-
-
 @dataclass
 class ObservationContext:
-    """우도 계산에 필요한 라운드 맥락."""
-    my_last_action: Optional[int] = None
-    their_last_action: Optional[int] = None
+    """우도 계산에 필요한 라운드 맥락 (시제는 호출부 책임)."""
+    my_last_action: Optional[int] = None      # f 의 원천
+    their_last_action: Optional[int] = None   # g 의 원천
     joint_outcome: Optional[int] = None
     round_number: int = 0
 
 
-@dataclass
-class InversionState:
-    """입자필터 상태 스냅샷."""
-    reliability: float
-    entropy: float
-    ess: float
-    means: Dict[str, float]
-
-
 class OpponentInversion:
     """
-    상대 θ_j=(α,ρ,β,λ_j) 에 대한 입자필터.
+    상대 θ_j = (α, ρ, ω, η, β, λ_j) 에 대한 축차 중요도 표집(SIR) 입자필터.
 
-    HalloReg 확장: `reliability_weights`(core allostatic belief 유도)로 축별
-    사전 분산과 jitter 를 변조하여, 귀인 개인차가 베이지안 갱신에 자연스럽게
-    스며들도록 한다.
+    Parameters
+    ----------
+    n_particles : int
+        입자 수 N. 6차원 사후를 다루므로 400 이상 권장.
+    resample_frac : float
+        유효표본수 ESS 가 resample_frac·N 밑으로 내려가면 리샘플링.
+    jitter_scale : float
+        리샘플 후 추가하는 확산(roughening) 배율. 입자 고갈(degeneracy)을 막고
+        **비정상 상대의 형질 전환을 추적**할 수 있게 하는 인공 확산항이다.
+        0 이면 입자가 한 점으로 붕괴해 H1A(형질 추적)가 불가능해진다.
     """
 
-    # 축별 기본 사전(prior)  (mean, std)
+    # 축별 무정보 사전 (평균, 표준편차)
     _PRIOR = {
         "alpha": (0.0, 2.0),
         "rho": (0.5, 1.2),
-        "beta": (3.0, 1.8),      # 감마 대신 절단 정규로 근사
-        "lambda_j": (0.4, 0.3),
-        # [v0.8.0 §7.2] ω(관성/자기일관성), η(결과-조건성/WSLS성).
-        # 사전 범위 ω, η ∈ [−2,+2] 근방 = ρ 와 동급 스케일. 평균 0(무정보).
         "omega": (0.0, 1.0),
         "eta": (0.0, 1.0),
+        "beta": (3.0, 1.8),
+        # λ_j 사전 평균은 **0.5(중립)** 이다. Empathy 의 λ_ctx 는 (2λ̂_j − 1) 을
+        # 쓰므로, 평균이 0.5 가 아니면 관측이 전혀 없는 상태에서도 λ_ctx 가
+        # 0 이 아닌 값을 갖게 되어 사전만으로 λ 가 표류한다(사전 인공물).
+        "lambda_j": (0.5, 0.3),
     }
-    # 축별 기본 리샘플 jitter
-    _JITTER = {"alpha": 0.10, "rho": 0.10, "beta": 0.15, "lambda_j": 0.05,
-               "omega": 0.10, "eta": 0.10}
+    # 축별 기본 리샘플 jitter 표준편차
+    _JITTER = {"alpha": 0.10, "rho": 0.10, "omega": 0.10,
+               "eta": 0.10, "beta": 0.15, "lambda_j": 0.05}
 
-    def __init__(self, n_particles: int = 400,
-                 reliability_weights: Optional[dict] = None,
-                 resample_frac: float = 0.5, seed: int = 0,
-                 likelihood_basis: str = "f"):
-        """
-        likelihood_basis : {"f", "fg"}
-            "f"  (기본) : P(a_j=C|f,θ) = σ(β(α + ρf + s(λ_j,p)))     — v0.6.6 보존
-            "fg" (§7)   : P(a_j=C|f,g,θ) = σ(β(α + ρf + ωg + η·fg + s(λ_j,p)))
-                기저 (1,f,g,fg) 가 기억-1 시그니처 전 공간을 스팬 → WSLS 표현 가능.
-        """
-        if likelihood_basis not in ("f", "fg"):
-            raise ValueError(f"알 수 없는 likelihood_basis: {likelihood_basis}")
-        self.likelihood_basis = likelihood_basis
-        self.axes = theta_axes(likelihood_basis)
+    def __init__(self, n_particles: int = 400, resample_frac: float = 0.5,
+                 jitter_scale: float = 1.0, seed: int = 0):
         self.N = int(n_particles)
+        self.resample_frac = float(resample_frac)
+        self.jitter_scale = float(jitter_scale)
         self.rng = np.random.default_rng(seed)
-        self.resample_frac = resample_frac
-        # 축별 신뢰도 가중치(없으면 균등). β 신뢰도가 높으면 β 축을 더 넓게/빠르게 탐색.
-        self.w_theta = {k: 1.0 for k in self.axes}
-        if reliability_weights:
-            self.w_theta.update(reliability_weights)
 
+        # 내 협력률에 대한 상대의 믿음 p — empathy_shift 의 인자.
         self.my_cooperation_rate = 0.5
-        # H2 기제 절제용: β 축 동결 (사전 평균에 클램프 → β 로 설명 불가)
-        self._beta_clamp_val = None
+
+        # 현재 사전 (SelfModel 주입 시 교체)
+        self._prior = {ax: self._PRIOR[ax] for ax in THETA_AXES}
         self._init_particles()
 
-    @property
-    def _fg(self) -> bool:
-        return self.likelihood_basis == "fg"
+    # ============================================================ 초기화
+    def _init_particles(self) -> None:
+        """현재 사전에서 입자를 표집하고 가중치를 균등화한다."""
+        self.theta = {}
+        for ax in THETA_AXES:
+            mu, sd = self._prior[ax]
+            lo, hi = _BOUNDS[ax]
+            self.theta[ax] = np.clip(
+                self.rng.normal(mu, max(sd, 1e-6), self.N), lo, hi)
+        self.weights = np.ones(self.N) / self.N
+        self._h0_cache = None
 
-    def clamp_beta(self, value=None):
-        """입자필터의 β 축을 상수에 동결한다 (H2 절제 대조: β-귀인 경로 차단)."""
-        self._beta_clamp_val = float(value) if value is not None \
-            else float(self._PRIOR["beta"][0])
-        self.beta[:] = self._beta_clamp_val
-
-    # ------------------------------------------------------------ 초기화
-    def set_reliability(self, weights: dict, reinit: bool = False):
-        """core allostatic belief 로부터 축별 신뢰도 갱신. reinit 이면 사전 재표집."""
-        self.w_theta.update(weights)
+    def set_prior(self, prior: Dict[str, tuple], reinit: bool = True) -> None:
+        """
+        SelfModel 이 공급한 θ 사전 {축: (평균, 표준편차)} 을 주입한다.
+        reinit=True 면 즉시 입자를 재표집(새 상대와의 관계 시작).
+        """
+        for ax in THETA_AXES:
+            if ax in prior:
+                mu, sd = prior[ax]
+                self._prior[ax] = (float(mu), float(sd))
         if reinit:
             self._init_particles()
 
-    def _spread(self, axis: str) -> float:
-        """축별 신뢰도 → 사전/jitter 확산 배율. w=0 이면 거의 동결."""
-        return 0.08 + 1.20 * float(self.w_theta.get(axis, 1.0))
-
-    def _init_particles(self):
-        def draw(axis):
-            mu, sd = self._PRIOR[axis]
-            # 신뢰도 높은 축 → 사전 분산 확대(더 많은 가설) → 그 축 변동에 민감.
-            # 신뢰도 0(귀인 대상에서 제외된 축) → 사전이 거의 점질량으로 붕괴 →
-            # 그 축의 변동을 '설명 자원'으로 쓸 수 없다(과대/과소귀인의 원천).
-            sd_eff = sd * self._spread(axis)
-            return self.rng.normal(mu, sd_eff, self.N)
-
-        self.alpha = draw("alpha")
-        self.rho = draw("rho")
-        self.beta = np.clip(draw("beta"), 0.05, 12.0)
-        self.lambda_j = np.clip(draw("lambda_j"), 0.0, 1.0)
-        # [v0.8.0 §7] fg 기저에서만 활성. f 기저에서는 0 상수 → 항이 소멸하여
-        # 우도가 v0.6.6 과 비트 단위 동일(하위호환 보장).
-        if self._fg:
-            self.omega = np.clip(draw("omega"), -3.0, 3.0)
-            self.eta = np.clip(draw("eta"), -3.0, 3.0)
-        else:
-            self.omega = np.zeros(self.N)
-            self.eta = np.zeros(self.N)
-        self.weights = np.ones(self.N) / self.N
-        if getattr(self, "_beta_clamp_val", None) is not None:
-            self.beta[:] = self._beta_clamp_val
-
-    # ------------------------------------------------------------ 우도
-    def _empathy_shift(self) -> np.ndarray:
-        """상대 공감 λ_j 가 협력에 주는 이득 — 현재 보수 (R,T,S,P) 유도 (v0.6.3).
-        기본 PD 보수에서 레거시 5λ_j − p − 1 과 비트 단위 동일; 가변 페이오프
-        환경(§VP)에서는 호출 시점의 보수를 반영(맥락-의존 ToM 공감항)."""
-        return C_empathy_shift(self.lambda_j, self.my_cooperation_rate)
-
-    def _pC(self, f: float, g: float = 0.0) -> np.ndarray:
-        """각 입자의 상대 협력확률.
-
-        f 기저 : σ(β(α + ρf + s))                       — ω=η=0 이므로 g 무시
-        fg 기저: σ(β(α + ρf + ωg + η·fg + s))           — §7.2
-        """
-        logit = self.beta * (self.alpha + self.rho * f
-                             + self.omega * g + self.eta * f * g
-                             + self._empathy_shift())
-        return _logistic(logit)
-
-    # ================================================================ 시제 표
-    # [v0.8.0 §7.2] f·g 의 시제(tense) 규약 — **오프바이원 재발 방지**.
-    #
-    # 동시행동 게임에서 라운드 k 에 관측되는 상대 행동은 opp_{k−1} 이며, 이는
-    # 상대가 **직전에 본 것**에 반응한 결과다. 따라서:
-    #
-    #   경로     | 대상            | f (내 직전행동)   | g (상대 직전행동)
-    #   ---------|-----------------|-------------------|-------------------
-    #   갱신용   | 관측 opp_{k−1}  | my_{k−2}          | opp_{k−2}
-    #   결정용   | 예측 opp_k      | my_{k−1}(=최신)   | opp_{k−1}(=최신)
-    #
-    # 즉 갱신 경로의 f·g 는 **둘 다 한 시점 더 과거**를 가리킨다(v0.6.6 이 f 에
-    # 대해 수정한 것과 동일한 시제 원칙을 g 에 그대로 적용). 호출부(agent.py)가
-    # ctx.my_last_action / ctx.their_last_action 에 올바른 시제를 담아 넘긴다.
-    # 데이터-수준 일치도는 §7.4 검증 1(TFT·WSLS)에서 필수 확인한다.
-
+    # ============================================================ 특징 추출
     @staticmethod
-    def _feature(ctx: Optional[ObservationContext]) -> float:
-        """f = 내 직전 행동의 호혜신호 (+1 협력, −1 배신, 0 이력없음)."""
+    def _feature_f(ctx: Optional[ObservationContext]) -> float:
+        """f = 내 직전 행동의 호혜신호 (+1 협력 / −1 배신 / 0 이력없음)."""
         if ctx is None or ctx.my_last_action is None:
             return 0.0
-        return 1.0 - 2.0 * ctx.my_last_action   # C=0 → +1, D=1 → -1
+        return 1.0 - 2.0 * float(ctx.my_last_action)
 
     @staticmethod
     def _feature_g(ctx: Optional[ObservationContext]) -> float:
-        """g = 상대 자신의 직전 행동 (+1 협력, −1 배신, 0 이력없음).
-
-        `ObservationContext.their_last_action` 은 v0.6.6 에도 이미 존재했으나
-        우도가 사용하지 않았다(§7.2). fg 기저에서 비로소 소비된다.
-        """
+        """g = 상대 자신의 직전 행동 신호 (+1 협력 / −1 배신 / 0 이력없음)."""
         if ctx is None or ctx.their_last_action is None:
             return 0.0
-        return 1.0 - 2.0 * ctx.their_last_action
+        return 1.0 - 2.0 * float(ctx.their_last_action)
 
-    def update(self, opp_action: int, ctx: ObservationContext) -> InversionState:
-        """관측된 상대 행동으로 가중치를 갱신."""
-        f = self._feature(ctx)
-        g = self._feature_g(ctx) if self._fg else 0.0
+    # ============================================================ 우도
+    def _pC(self, f: float, g: float) -> np.ndarray:
+        """각 입자가 예측하는 상대 협력확률 (N,)."""
+        th = self.theta
+        shift = empathy_shift(th["lambda_j"], self.my_cooperation_rate)
+        logit = th["beta"] * (th["alpha"] + th["rho"] * f
+                              + th["omega"] * g + th["eta"] * f * g
+                              + shift)
+        return _logistic(logit)
+
+    def update(self, opp_action: int, ctx: ObservationContext) -> None:
+        """
+        관측된 상대 행동으로 입자 가중치를 갱신한다(중요도 갱신 + 조건부 리샘플).
+
+        ctx 의 시제는 **갱신용**(f = my_{k−2}, g = opp_{k−2})이어야 한다.
+        """
+        f = self._feature_f(ctx)
+        g = self._feature_g(ctx)
         pC = self._pC(f, g)
-        lik = pC if opp_action == COOP else (1.0 - pC)
+        lik = pC if int(opp_action) == COOP else (1.0 - pC)
+
         self.weights = self.weights * np.clip(lik, _EPS, 1.0)
-        s = self.weights.sum()
+        s = float(self.weights.sum())
         if s <= _EPS:
+            # 모든 입자가 관측을 설명 못 함 → 사전으로 재출발(수치 안전장치)
             self.weights = np.ones(self.N) / self.N
         else:
-            self.weights /= s
+            self.weights = self.weights / s
 
-        ess = 1.0 / np.sum(self.weights ** 2)
+        ess = 1.0 / float(np.sum(self.weights ** 2))
         if ess < self.resample_frac * self.N:
             self._resample()
+        self._h0_cache = None      # 가중치가 바뀌었으므로 엔트로피 캐시 무효화
 
-        return self.snapshot()
+    def _resample(self) -> None:
+        """
+        체계적 중요도 리샘플 + roughening.
 
-    def _resample(self):
+        리샘플만 하면 중복 입자가 생겨 사후가 점질량으로 붕괴한다(sample
+        impoverishment). 축별 jitter 를 더해 입자를 다시 퍼뜨리는데, 이 인공
+        확산은 동시에 **θ 가 시간에 따라 천천히 변할 수 있다**는 상태공간 가정을
+        구현한다 — H1A(형질 전환 추적)가 성립하는 이유.
+        """
         idx = self.rng.choice(self.N, size=self.N, p=self.weights)
-
-        def jit(x, axis, lo=None, hi=None):
-            # 신뢰도 높은 축 → jitter 확대 → 빠른 추적
-            sd = self._JITTER[axis] * self._spread(axis)
-            y = x[idx] + self.rng.normal(0.0, sd, self.N)
-            if lo is not None:
-                y = np.clip(y, lo, hi)
-            return y
-
-        self.alpha = jit(self.alpha, "alpha")
-        self.rho = jit(self.rho, "rho")
-        if self._fg:
-            self.omega = jit(self.omega, "omega", -3.0, 3.0)
-            self.eta = jit(self.eta, "eta", -3.0, 3.0)
-        else:
-            self.omega = self.omega[idx]
-            self.eta = self.eta[idx]
-        if self._beta_clamp_val is not None:
-            self.beta[:] = self._beta_clamp_val
-        else:
-            self.beta = jit(self.beta, "beta", 0.05, 12.0)
-        self.lambda_j = jit(self.lambda_j, "lambda_j", 0.0, 1.0)
+        for ax in THETA_AXES:
+            lo, hi = _BOUNDS[ax]
+            sd = self._JITTER[ax] * self.jitter_scale
+            self.theta[ax] = np.clip(
+                self.theta[ax][idx] + self.rng.normal(0.0, sd, self.N), lo, hi)
         self.weights = np.ones(self.N) / self.N
 
-    # ------------------------------------------------------------ 예측/요약
-    def predict_coop(self, f: float, g: Optional[float] = None) -> float:
-        """posterior-weighted 상대 협력확률.
-
-        g : fg 기저의 상대 직전행동 신호(±1). None 이면 0(중립) — f 기저에서는
-            ω=η=0 이므로 어차피 무영향이다.
-        """
-        gg = 0.0 if g is None else float(g)
-        return float(np.clip(np.sum(self.weights * self._pC(f, gg)),
-                             _EPS, 1 - _EPS))
+    # ============================================================ 예측
+    def predict_coop(self, f: float, g: float = 0.0) -> float:
+        """사후 가중 상대 협력확률 P(a_j = C)."""
+        return float(np.clip(np.sum(self.weights * self._pC(f, g)),
+                             _EPS, 1.0 - _EPS))
 
     def predict_action(self, ctx: Optional[ObservationContext]) -> np.ndarray:
-        f = self._feature(ctx)
-        g = self._feature_g(ctx) if self._fg else 0.0
-        pc = self.predict_coop(f, g)
+        """ctx(결정용 시제) 하의 상대 행동 분포 [P(C), P(D)]."""
+        pc = self.predict_coop(self._feature_f(ctx), self._feature_g(ctx))
         return np.array([pc, 1.0 - pc])
 
-    def theta_reward_moments(self, my_action: int, ctx: Optional[ObservationContext],
-                             payoff_self) -> Tuple[float, float, float]:
-        """
-        [v0.11.0 §θ-잔차] 내 행동 a_i 에 대한 **θ-조건부 예상보수**의 입자 분해.
-
-        각 입자 θ_k 로 상대 협력확률 pc_k = P(coop|θ_k, ctx) 을 얻고, 내 행동에서의
-        예상보수 r̂_k = pc_k·U(a_i,C) + (1−pc_k)·U(a_i,D) 를 계산한다. 반환:
-          · E_θ[r]        = Σ w_k r̂_k               (θ 가 설명하는 기대보수)
-          · epistemic_std = √Σ w_k (r̂_k − E_θ[r])²   (입자간 분산 = θ 불확실성)
-          · aleatoric_std = √Σ w_k Var_k[r]          (입자내 보수분산 — 참고용, 미사용)
-        RPE 잔차화에서 관측보수 r_obs 대비 잔여 mean=r_obs−E_θ[r]→valence,
-        epistemic_std→uncertainty 로 귀인된다(입자간 분산만 반영, 사양).
-        payoff_self : PAYOFF_SELF 배열 (상태 CC/CD/DC/DD → 내 보수).
-        """
-        f = self._feature(ctx)
-        g = self._feature_g(ctx) if self._fg else 0.0
-        pc = self._pC(f, g)                       # (N,) 입자별 상대 협력확률
-        # 상태 인덱스: 내 행동(0=C,1=D) × 상대(0=C,1=D) → CC/CD/DC/DD = 0/1/2/3
-        if int(my_action) == 0:                    # 내가 협력
-            u_if_coop, u_if_def = payoff_self[0], payoff_self[1]   # CC, CD
-        else:                                      # 내가 배신
-            u_if_coop, u_if_def = payoff_self[2], payoff_self[3]   # DC, DD
-        r_hat = pc * float(u_if_coop) + (1.0 - pc) * float(u_if_def)   # (N,)
-        w = self.weights
-        E_theta = float(np.sum(w * r_hat))
-        epi_var = float(np.sum(w * (r_hat - E_theta) ** 2))
-        # 입자내 aleatoric: 각 입자의 베르누이 보수분산
-        ale_var = float(np.sum(w * pc * (1.0 - pc)
-                               * (float(u_if_coop) - float(u_if_def)) ** 2))
-        return E_theta, float(np.sqrt(max(epi_var, 0.0))), float(np.sqrt(max(ale_var, 0.0)))
-
+    # ============================================================ 요약통계
     def posterior_means(self) -> Dict[str, float]:
-        out = {
-            "alpha": float(np.sum(self.weights * self.alpha)),
-            "rho": float(np.sum(self.weights * self.rho)),
-            "beta": float(np.sum(self.weights * self.beta)),
-            "lambda_j": float(np.sum(self.weights * self.lambda_j)),
-        }
-        if self._fg:
-            out["omega"] = float(np.sum(self.weights * self.omega))
-            out["eta"] = float(np.sum(self.weights * self.eta))
-        return out
+        """축별 사후 평균 (SelfModel 의 theta 에 해당)."""
+        return {ax: float(np.sum(self.weights * self.theta[ax]))
+                for ax in THETA_AXES}
 
     def posterior_stds(self) -> Dict[str, float]:
+        """축별 사후 표준편차 (SelfModel 의 dist 에 해당)."""
         m = self.posterior_means()
         out = {}
-        pairs = [("alpha", self.alpha), ("rho", self.rho),
-                 ("beta", self.beta), ("lambda_j", self.lambda_j)]
-        if self._fg:
-            pairs += [("omega", self.omega), ("eta", self.eta)]
-        for ax, arr in pairs:
-            v = np.sum(self.weights * (arr - m[ax]) ** 2)
+        for ax in THETA_AXES:
+            v = float(np.sum(self.weights * (self.theta[ax] - m[ax]) ** 2))
             out[ax] = float(np.sqrt(max(v, 0.0)))
         return out
 
-    def _param_entropy(self) -> float:
-        """(α,β) 가중분산 로그합 — 미분엔트로피 대용치."""
-        m = self.posterior_means()
-        v_a = np.sum(self.weights * (self.alpha - m["alpha"]) ** 2) + 1e-6
-        v_b = np.sum(self.weights * (self.beta - m["beta"]) ** 2) + 1e-6
-        return 0.5 * (np.log(v_a) + np.log(v_b))
-
     def reliability(self) -> float:
-        """가중치 집중도 기반 신뢰도 r∈[0,1] (게이팅용)."""
-        ess = 1.0 / np.sum(self.weights ** 2)
+        """
+        입자 가중치의 집중도 기반 신뢰도 r ∈ [0, 1] — GatedToM 의 게이팅 신호.
+        ESS/N 의 제곱근을 쓴다(가중치가 균등이면 1, 한 입자에 몰리면 0).
+        """
+        ess = 1.0 / float(np.sum(self.weights ** 2))
         return float(np.clip(ess / self.N, 0.0, 1.0)) ** 0.5
 
     def belief_update_magnitude(self, prev_means: Dict[str, float]) -> float:
         """
-        Buergi et al.(2026) 의 belief-update(BU) 신호에 대응하는 스칼라.
-        직전 posterior mean 대비 현재 mean 의 표준화 변화량 L2 노름.
-        model-based fMRI regressor 로 사용 가능.
+        직전 사후 평균 대비 현재 평균의 **표준화 변화량 L2 노름**.
+        모형기반 fMRI 의 belief-update 회귀자에 대응하는 스칼라 진단값.
         """
         cur = self.posterior_means()
-        scale = {"alpha": 2.0, "rho": 1.2, "beta": 1.8, "lambda_j": 0.3,
-                 "omega": 1.0, "eta": 1.0}
-        d = [(cur[a] - prev_means.get(a, cur[a])) / scale[a] for a in self.axes]
+        d = [(cur[ax] - prev_means.get(ax, cur[ax])) / self._PRIOR[ax][1]
+             for ax in THETA_AXES]
         return float(np.sqrt(np.sum(np.square(d))))
 
-    def snapshot(self) -> InversionState:
-        return InversionState(
-            reliability=self.reliability(),
-            entropy=self._param_entropy(),
-            ess=float(1.0 / np.sum(self.weights ** 2)),
-            means=self.posterior_means(),
-        )
+    # ============================================================ 정보이득
+    # EFE 의 인식적(epistemic) 항. 축별 주변 히스토그램 엔트로피의 합으로
+    # 이산 상호정보 I(a_j ; θ) 를 근사한다. 이산 MI 이므로 비음이 자동 보장된다.
+    _HIST_NB = 11          # 히스토그램 빈 수
+    _HIST_PAD = 0.5        # 적응적 구간의 여유 = 0.5 · SD
 
-    # ------------------------------------------------ [v0.9.0 §5] histogram IG
-    # 축별 히스토그램 구간(§5.2 확정 규약).
-    #   · 무계 축: 입자 posterior 의 적응적 범위 [q05 − pad, q95 + pad], nb 빈.
-    #   · λ_j 는 자연구간 [0,1] 유지.
-    #   · pad = pad_frac · SD.  IG 는 이산 상호정보라 비음 자동 보장.
-    _HIST_NB = 11          # 빈 수 nb (§10)
-    _HIST_PAD_FRAC = 0.5   # pad = 0.5·SD (§10)
-    _NAT_RANGE = {"lambda_j": (0.0, 1.0)}   # 자연구간 축
-
-    def _axis_arr(self, axis: str) -> np.ndarray:
-        return getattr(self, axis)
-
-    def _weighted_hist_entropy(self, arr: np.ndarray, weights: np.ndarray,
-                               axis: str) -> Tuple[float, tuple]:
-        """가중 빈질량의 Shannon 엔트로피 −Σ b·log b 와 사용한 구간(edges) 반환."""
-        m = float(np.sum(weights * arr))
-        v = float(np.sum(weights * (arr - m) ** 2))
-        sd = float(np.sqrt(max(v, 1e-12)))
-        if axis in self._NAT_RANGE:
-            lo, hi = self._NAT_RANGE[axis]
+    def _hist_entropy(self, arr: np.ndarray, w: np.ndarray, axis: str) -> float:
+        """가중 히스토그램의 Shannon 엔트로피."""
+        m = float(np.sum(w * arr))
+        sd = float(np.sqrt(max(float(np.sum(w * (arr - m) ** 2)), 1e-12)))
+        if axis == "lambda_j":
+            lo, hi = 0.0, 1.0                    # 자연 구간이 있는 축
         else:
-            q05, q95 = self._weighted_quantiles(arr, weights, (0.05, 0.95))
-            pad = self._HIST_PAD_FRAC * sd
-            lo, hi = q05 - pad, q95 + pad
+            lo, hi = m - 3.0 * sd - self._HIST_PAD, m + 3.0 * sd + self._HIST_PAD
         if hi - lo < 1e-9:
             hi = lo + 1e-6
         edges = np.linspace(lo, hi, self._HIST_NB + 1)
         idx = np.clip(np.digitize(arr, edges) - 1, 0, self._HIST_NB - 1)
         b = np.zeros(self._HIST_NB)
-        np.add.at(b, idx, weights)
+        np.add.at(b, idx, w)
         s = b.sum()
         if s <= _EPS:
-            return 0.0, (lo, hi)
+            return 0.0
         b = b / s
         nz = b[b > _EPS]
-        return float(-np.sum(nz * np.log(nz))), (lo, hi)
+        return float(-np.sum(nz * np.log(nz)))
 
-    @staticmethod
-    def _weighted_quantiles(arr: np.ndarray, weights: np.ndarray,
-                            qs) -> np.ndarray:
-        order = np.argsort(arr)
-        a = arr[order]
-        w = weights[order]
-        cw = np.cumsum(w)
-        cw = cw / max(cw[-1], _EPS)
-        return np.interp(qs, cw, a)
+    def _total_entropy(self, w: np.ndarray) -> float:
+        """전 축 주변 엔트로피의 합."""
+        return sum(self._hist_entropy(self.theta[ax], w, ax)
+                   for ax in THETA_AXES)
 
-    def _allaxis_entropy(self, weights: np.ndarray) -> float:
-        """전 6축(무계는 적응구간, λ_j 자연구간) 주변 히스토그램 엔트로피 합(§5.1)."""
-        total = 0.0
-        for axis in self.axes:
-            h, _ = self._weighted_hist_entropy(self._axis_arr(axis), weights, axis)
-            total += h
-        return total
-
-    def _current_allaxis_entropy(self) -> float:
-        """H0 = _allaxis_entropy(self.weights) 의 메모이제이션.
-
-        플래너가 한 라운드 내 여러 행동가지·정책에 대해 IG 를 반복 평가할 때
-        H0 는 (신념 불변) 매번 동일하지만 축별 argsort+히스토그램을 재계산하게
-        된다. weights 배열 **객체 자체를 캐시에 참조로 보유**해 id 재활용을 막고,
-        동일 객체일 때 재사용한다 — 수치 완전 동일, 순수 속도 개선.
+    def _current_entropy(self) -> float:
         """
-        cache = getattr(self, "_h0_cache", None)
-        if cache is not None and cache[0] is self.weights:
-            return cache[1]
-        h0 = self._allaxis_entropy(self.weights)
-        self._h0_cache = (self.weights, h0)   # 참조 보유 → id 재활용 방지
+        현재 사후의 전축 엔트로피 H0. 한 라운드 안에서 여러 후보 행동·정책에
+        대해 반복 호출되지만 신념이 불변이므로 값이 같다 → 메모이제이션.
+        가중치 배열 **객체 자체**를 캐시 키로 보유해 id 재활용 오류를 막는다.
+        """
+        if self._h0_cache is not None and self._h0_cache[0] is self.weights:
+            return self._h0_cache[1]
+        h0 = self._total_entropy(self.weights)
+        self._h0_cache = (self.weights, h0)
         return h0
 
-    def expected_infogain_allaxis(self, my_action: int, f_next: float,
-                                  g_next: float = 0.0) -> float:
+    def expected_infogain(self, f_next: float, g_next: float = 0.0) -> float:
         """
-        [v0.9.0 §5] 전축 histogram 기대 정보이득.
+        내가 특정 행동을 두어 다음 호혜신호가 f_next 가 될 때, 상대의 다음 행동
+        관측이 θ̂ 사후를 얼마나 좁힐지의 **기대** 엔트로피 감소.
 
-        내가 my_action 을 둘 때(→ 다음 호혜신호 f_next) 상대 다음 행동 관측이
-        상대 θ̂ posterior 를 얼마나 좁히는가의 기대 엔트로피 감소를, **전 6축**
-        (α,ρ,ω,η,β,λ_j) 주변 히스토그램으로 계산한다(§5.1~5.2). f 기저에서는
-        ω·η 가 상수축이라 자동 0 기여(하위호환).
+            IG = H[θ] − E_{a_j}[ H[θ | a_j] ]
         """
         pC = self._pC(f_next, g_next)
         p_obsC = float(np.sum(self.weights * pC))
-        H0 = self._current_allaxis_entropy()
+        H0 = self._current_entropy()
 
-        def post_entropy(obs_lik):
-            w2 = self.weights * obs_lik
-            ssum = w2.sum()
-            if ssum <= _EPS:
-                return H0
-            return self._allaxis_entropy(w2 / ssum)
+        def post_H(lik):
+            w2 = self.weights * lik
+            s = w2.sum()
+            return H0 if s <= _EPS else self._total_entropy(w2 / s)
 
-        H_ifC = post_entropy(pC)
-        H_ifD = post_entropy(1.0 - pC)
-        H_exp = p_obsC * H_ifC + (1.0 - p_obsC) * H_ifD
-        # 이산 상호정보라 비음 자동 보장(§5.2) — 수치 잔차만 클램프.
+        H_exp = p_obsC * post_H(pC) + (1.0 - p_obsC) * post_H(1.0 - pC)
         return max(0.0, H0 - H_exp)
 
-    def observed_infogain_allaxis(self, obs_action: int, f: float,
-                                  g: float = 0.0) -> float:
+    def observed_infogain(self, obs_action: int, f: float,
+                          g: float = 0.0) -> float:
         """
-        [v0.9.0 §6.1] **실현** 정보이득 — 특정 관측 행동 obs_action 이 이 필터의
-        전축 θ̂ posterior 를 얼마나 좁히는가.
+        **실현** 정보이득 — 특정 관측 행동이 이 필터의 사후를 얼마나 좁히는가.
 
-        IG_other 에 쓰인다: self-projection 필터(상대가 나를 추론)에서, 내가
-        obs_action 을 두면(내 행동은 결정론적으로 알려짐) 상대의 θ̂_self 가 얼마나
-        좁아지는가. 기대(expected)가 아니라 실현 관측 기반이라는 점이 IG_self 와
-        다르다("나는 내가 무엇을 둘지 안다").
+        자기-사영(self-projection) 필터에 쓴다: 내가 obs_action 을 두면(내 행동은
+        내가 확정적으로 안다) 상대가 나에 대해 갖는 믿음 θ̂_self 가 얼마나
+        좁아지는가. "기대"가 아니라 "실현"인 점이 expected_infogain 과 다르다.
         """
         pC = self._pC(f, g)
-        obs_lik = pC if obs_action == COOP else (1.0 - pC)
-        H0 = self._current_allaxis_entropy()
-        w2 = self.weights * obs_lik
-        ssum = w2.sum()
-        if ssum <= _EPS:
+        lik = pC if int(obs_action) == COOP else (1.0 - pC)
+        H0 = self._current_entropy()
+        w2 = self.weights * lik
+        s = w2.sum()
+        if s <= _EPS:
             return 0.0
-        H1 = self._allaxis_entropy(w2 / ssum)
-        return max(0.0, H0 - H1)
-
-    # ------------------------------------------------------------ epistemic
-    def expected_infogain(self, my_action: int, f_next: float,
-                          g_next: float = 0.0) -> float:
-        """
-        내가 my_action 을 둘 때(→ 다음 호혜신호 f_next) 상대 다음 행동 관측으로부터
-        기대되는 θ 정보이득(엔트로피 감소). social EFE 의 epistemic 항.
-        g_next : fg 기저의 상대 직전행동 신호(f 기저에서는 무영향).
-        """
-        pC = self._pC(f_next, g_next)
-        p_obsC = float(np.sum(self.weights * pC))
-        H0 = self._param_entropy()
-
-        def post_entropy(obs_lik):
-            w2 = self.weights * obs_lik
-            ssum = w2.sum()
-            if ssum <= _EPS:
-                return H0
-            w2 = w2 / ssum
-            m_a = np.sum(w2 * self.alpha)
-            m_b = np.sum(w2 * self.beta)
-            v_a = np.sum(w2 * (self.alpha - m_a) ** 2) + 1e-6
-            v_b = np.sum(w2 * (self.beta - m_b) ** 2) + 1e-6
-            return 0.5 * (np.log(v_a) + np.log(v_b))
-
-        H_ifC = post_entropy(pC)
-        H_ifD = post_entropy(1.0 - pC)
-        H_exp = p_obsC * H_ifC + (1.0 - p_obsC) * H_ifD
-        return max(0.0, H0 - H_exp)
+        return max(0.0, H0 - self._total_entropy(w2 / s))
