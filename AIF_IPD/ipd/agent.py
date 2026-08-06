@@ -39,14 +39,17 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from AIF_IPD.core.constants import (
-    COOP, DEFECT, PAYOFF_SELF, opponent_action_from_state,
+    COOP, DEFECT, PAYOFF_SELF, empathy_shift, opponent_action_from_state,
 )
 from AIF_IPD.core.core_affect import CoreAffect
 from AIF_IPD.core.empathy import Empathy
+from AIF_IPD.core.constants import joint_index
+from AIF_IPD.core.qrtd import QuantileTD, RewardModel, state_index
 from AIF_IPD.core.self_model import SelfModel
+from .tom.self_policy import SELF_AXES, SelfPolicy
 from .tom import (
-    GatedToM, ObservationContext, OpponentInversion, OpponentSimulator,
-    RecursiveSocialEFE, SophisticatedPlanner, TheoryOfMind,
+    GatedToM, ObservationContext, OpponentInversion, RecursiveSocialEFE,
+    TheoryOfMind,
 )
 
 
@@ -63,7 +66,7 @@ class EmpathicAgent:
     n_particles : int
         상대 θ̂ 입자필터의 입자 수.
     planning_horizon : int
-        1 이면 myopic(단일스텝 EFE), ≥2 면 SophisticatedPlanner 사용.
+        **형질공간** rollout 지평 H. 1 이면 근시안(다단계 결과 무시).
     recursive_depth : int
         2 면 depth-2 조망수용(자기-사영 필터 주입) 활성.
     self_projection : bool
@@ -72,6 +75,8 @@ class EmpathicAgent:
 
     #: 로깅 채널 목록 — 하위 클래스가 확장한다.
     LOG_KEYS = ("action", "lam", "pred_coop", "reliability",
+                "S_rho", "S_omega", "S_eta", "SD_S_rho", "SD_S_omega",
+                "SD_S_eta", "policy_ess", "policy_G", "q_coop",
                 "E_alpha", "E_rho", "E_omega", "E_eta", "E_beta", "E_lambda_j",
                 "SD_alpha", "SD_rho", "SD_omega", "SD_eta", "SD_beta",
                 "SD_lambda_j", "belief_update", "self_pred_coop",
@@ -81,8 +86,12 @@ class EmpathicAgent:
                 "P_lambda_j")
 
     def __init__(self, lam: float = 0.4, beta_self: float = 4.0,
+                 policy_particles: int = 64, prop_sd: float = 0.40,
+                 policy_gamma: float = 8.0,
+                 w_epi_j: float = 10.0, w_epi_r: float = 1.0,
+                 w_cplx: float = 0.15,
                  beta_other: float = 4.0, n_particles: int = 400,
-                 planning_horizon: int = 2, recursive_depth: int = 2,
+                 planning_horizon: int = 6, recursive_depth: int = 2,
                  self_projection: bool = True, jitter_scale: float = 1.0,
                  lam_schedule: Optional[list] = None,
                  name: str = "Empathic", seed: int = 0):
@@ -108,12 +117,31 @@ class EmpathicAgent:
 
         self.tom = TheoryOfMind(beta_other=beta_other)
         self.gated = GatedToM(self.tom, self.inversion)
+        # 형질공간 정책 — 행동은 여기서 나온다.
+        self.self_policy = SelfPolicy(
+            n_particles=policy_particles, prop_sd=prop_sd, gamma=policy_gamma,
+            horizon=planning_horizon, w_epi_j=w_epi_j, w_epi_r=w_epi_r,
+            w_cplx=w_cplx,
+            beta_self=beta_self,
+            seed=(None if seed is None else seed * 7717 + 31))
+        self._last_policy = {ax: 0.0 for ax in SELF_AXES}
+        self._last_qc = 0.5
+
         self.social_efe = RecursiveSocialEFE(
             self.gated, self.inversion, empathy_factor=self.lam,
             beta_self=beta_self, recursive_depth=recursive_depth,
             self_inversion=self.self_inversion)
 
         # ---- 상호작용 상태 ----
+        # EmpathicAgent(대조군)는 QRTD 를 갖지 않는다. 보수행렬을 아는 것으로
+        # 보고 항상 해석해 s(λ,p) 를 쓴다 — HalloRegAgent 가 이를 덮어쓴다.
+        self.payoff_access = "oracle"
+        self.reward_model = None
+        self.qrtd = None
+        self._prev_sa = None
+        self._shift_used = float("nan")
+        self._shift_oracle = float("nan")
+
         self.my_last = COOP                 # 내 직전 행동 (초기 관례: 협력)
         self.my_actions: List[int] = []
         self.opp_actions: List[int] = []    # 관측한 상대 행동 이력
@@ -211,22 +239,101 @@ class EmpathicAgent:
             # ---------- (3) 상대 행동 이력 기록 ----------
             self.opp_actions.append(opp_action)
 
-        # ---------- (4) 행동 선택 ----------
+        # ---------- (4) 형질공간 정책 선택 → 행동 ----------
+        # 행동을 직접 고르지 않는다. 자기 형질 θ_i = (ρ, ω, η) 의 입자집합을
+        # θ̂_j·λ·ctx 에 조건부로 SMC 갱신하고, 그 사후 혼합에서 행동을 표집한다.
+        #
+        # 기저 역할 스왑 주의 — focal 정책에서는
+        #   f = 상대의 직전 행동 (내가 되갚을 대상 = 호혜 신호)
+        #   g = 나 자신의 직전 행동 (자기 관성)
+        # 상대 모형에서는 f 가 '내 직전 행동' 이었다.
         lam = self.current_lambda()
-        res = self.social_efe.compute(ctx, lam=lam)
-        if self.planning_horizon > 1:
-            sim = OpponentSimulator(self.tom, self.gated, ctx, self.inversion)
-            planner = SophisticatedPlanner(
-                sim, self.social_efe, base_ctx=ctx, empathy_factor=lam,
-                horizon=self.planning_horizon,
-                beta_self=self.social_efe.beta_self)
-            q_action, _, _ = planner.plan(lam=lam)
-            action = COOP if self.rng.random() < q_action[COOP] else DEFECT
+        theta_j = self.inversion.posterior_means()
+
+        f_me = (0.0 if not self.opp_actions
+                else 1.0 - 2.0 * float(self.opp_actions[-1]))
+        g_me = (0.0 if self.my_last is None
+                else 1.0 - 2.0 * float(self.my_last))
+
+        # 상대 협력률 p_j (내 우도의 s(λ,p) 인자) 와 내 협력률 p_i (상대 우도용)
+        p_other = (float(np.mean(self.opp_actions == 0)) if False
+                   else (float(np.mean([1.0 - a for a in self.opp_actions]))
+                         if self.opp_actions else 0.5))
+        p_self = (float(np.mean([1.0 - a for a in self.my_actions]))
+                  if self.my_actions else 0.5)
+
+        # ---- 두 인식항 ----
+        # (a) IG_j : 상대의 숨겨진 의도 θ̂_j 에 대한 정보이득 (행위별)
+        # (b) IG_R : **환경의 잠재 구조 R̂ 에 대한 정보이득** (행위별)
+        # 내 행위는 어떤 결합결과를 관측할지의 분포를 바꾸므로, 겪어보지 않은
+        # 칸(협력 정착 관계에서의 DC 등)을 관측하게 하는 행위가 높은 IG 를
+        # 받는다. 탐색이 사전이 아니라 목적함수에서 나온다.
+        p_coop_j = float(self.inversion.predict_coop(g_me, f_me))
+        ig_j = ig_r = None
+        if (self.self_policy.w_epi_j != 0.0
+                or self.self_policy.w_epi_r != 0.0):
+            # 행위 의존성: 내가 a_i 를 두면 상대의 다음 호혜자극이 f' = a_i 가
+            # 되므로, 행위마다 상대 관측의 기대 정보이득이 달라진다.
+            #   f' = 1 − 2·a_i (내 행동),  g' = 상대 자신의 직전 행동 = f_me
+            ig_j = np.array([
+                self.inversion.expected_infogain(1.0 - 2.0 * a, f_me)
+                for a in (COOP, DEFECT)], dtype=float)
+            if self.reward_model is not None:
+                unc = self.reward_model.uncertainty()      # (4,) 칸별 불확실성
+                span_r = max(float(self.core_affect.payoffs.max()
+                                   - self.core_affect.payoffs.min()), 1e-6)
+                ig_r = np.array([
+                    (p_coop_j * unc[joint_index(a, COOP)]
+                     + (1.0 - p_coop_j) * unc[joint_index(a, DEFECT)]) / span_r
+                    for a in (COOP, DEFECT)], dtype=float)
+
+        # --- 보수 접근 모드에 따른 공급 ---
+        if self.payoff_access == "naive":
+            u_s = self.reward_model.payoff_vector("self")
+            u_o = self.reward_model.payoff_vector("other")
         else:
-            from AIF_IPD.core.generative import softmax
-            q_pi = softmax(-res.G_social,
-                           temperature=1.0 / self.social_efe.beta_self)
-            action = COOP if self.rng.random() < q_pi[COOP] else DEFECT
+            u_s = u_o = None
+
+        # --- 우도 절편: λ-가중 **수익 이점**, (1−γ) 로 라운드당 등가 단위화 ---
+        # A_x = Z_x(s,C) − Z_x(s,D) 는 수익 차이라 규모가 보상의 1/(1−γ) 배다.
+        # 정규화 없이 쓰면 |절편| ≈ 2.5 로 σ(4·절편) 이 포화해 ρ·ω·η 가 로짓에서
+        # 밀려난다(실측). (1−γ) 를 곱하면 '라운드당 평균 이점' 이 되어 1-step
+        # 보상과 같은 차원이 되고 형질 항과 견줄 수 있다.
+        shift_i = None
+        if self.qrtd is not None and self.qrtd.n_obs > 20:
+            s_cur = state_index(
+                COOP if self.my_last is None else int(self.my_last),
+                COOP if not self.opp_actions else int(self.opp_actions[-1]))
+            a_self = (self.qrtd.value(s_cur, COOP, "self")
+                      - self.qrtd.value(s_cur, DEFECT, "self"))
+            a_other = (self.qrtd.value(s_cur, COOP, "other")
+                       - self.qrtd.value(s_cur, DEFECT, "other"))
+            shift_i = float((1.0 - self.qrtd.gamma)
+                            * ((1.0 - lam) * a_self + lam * a_other))
+        elif self.payoff_access == "naive":
+            shift_i = self.reward_model.shift(lam, p_other)
+
+        term = (self.qrtd.terminal_value
+                if (self.qrtd is not None and self.qrtd.n_obs > 20) else None)
+
+        pol = self.self_policy.step(theta_j, lam, f_me, g_me,
+                                    p_other, p_self, ig_j=ig_j,
+                                    u_self=u_s, u_other=u_o,
+                                    terminal=term, shift_i=shift_i,
+                                    p_coop_j=p_coop_j, ig_r=ig_r)
+        q_c = self.self_policy.coop_prob_mixture(f_me, g_me, lam, p_other,
+                                                 shift=shift_i)
+        self._shift_used = (shift_i if shift_i is not None
+                            else empathy_shift(lam, p_other))
+        self._shift_oracle = empathy_shift(lam, p_other)
+        action = COOP if self.rng.random() < q_c else DEFECT
+        self._last_policy = pol
+        self._last_qc = q_c
+        # 다음 라운드 TD 전이의 출발점. 상태는 **결정 시점의** (내 직전, 상대 직전).
+        my_prev = self.my_last if self.my_last is not None else COOP
+        opp_prev = self.opp_actions[-1] if self.opp_actions else COOP
+        self._prev_sa = (state_index(my_prev, opp_prev), int(action))
+        res = None
 
         # ---------- (5) 자기-사영 필터 갱신 ----------
         # 상대의 관점에서: 내 행동이 '관측', 상대 자신의 직전 행동이 호혜자극 f,
@@ -271,8 +378,24 @@ class EmpathicAgent:
         sd = self.inversion.posterior_stds()
         self.log["action"].append(int(action))
         self.log["lam"].append(float(lam))
-        self.log["pred_coop"].append(float(res.info["pc"]))
-        self.log["reliability"].append(float(res.info["reliability"]))
+        # res 는 형질공간 정책 도입 이후 쓰이지 않는다. 예측 협력확률은
+        # 상대 필터에서, 신뢰도는 그 필터의 reliability 에서 직접 읽는다.
+        self.log["pred_coop"].append(
+            float(res.info["pc"]) if res is not None
+            else float(self.inversion.predict_coop(
+                0.0 if self.my_last is None else 1.0 - 2.0 * float(self.my_last),
+                0.0 if not self.opp_actions
+                else 1.0 - 2.0 * float(self.opp_actions[-1]))))
+        self.log["reliability"].append(float(self.inversion.reliability()))
+        # ---- 자기 형질 (ρ, ω, η) 사후 ----
+        sp = self.self_policy.posterior_means()
+        spd = self.self_policy.posterior_stds()
+        for ax in SELF_AXES:
+            self.log[f"S_{ax}"].append(float(sp[ax]))
+            self.log[f"SD_S_{ax}"].append(float(spd[ax]))
+        self.log["policy_ess"].append(float(self._last_policy.get("ess", np.nan)))
+        self.log["policy_G"].append(float(self._last_policy.get("G_mean", np.nan)))
+        self.log["q_coop"].append(float(self._last_qc))
         for ax in ("alpha", "rho", "omega", "eta", "beta", "lambda_j"):
             self.log[f"E_{ax}"].append(float(m[ax]))
             self.log[f"SD_{ax}"].append(float(sd[ax]))
@@ -310,15 +433,26 @@ class HalloRegAgent(EmpathicAgent):
     """
 
     LOG_KEYS = EmpathicAgent.LOG_KEYS + (
-        "valence", "arousal", "lambda_aff", "lambda_ctx", "rpe", "kl",
-        "expected_reward", "baseline_reward")
+        "valence", "arousal", "lambda_aff", "lambda_ctx", "rpe", "surprise",
+        "expected_reward", "baseline_reward", "pessimism", "social_distance",
+        "shift_used", "shift_oracle", "qrtd_n", "value",
+        "lambda_setpoint")
 
     def __init__(self, w_cd: float = 0.5, lam_gain: float = 0.05,
                  lam_min: float = 0.0, lam_max: float = 1.0,
-                 social_lr: float = 0.06, kl_scale: float = 0.05,
+                 social_lr: float = 0.02, identity_lr: float = 0.15,
+                 kl_scale: float = 0.05,
+                 recency_tau: float = 200.0, familiarity_scale: float = 30.0,
+                 k_disc: float = 3.0,
                  lam_floor: float = 0.10, lam_ceil: float = 0.70,
                  identity_memory: bool = True, regulate: bool = True,
                  alpha_scale: float = 2.0,
+                 payoff_access: str = "naive",
+                 qrtd_gamma: float = 0.5, qrtd_lr: float = 0.20,
+                 seed_history: bool = True,
+                 history_coop_mean: float = 0.55,
+                 history_coop_sd: float = 0.18,
+                 history_distance_slope: float = 0.0,
                  name: str = "HalloReg", **kwargs):
         # 초기 λ 는 SelfModel 설정점이 결정하므로, 부모의 lam 인자는 임시값이다.
         kwargs.pop("lam", None)
@@ -328,10 +462,50 @@ class HalloRegAgent(EmpathicAgent):
         self.regulate = bool(regulate)
 
         # ---- 위계 구성 ----
-        self.self_model = SelfModel(social_lr=social_lr,
-                                    lam_floor=lam_floor, lam_ceil=lam_ceil)
+        self.self_model = SelfModel(
+            social_lr=social_lr, identity_lr=identity_lr,
+            recency_tau=recency_tau, familiarity_scale=familiarity_scale,
+            k_disc=k_disc, lam_floor=lam_floor, lam_ceil=lam_ceil)
         self.core_affect = CoreAffect(self.self_model, payoffs=PAYOFF_SELF,
                                       kl_scale=kl_scale)
+
+        # ---- 분포적 가치·보상 학습 (QRTD) ----
+        # payoff_access — **기본값은 "naive"** (v1.5.2 전환).
+        #   "naive"  : 보수행렬을 미리 관측하지 못한다. 관측된 보상만으로
+        #              R̂(1-step 보상)·Z(수익)를 학습하고, 우도 절편도 학습된
+        #              ŝ(λ,p) 를 쓴다. 환경의 보수 구조가 변동할 수 있으므로
+        #              이것이 기본이어야 한다 — 이전 기본값 "oracle" 은
+        #              HalloReg 에게만 매 라운드 현재 보수행렬을 넘겨주어
+        #              고정전략과의 비교를 교란했다(H4 의 우위 중 얼마가 모형이고
+        #              얼마가 정보 접근 특권인지 분리 불가).
+        #   "oracle" : 보수행렬 직접 관측. 상한 기준·절제 대조로만 쓴다.
+        self.payoff_access = str(payoff_access)
+        self.reward_model = RewardModel(lr=max(qrtd_lr * 2, 0.02))
+        self.qrtd = QuantileTD(gamma=qrtd_gamma, lr=qrtd_lr,
+                               seed=(kwargs.get("seed", 0) or 0) + 5171)
+        self.reward_model.set_scale(float(PAYOFF_SELF.max()
+                                          - PAYOFF_SELF.min()))
+        # Z 의 Huber 임계는 **가치 척도**(보상 범위 / (1−γ))에 맞춘다.
+        self.qrtd.set_scale(float(PAYOFF_SELF.max() - PAYOFF_SELF.min())
+                            / max(1.0 - qrtd_gamma, 1e-6))
+
+        self._prev_sa = None            # 직전 (상태, 행위) — TD 전이 구성용
+        # ---- 사전 사회사 적재 ----
+        # 개체는 백지로 사회에 진입하지 않는다. 실험 이전의 관계망(가까운 사람 ·
+        # 지인 · 먼 타인)을 미리 적재해야 거리가중 설정점이 실제로 작동한다.
+        # 적재하지 않으면 모든 개체의 λ_0 이 0.40 으로 동일해져 사회적 거리가
+        # λ 에 아무 영향도 주지 못한다.
+        if seed_history:
+            self.self_model.seed_social_history(
+                PAYOFF_SELF, gamma=qrtd_gamma,
+                value_init=self.qrtd.init_value,
+                value_spread=self.qrtd.init_spread,
+                coop_mean=history_coop_mean,
+                coop_sd=history_coop_sd,
+                distance_coop_slope=history_distance_slope,
+                rng=np.random.default_rng(
+                    (kwargs.get("seed", 0) or 0) * 7919 + 104729))
+
         lam0 = self.self_model.lambda_setpoint(PAYOFF_SELF)
         self.empathy = Empathy(lam_init=lam0, w_cd=w_cd, gain=lam_gain,
                                lam_min=lam_min, lam_max=lam_max,
@@ -383,39 +557,103 @@ class HalloRegAgent(EmpathicAgent):
         # --- 1. 현재 보수 반영 (비정상 보수 스케줄 대응) ---
         self.core_affect.set_payoffs(PAYOFF_SELF)
 
+        # --- 1b. QRTD 학습 ---
+        # 관측된 joint outcome 으로 (i) 1-step 보상모형 R̂ 과 (ii) 수익 가치 Z 를
+        # 갱신한다. Z 는 직전 (상태, 행위) 로부터의 전이가 있어야 하므로
+        # _prev_sa 가 설정된 이후에만 갱신된다.
+        from AIF_IPD.core.constants import PAYOFF_OTHER
+        j = int(observed_state)
+        r_s, r_o = float(PAYOFF_SELF[j]), float(PAYOFF_OTHER[j])
+        self.reward_model.update(j, r_s, r_o)
+        v_now = v_shift = None
+        v_vec = None
+        if self._prev_sa is not None:
+            s_prev, a_prev = self._prev_sa
+            my_prev = self.my_actions[-1] if self.my_actions else COOP
+            s_now = state_index(my_prev, int(opp_action))
+            # 갱신 전후의 Z(s,a) 를 비교해 **상황가치 믿음의 이동량**을 얻는다.
+            # 이것이 arousal 의 인자다 — 보상 분포의 이동이 아니라 전망의 붕괴다.
+            before = self.qrtd.z_self.values[s_prev, a_prev].copy()
+            self.qrtd.update(s_prev, a_prev, r_s, r_o, s_now, self._last_qc)
+            after = self.qrtd.z_self.values[s_prev, a_prev]
+            span_v = float(self.core_affect.payoffs.max()
+                           - self.core_affect.payoffs.min())
+            span_v = max(span_v / max(1.0 - self.qrtd.gamma, 1e-6), 1e-6)
+            v_shift = float(np.mean(np.abs(after - before)) / span_v)
+            # valence 의 재료: 방금 겪은 (상태, 행위) 의 Z 분위수 벡터 전체.
+            # SelfModel 이 EMA 축약해 '이 상대에 대한 기대 보상 분포' 로 유지
+            # 하고, 모집단 참조와의 중앙값 순위가 valence 가 된다.
+            v_vec = after.copy()
+            v_now = float(np.median(after))
+        # 참조(사전 관계들의 가치분포)를 **같은 재귀로 한 스텝** 굴린다.
+        # 현재 상대의 Z 와 학습 단계를 맞춰 미수렴 편향을 상쇄한다.
+        if self.qrtd is not None:
+            self.self_model.tick_reference(
+                self.qrtd.gamma, self.qrtd.z_self.lr, self.qrtd.z_self.kappa)
+
         # --- 2. 핵심정서 구성 ---
-        affect = self.core_affect.step(observed_state)
+        # 상대의 협력 여부를 함께 넘긴다 — SelfModel 이 거리가중 협력률(친사회성
+        # 설정점의 원천)을 누적하는 데 쓴다.
+        affect = self.core_affect.step(
+            observed_state, opponent_cooperated=(int(opp_action) == COOP),
+            value_vector=v_vec, value_shift=v_shift,
+            z_snapshot=(self.qrtd.z_self.values
+                        if self.qrtd is not None else None))
 
         # --- 3. 상대 특성 기억 commit ---
+        # 자기 형질 사후도 함께 보관 — 재조우 시 "이 사람에게는 이런 태세로
+        # 대했었다" 가 복원된다. 호혜 경로에도 기억이 생긴다.
+        self.self_model.commit_self_theta(
+            self._identity, self.self_policy.posterior_means(),
+            self.self_policy.posterior_stds())
         self.self_model.commit_theta(self._identity, inferred,
                                      self.inversion.posterior_stds())
 
-        # --- 4. 맥락적 동기 ---
-        lam_ctx = self.empathy.contextual(inferred["alpha"],
-                                          inferred["lambda_j"])
-
-        # --- 5. λ 갱신 ---
+        # --- 4. λ 갱신 (v1.5.0: 순수 정서 구동 — λ_ctx 제거) ---
+        # OpponentInversion 의 영향은 호혜 경로(ρ,ω,η)로 이관되었다. λ 는
+        # 오직 CoreAffect 의 λ_aff 만이 움직인다.
         if self.regulate:
-            self.lam = self.empathy.step(affect["lambda_aff"], lam_ctx)
+            self.lam = self.empathy.step(affect["lambda_aff"])
         else:
             self.lam = self.empathy.lam      # 설정점 고정 (절제 대조)
         self.social_efe.lam = self.lam
 
         return {"valence": affect["valence"], "arousal": affect["arousal"],
-                "lambda_aff": affect["lambda_aff"], "lambda_ctx": lam_ctx,
-                "rpe": affect["rpe"], "kl": affect["kl"],
+                "lambda_aff": affect["lambda_aff"], "lambda_ctx": 0.0,
+                "rpe": affect["rpe"], "surprise": affect["surprise"],
                 "expected_reward": self.core_affect.expected_reward(),
-                "baseline_reward": affect["r_base"]}
+                "baseline_reward": affect["r_base"],
+                "pessimism": affect["pessimism"],
+                # 실제 쓰인 절편과 오라클 해석해 — naive 모드의 학습 진행을
+                # 사후에 검증할 수 있게 둘 다 남긴다.
+                "shift_used": getattr(self, "_shift_used", float("nan")),
+                "shift_oracle": getattr(self, "_shift_oracle", float("nan")),
+                "value": affect["value"],
+                "qrtd_n": float(self.qrtd.n_obs
+                                if self.qrtd is not None else 0),
+                "social_distance": self.self_model.social_distance(
+                    self._identity),
+                "lambda_setpoint": self.self_model.lambda_setpoint()}
 
     # ============================================================ 로깅
     def _record(self, action, lam, res, belief_update, reg) -> None:
         super()._record(action, lam, res, belief_update, reg)
         # 첫 라운드는 관측이 없어 reg 가 비어 있다 → 중립값으로 채운다.
         defaults = {"valence": 0.0, "arousal": 0.0, "lambda_aff": 0.0,
-                    "lambda_ctx": 0.0, "rpe": 0.0, "kl": 0.0,
+                    "lambda_ctx": 0.0, "rpe": 0.0, "surprise": 0.0,
                     "expected_reward": self.core_affect.expected_reward(),
-                    "baseline_reward": SelfModel.expected_reward(
-                        self.self_model.social_reward_prior(),
-                        self.core_affect.payoffs)}
+                    "baseline_reward":
+                        self.self_model.reference_median(
+                            exclude=self._identity),
+                    "pessimism": 0.0,
+                    "social_distance": self.self_model.social_distance(
+                        self._identity),
+                    "lambda_setpoint": self.self_model.lambda_setpoint(),
+                    "shift_used": getattr(self, "_shift_used", float("nan")),
+                    "shift_oracle": getattr(self, "_shift_oracle",
+                                            float("nan")),
+                    "value": float("nan"),
+                    "qrtd_n": float(self.qrtd.n_obs
+                                    if self.qrtd is not None else 0)}
         for k, v in defaults.items():
             self.log[k].append(float(reg.get(k, v)))

@@ -86,8 +86,26 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "CPU 바운드 단일스레드 작업이므로 물리 코어 수 지정을 권장")
     p.add_argument("--particles", type=int, default=400,
                    help="입자필터 입자 수")
-    p.add_argument("--horizon", type=int, default=2,
-                   help="계획 지평 (1 = myopic, 2 이상 = sophisticated planning)")
+    p.add_argument("--payoff-access", choices=["oracle", "naive"],
+                   default="naive",
+                   help="보수행렬 접근 (기본 naive). naive=미리 관측하지 못하고 "
+                        "QRTD 로 학습, oracle=직접 관측(상한 기준·절제용)")
+    p.add_argument("--tau-risk", type=float, default=0.3,
+                   help="위험민감 평가의 하위 꼬리 비율 (1.0 = 위험중립)")
+    p.add_argument("--policy-particles", type=int, default=64,
+                   help="형질공간 정책의 입자 수 K")
+    p.add_argument("--prop-sd", type=float, default=0.40,
+                   help="형질 제안 확산폭 σ_prop")
+    p.add_argument("--policy-gamma", type=float, default=8.0,
+                   help="정책 정밀도 γ (q(π) ∝ exp(−γG))")
+    p.add_argument("--w-epi-j", type=float, default=10.0,
+                   help="상대 의도 θ̂_j 인식항 가중 (0 = 절제)")
+    p.add_argument("--w-epi-r", type=float, default=1.0,
+                   help="환경 구조 R̂ 인식항 가중 (0 = 절제)")
+    p.add_argument("--w-cplx", type=float, default=0.15,
+                   help="형질 EFE 의 복잡도 항 가중 (사전으로부터의 KL)")
+    p.add_argument("--horizon", type=int, default=6,
+                   help="(v1.6.0 폐기) rollout 제거로 무의미. 종단 Z 할인에만 영향")
     p.add_argument("--w-cd", type=float, default=0.5, dest="w_cd",
                    help="Empathy 의 정서–맥락 채널 가중 w_cd")
     p.add_argument("--lam-gain", type=float, default=0.05, dest="lam_gain",
@@ -111,7 +129,8 @@ def build_config(args: argparse.Namespace) -> Config:
     cfg = Config(
         seeds=args.seeds, rounds=args.rounds, jobs=args.jobs,
         results=results, env_error=args.env_error,
-        n_particles=args.particles, horizon=args.horizon,
+        n_particles=args.particles, horizon=args.horizon, w_cplx=args.w_cplx, w_epi_j=args.w_epi_j, w_epi_r=args.w_epi_r, policy_gamma=args.policy_gamma, prop_sd=args.prop_sd, policy_particles=args.policy_particles,
+        payoff_access=args.payoff_access,
         w_cd=args.w_cd, lam_gain=args.lam_gain, quick=args.quick,
         max_compositions=args.max_compositions)
 

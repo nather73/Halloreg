@@ -148,7 +148,7 @@ def build_agent(cfg: dict):
     """
     에이전트 스펙 dict → 인스턴스.
 
-    cfg = {"type": "halloreg" | "empathic" | "strategy", ...kwargs}
+    cfg = {"type": "halloreg" | "empathic" | "strategy" | "likelihood", ...}
     """
     cfg = dict(cfg)
     typ = cfg.pop("type")
@@ -159,6 +159,10 @@ def build_agent(cfg: dict):
     if typ == "strategy":
         kind = cfg.pop("kind")
         return make_opponent(kind, **cfg)
+    if typ == "likelihood":
+        # 우도 기저에서 직접 생성하는 상대 — 참 형질을 알므로 복원 검증에 쓴다.
+        from .env import LikelihoodAgent
+        return LikelihoodAgent(**cfg)
     raise ValueError(f"알 수 없는 에이전트 type: {typ}")
 
 

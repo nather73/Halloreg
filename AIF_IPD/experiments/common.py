@@ -58,7 +58,16 @@ class Config:
     results: Path = Path("results")
     env_error: float = 0.05          # 환경 계층 실행오류 (모든 유형 대칭)
     n_particles: int = 400
-    horizon: int = 2                 # 계획 지평
+    horizon: int = 6                     # 형질공간 rollout 지평
+    policy_particles: int = 64
+    prop_sd: float = 0.40
+    policy_gamma: float = 8.0
+    w_epi_j: float = 10.0
+    w_epi_r: float = 1.0
+    w_cplx: float = 0.15
+    payoff_access: str = "naive"
+    qrtd_gamma: float = 0.5
+    qrtd_lr: float = 0.20
     w_cd: float = 0.5                # Empathy 의 정서–맥락 가중
     lam_gain: float = 0.05           # λ 적분 이득 η
     quick: bool = False              # 스모크 모드
@@ -67,6 +76,12 @@ class Config:
     def halloreg_kwargs(self) -> dict:
         """HalloRegAgent 생성 인자 (실험 전역에서 동일하게 쓴다)."""
         return {"n_particles": self.n_particles, "planning_horizon": self.horizon,
+                "policy_particles": self.policy_particles,
+                "prop_sd": self.prop_sd, "policy_gamma": self.policy_gamma,
+                "w_epi_j": self.w_epi_j, "w_epi_r": self.w_epi_r,
+                "w_cplx": self.w_cplx,
+                "payoff_access": self.payoff_access,
+                "qrtd_gamma": self.qrtd_gamma, "qrtd_lr": self.qrtd_lr,
                 "w_cd": self.w_cd, "lam_gain": self.lam_gain}
 
     def empathic_kwargs(self, lam: float) -> dict:

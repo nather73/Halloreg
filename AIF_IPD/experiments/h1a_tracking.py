@@ -103,7 +103,19 @@ def _phase_signal(scenario: str, n_rounds: int) -> np.ndarray:
 
 
 def run_tracking(cfg: Config, reg: Registry) -> dict:
-    """과제 A — 형질 전환 추적."""
+    """
+    과제 A — 형질 전환 추적.
+
+    [규모 요건] 전환 주기가 SWITCH_PERIOD(=30)이므로 cfg.rounds 가 그 이하이면
+    세션 안에서 국면 전환이 한 번도 일어나지 않는다. 그러면 참조 신호가 상수가
+    되어 상관이 정의되지 않고(r = 0), 이 검정은 무의미해진다. 스모크 규모에서
+    미지지가 나오는 것은 그 때문이며 모형의 실패가 아니다 — 로그로 경고한다.
+    """
+    if cfg.rounds < 2 * SWITCH_PERIOD:
+        LOGGER.warning(
+            "[H1A] rounds=%d < 2×SWITCH_PERIOD(%d) — 국면 전환이 없어 추적 "
+            "상관이 정의되지 않습니다. 본 검정은 rounds ≥ %d 에서만 유효합니다.",
+            cfg.rounds, SWITCH_PERIOD, 2 * SWITCH_PERIOD)
     scenarios = list(SWITCH_SCENARIOS)
     hk = cfg.halloreg_kwargs()
 

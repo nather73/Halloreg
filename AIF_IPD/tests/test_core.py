@@ -108,88 +108,169 @@ def test_efe() -> None:
 
 # ==================================================================== SelfModel
 def test_self_model() -> None:
-    print("\n[3] SelfModel — 기억·사전·설정점")
+    print("\n[3] SelfModel — 기억·사회적 거리·설정점·모집단 참조")
     reset_payoffs()
     sm = SelfModel()
-    # 신규 identity 는 무정보 사전
+    sm.set_payoff_scale(PAYOFF_SELF)
     pr = sm.theta_prior(None)
-    check("신규 identity → 무정보 θ 사전",
-          abs(pr["lambda_j"][0] - 0.5) < 1e-9)
-    # 무정보 사회 기저에서 λ_0 = (floor + ceil)/2
-    lam0 = sm.lambda_setpoint(PAYOFF_SELF)
-    check("무정보 사회 기저 → λ_0 = 구간 중점",
-          abs(lam0 - 0.5 * (sm.lam_floor + sm.lam_ceil)) < 1e-6,
-          f"λ_0={lam0:.4f}")
+    check("신규 identity → 무정보 θ 사전", abs(pr["lambda_j"][0] - 0.5) < 1e-9)
+    lam0 = sm.lambda_setpoint()
+    check("무기억 → λ_0 = 구간 중점", abs(lam0 - 0.40) < 1e-9, f"λ_0={lam0:.6f}")
 
-    # 기억 commit 후 재조우 시 사전이 좁아지는가
     sm.commit_theta(7, {"alpha": 1.5, "rho": 0.2, "omega": 0.0, "eta": 0.0,
                         "beta": 4.0, "lambda_j": 0.8},
                     {"alpha": 0.3, "rho": 0.3, "omega": 0.3, "eta": 0.3,
                      "beta": 0.3, "lambda_j": 0.05})
     pr2 = sm.theta_prior(7)
-    check("재조우 시 사전 평균이 기억을 반영",
-          abs(pr2["alpha"][0] - 1.5) < 1e-9)
-    check("재조우 사전의 폭이 무정보보다 좁음",
-          pr2["alpha"][1] < pr["alpha"][1],
-          f"{pr2['alpha'][1]:.3f} < {pr['alpha'][1]:.3f}")
-    check("사전 폭에 하한이 걸림 (점질량 방지)",
-          pr2["lambda_j"][1] >= 0.25 * sm.theta_prior_std["lambda_j"] - 1e-12)
+    check("재조우 시 사전 평균이 기억을 반영", abs(pr2["alpha"][0] - 1.5) < 1e-9)
+    check("사전 폭에 하한", pr2["lambda_j"][1] >= 0.25 * 0.3 - 1e-12)
 
-    # 설정점의 방향성: 좋은 결과만 누적하면 λ_0 상승
-    sm2 = SelfModel()
+    # 거리: 빈도·최근성
+    sm2 = SelfModel(); sm2.set_payoff_scale(PAYOFF_SELF)
+    check("미지의 상대는 d = 1", abs(sm2.social_distance(99) - 1.0) < 1e-12)
+    for _ in range(50):
+        sm2.observe_identity(1)
+    sm2.observe_identity(2)
+    check("자주 만난 상대가 더 가깝다",
+          sm2.social_distance(1) < sm2.social_distance(2))
+    check("가까울수록 역가중이 크다",
+          sm2.distance_weight(1) > sm2.distance_weight(2))
+
+    # ---- 사전 사회사 (5인) + 모집단 참조 valence ----
+    sm3 = SelfModel(); 
+    sm3.seed_social_history(PAYOFF_SELF, gamma=0.9,
+                            rng=np.random.default_rng(3))
+    summ = sm3.social_summary()
+    check("사전 사회사는 5인", summ["n_others"] == 5, f"n={summ['n_others']}")
+    ds = [r["distance"] for r in summ["rows"]]
+    check("세 거리 대역", min(ds) < 0.4 and max(ds) > 0.8)
+    check("가치분포가 직접 부여됨 (관측 생성 없음)",
+          all(r["value_median"] is not None for r in summ["rows"]))
+
+    # valence: 나쁜 상대(가치 낮음) → 음수, 좋은 상대 → 양수
+    taus = sm3.taus
+    # 참조는 QRTD 초깃값(2.0)에서 출발해 tick_reference 로 학습된다.
+    # 검사를 위해 참조를 충분히 굴려 인물 간 차이가 벌어지게 한다.
     for _ in range(200):
-        sm2.commit_reward(1, np.ones(4), observed_state=CC)
-    check("상호협력만 경험 → 설정점 상승 → λ_0 상승",
-          sm2.lambda_setpoint(PAYOFF_SELF) > lam0)
-    sm3 = SelfModel()
-    for _ in range(200):
-        sm3.commit_reward(1, np.ones(4), observed_state=CD)
-    check("착취만 경험 → 설정점 하강 → λ_0 하강",
-          sm3.lambda_setpoint(PAYOFF_SELF) < lam0)
+        sm3.tick_reference(gamma=0.9, lr=0.05, kappa=1.25)
+    ref_med = sm3.reference_median()
+    check("참조가 학습으로 이동", ref_med > 2.5, f"참조 중앙값={ref_med:.2f}")
+    lo = (ref_med - 3.0) + 0.0 * (taus - 0.5)     # 참조보다 낮은 관계
+    hi = (ref_med + 3.0) + 0.0 * (taus - 0.5)     # 참조보다 높은 관계
+    sm3.update_partner_value(500, lo)
+    check("나쁜 관계 → valence < 0", sm3.social_valence(500) < -0.3,
+          f"v={sm3.social_valence(500):+.3f}")
+    sm3.update_partner_value(501, hi)
+    check("좋은 관계 → valence > 0", sm3.social_valence(501) > 0.3,
+          f"v={sm3.social_valence(501):+.3f}")
+    check("참조는 현재 상대를 제외한다",
+          abs(sm3.social_valence(500)
+              - (2 * __import__("AIF_IPD.core.distributional",
+                                fromlist=["vector_cdf"]).vector_cdf(
+                    sm3.population_reference(exclude=500), taus,
+                    float(lo[10])) - 1))
+          < 1e-9)
+
+    # 설정점 방향성 (협력률 기반 — 가치분포와 독립)
+    sm4 = SelfModel()
+    for _ in range(40):
+        sm4.observe_identity(1); sm4.commit_observation(1, opponent_cooperated=True)
+    sm5 = SelfModel()
+    for _ in range(40):
+        sm5.observe_identity(1); sm5.commit_observation(1, opponent_cooperated=False)
+    check("가까운 협력자 → λ_0 상승", sm4.lambda_setpoint() > lam0)
+    check("가까운 착취자 → λ_0 하강", sm5.lambda_setpoint() < lam0)
 
 
-# ==================================================================== CoreAffect
+def test_distributional() -> None:
+    print("\n[3b] 분위수 격자 유틸리티")
+    from AIF_IPD.core.distributional import (
+        DEFAULT_TAUS, midpoint_taus, vector_cdf,
+    )
+    check("기본 격자는 21채널", len(DEFAULT_TAUS) == 21)
+    check("τ=0.5 매듭 존재", any(abs(x - 0.5) < 1e-12 for x in DEFAULT_TAUS))
+    try:
+        midpoint_taus(20); even_ok = False
+    except ValueError:
+        even_ok = True
+    check("짝수 채널 거부", even_ok)
+
+    taus = np.array(DEFAULT_TAUS)
+    v = np.linspace(0.0, 10.0, 21)
+    check("vector_cdf: 중앙값 → 0.5", abs(vector_cdf(v, taus, 5.0) - 0.5) < 1e-9)
+    check("vector_cdf: 순증가",
+          all(vector_cdf(v, taus, x) < vector_cdf(v, taus, x + 0.5)
+              for x in (-2.0, 2.0, 8.0, 12.0)))
+    check("vector_cdf ∈ (0,1) 유계",
+          0.0 < vector_cdf(v, taus, -1e6) and vector_cdf(v, taus, 1e6) < 1.0)
+    check("퇴화 분포 → 중립 0.5",
+          abs(vector_cdf(np.full(21, 3.0), taus, 7.0) - 0.5) < 1e-12)
+
+
 def test_core_affect() -> None:
-    print("\n[4] CoreAffect — valence(RPE) × arousal(KL)")
+    print("\n[4] CoreAffect — 모집단 참조 valence × 모형갱신 arousal")
     reset_payoffs()
     sm = SelfModel()
+    sm.seed_social_history(PAYOFF_SELF, gamma=0.9,
+                           rng=np.random.default_rng(1))
+    for _ in range(200):
+        sm.tick_reference(gamma=0.9, lr=0.05, kappa=1.25)
     ca = CoreAffect(sm, PAYOFF_SELF)
     ca.begin_partner(1)
+    taus = sm.taus
+    med = sm.reference_median()
 
-    out_good = ca.step(CC)          # 최고 보수 R=3 > 기저 평균 2.25
-    check("좋은 결과 → RPE > 0 그리고 valence > 0",
-          out_good["rpe"] > 0 and out_good["valence"] > 0,
-          f"RPE={out_good['rpe']:+.3f}, V={out_good['valence']:+.3f}")
+    # 나쁜 가치 벡터를 겪는 상대 → 음의 valence (사회적 적합도 낮음)
+    bad = (med - 3.0) + 0.5 * (taus - 0.5)
+    out_bad = ca.step(CD, opponent_cooperated=False,
+                      value_vector=bad, value_shift=0.02)
+    check("나쁜 관계 → valence < 0", out_bad["valence"] < 0,
+          f"V={out_bad['valence']:+.3f}")
+    check("valence 부호 = RPE(중앙값 차) 부호",
+          np.sign(out_bad["valence"]) == np.sign(out_bad["rpe"]))
 
+    # 좋은 가치 벡터 → 양의 valence
     sm2 = SelfModel()
+    sm2.seed_social_history(PAYOFF_SELF, gamma=0.9,
+                            rng=np.random.default_rng(1))
+    for _ in range(200):
+        sm2.tick_reference(gamma=0.9, lr=0.05, kappa=1.25)
     ca2 = CoreAffect(sm2, PAYOFF_SELF)
     ca2.begin_partner(1)
-    out_bad = ca2.step(CD)          # 최저 보수 S=0 < 기저 평균
-    check("나쁜 결과 → RPE < 0 그리고 valence < 0",
-          out_bad["rpe"] < 0 and out_bad["valence"] < 0,
-          f"RPE={out_bad['rpe']:+.3f}, V={out_bad['valence']:+.3f}")
-
-    check("valence 부호 = RPE 부호 (정의상 항등)",
-          np.sign(out_good["rpe"]) == np.sign(out_good["valence"])
-          and np.sign(out_bad["rpe"]) == np.sign(out_bad["valence"]))
-    check("valence ∈ (−1, +1)", abs(out_good["valence"]) < 1.0)
-    check("arousal ∈ [0, 1)",
-          0.0 <= out_good["arousal"] < 1.0 and 0.0 <= out_bad["arousal"] < 1.0)
+    good = (sm2.reference_median() + 3.0) + 0.5 * (sm2.taus - 0.5)
+    out_good = ca2.step(CC, opponent_cooperated=True,
+                        value_vector=good, value_shift=0.02)
+    check("좋은 관계 → valence > 0", out_good["valence"] > 0,
+          f"V={out_good['valence']:+.3f}")
+    check("valence ∈ (−1, 1)", abs(out_good["valence"]) < 1.0)
     check("λ_aff = valence × arousal",
           abs(out_good["lambda_aff"]
               - out_good["valence"] * out_good["arousal"]) < 1e-12)
 
-    # 각성의 감쇠: 같은 관측을 반복하면 믿음 갱신(KL)이 줄어 arousal 이 하강
-    sm3 = SelfModel()
-    ca3 = CoreAffect(sm3, PAYOFF_SELF)
-    ca3.begin_partner(1)
-    aro = [ca3.step(CC)["arousal"] for _ in range(20)]
-    check("반복 관측 → arousal 단조 감쇠 (놀람 소멸)",
-          all(aro[i] >= aro[i + 1] - 1e-9 for i in range(len(aro) - 1)),
-          f"{aro[0]:.4f} → {aro[-1]:.4f}")
+    # arousal = 모형 갱신량의 단조 포화
+    a_small = ca2.step(CC, value_vector=good, value_shift=0.005)["arousal"]
+    a_big = ca2.step(CC, value_vector=good, value_shift=0.20)["arousal"]
+    check("arousal 은 갱신량의 단조증가", a_big > a_small,
+          f"{a_small:.4f} < {a_big:.4f}")
+    check("갱신량 0 → arousal 0",
+          ca2.step(CC, value_vector=good, value_shift=0.0)["arousal"] < 1e-12)
+
+    # **참조 비추종**: 착취를 반복해도 참조(타인들)는 그대로 → valence 유지
+    v0 = ca.step(CD, value_vector=bad, value_shift=0.01)["valence"]
+    for _ in range(200):
+        ca.step(CD, value_vector=bad, value_shift=0.01)
+    v1 = ca.last["valence"]
+    check("만성 착취에도 valence 소멸·역전 없음 (모집단 참조)",
+          v1 < -0.3 and abs(v1 - v0) < 0.2,
+          f"v[0]={v0:+.3f} → v[200]={v1:+.3f} — 시간 자기비교면 역전됐을 것")
+
+    # 퇴화 경로 (QRTD 없는 대조군)
+    sm3 = SelfModel(); ca3 = CoreAffect(sm3, PAYOFF_SELF); ca3.begin_partner(1)
+    o = ca3.step(CC)
+    check("value_vector 없이도 동작 (중립 정서)",
+          o["valence"] == 0.0 and o["arousal"] == 0.0)
 
 
-# ==================================================================== Empathy
 def test_empathy() -> None:
     print("\n[5] Empathy — λ 적분기")
     em = Empathy(lam_init=0.4, w_cd=0.5, gain=0.05)
@@ -203,23 +284,18 @@ def test_empathy() -> None:
 
     prev = em.lam
     new = em.step(lambda_aff=0.6, lambda_ctx=0.4)
-    expected = prev + 0.05 * (0.5 * 0.6 + 0.5 * 0.4)
-    check("갱신식 수치 일치", abs(new - expected) < 1e-12,
+    # v1.5.0: λ_ctx 는 무시된다 — λ 는 오직 정서만이 움직인다.
+    expected = prev + 0.05 * 0.6
+    check("갱신식 = λ + η·λ_aff (λ_ctx 무시)", abs(new - expected) < 1e-12,
           f"{new:.6f} vs {expected:.6f}")
+    check("lambda_ctx 인자가 결과에 영향 없음",
+          abs(Empathy(lam_init=0.4, gain=0.05).step(0.6, 0.0)
+              - Empathy(lam_init=0.4, gain=0.05).step(0.6, 0.9)) < 1e-12)
 
-    # 클리핑
     em2 = Empathy(lam_init=0.99, w_cd=0.0, gain=1.0)
     check("λ 상한 클리핑", em2.step(10.0, 0.0) <= 1.0)
     em3 = Empathy(lam_init=0.01, w_cd=0.0, gain=1.0)
     check("λ 하한 클리핑", em3.step(-10.0, 0.0) >= 0.0)
-
-    # 채널 가중
-    ea = Empathy(lam_init=0.5, w_cd=0.0, gain=0.1)     # 순수 정서 구동
-    ec = Empathy(lam_init=0.5, w_cd=1.0, gain=0.1)     # 순수 맥락 구동
-    check("w_cd=0 이면 λ_ctx 무시",
-          abs(ea.step(0.0, 1.0) - 0.5) < 1e-12)
-    check("w_cd=1 이면 λ_aff 무시",
-          abs(ec.step(1.0, 0.0) - 0.5) < 1e-12)
 
 
 # ==================================================================== 입자필터
@@ -328,6 +404,143 @@ def test_agents() -> None:
           len(e.my_actions) == 60 and len(h["my_act"]) == 60)
     check("에이전트 이력이 실제 방출 행동과 일치",
           all(int(e.my_actions[i]) == int(h["my_act"][i]) for i in range(60)))
+
+
+# ==================================================================== QRTD
+def test_qrtd() -> None:
+    print("\n[3c] QRTD — 분포적 가치·보상 학습")
+    from AIF_IPD.core.constants import PAYOFF_OTHER
+    from AIF_IPD.core.qrtd import (
+        QuantileTD, RewardModel, mean_value, state_index,
+    )
+    reset_payoffs()
+
+    check("state_index 는 (내직전, 상대직전) 을 4상태로",
+          state_index(0, 0) == 0 and state_index(1, 1) == 3
+          and state_index(0, 1) == 1 and state_index(1, 0) == 2)
+
+    q = np.arange(21, dtype=float)
+    check("mean_value = 전체 평균 (중점법 적분)",
+          abs(mean_value(q) - q.mean()) < 1e-12)
+    # tau_risk 폐기 — 위험민감 축약(CVaR)은 더 이상 쓰지 않는다.
+    check("가치 조회는 기대값 (위험민감 축약 없음)",
+          not hasattr(QuantileTD(seed=0), "tau_risk"))
+
+    # ---- RewardModel 이 참 보수로 수렴하고 해석해를 복원하는가 ----
+    rm = RewardModel(lr=0.10)
+    rm.set_scale(float(PAYOFF_SELF.max() - PAYOFF_SELF.min()))
+    rng = np.random.default_rng(0)
+    for _ in range(4000):
+        j = int(rng.integers(0, 4))
+        rm.update(j, float(PAYOFF_SELF[j]), float(PAYOFF_OTHER[j]))
+    err = float(np.max(np.abs(rm.payoff_vector("self") - PAYOFF_SELF)))
+    check("R̂ 가 참 보수로 수렴 (오차 < 0.15)", err < 0.15,
+          f"최대 오차 {err:.4f}")
+    check("R̂ 가 타자 보수도 학습",
+          float(np.max(np.abs(rm.payoff_vector("other") - PAYOFF_OTHER))) < 0.15)
+    serr = max(abs(rm.shift(lm, pp) - empathy_shift(lm, pp))
+               for lm in (0.0, 0.4, 1.0) for pp in (0.3, 0.7))
+    check("학습된 ŝ(λ,p) 가 empathy_shift 로 수렴 (오차 < 0.15)", serr < 0.15,
+          f"최대 |ŝ − s| = {serr:.4f}")
+
+    # ---- QuantileTD 부트스트랩 ----
+    z = QuantileTD(gamma=0.9, lr=0.05, seed=0)
+    z.set_scale(5.0)
+    check("Z 는 (상태, 행위) 로 색인된다",
+          z.z_self.values.shape[:2] == (4, 2),
+          f"shape={z.z_self.values.shape}")
+    # 항상 CC 만 일어나는 환경 → Z(s,C) → R/(1−γ) = 3/0.1 = 30
+    # Huber 스텝이 포화하므로 수렴이 선형이다 — 충분히 반복한다.
+    for _ in range(20000):
+        z.update(0, 0, float(PAYOFF_SELF[CC]), float(PAYOFF_OTHER[CC]), 0, 1.0)
+    v = z.value(0, 0, "self")
+    check("QRTD 부트스트랩: Z → r/(1−γ) 로 수렴", abs(v - 30.0) < 4.0,
+          f"Z(s,C)={v:.2f} (이론값 30.0)")
+    check("Z 는 1-step 보상보다 크다 (수익을 학습)",
+          v > float(PAYOFF_SELF[CC]))
+
+
+
+# ==================================================================== 형질정책
+def test_self_policy() -> None:
+    print("\n[7b] SelfPolicy — 형질공간 정책")
+    from AIF_IPD.ipd.tom.self_policy import SELF_AXES, SELF_BOUNDS, SelfPolicy
+    reset_payoffs()
+
+    tft = dict(alpha=0.0, rho=2.5, omega=0.0, eta=0.0, beta=4.0, lambda_j=0.5)
+    alld = dict(alpha=-3.0, rho=0.0, omega=0.0, eta=0.0, beta=4.0, lambda_j=0.2)
+
+    # ---- 1-step 평가 + 종단 Z (rollout 폐기) ----
+    sp = SelfPolicy(n_particles=1, w_epi=0.0, w_cplx=0.0, seed=0)
+    check("rollout 이 폐기되고 _evaluate 로 대체됨",
+          hasattr(sp, "_evaluate") and not hasattr(sp, "_rollout"))
+    sp.theta = {"rho": np.array([0.0]), "omega": np.array([0.0]),
+                "eta": np.array([0.0])}
+    v_hi = float(sp._evaluate(sp.theta, +1.0, +1.0, 0.5, 0.8, 1.0,
+                              None, None, None, None, None, None)[0])
+    v_lo = float(sp._evaluate(sp.theta, +1.0, +1.0, 0.5, 0.8, 0.0,
+                              None, None, None, None, None, None)[0])
+    check("상대 협력확률이 높을수록 기대효용이 크다", v_hi > v_lo,
+          f"p_j=1 → {v_hi:.2f} vs p_j=0 → {v_lo:.2f}")
+
+    # ---- 환경 구조에 대한 인식항 (IG_R) ----
+    from AIF_IPD.core.qrtd import RewardModel
+    rm = RewardModel(lr=0.10)
+    rm.set_scale(5.0)
+    u0 = rm.uncertainty().copy()
+    for _ in range(300):
+        rm.update(0, 3.0, 3.0)          # CC 만 반복 관측
+    u1 = rm.uncertainty()
+    check("관측된 칸의 불확실성은 줄어든다", u1[0] < u0[0],
+          f"CC: {u0[0]:.3f} → {u1[0]:.3f}")
+    check("미관측 칸의 불확실성은 유지된다", abs(u1[2] - u0[2]) < 1e-9,
+          f"DC: {u0[2]:.3f} → {u1[2]:.3f} (탐색 유인의 원천)")
+
+    # ---- 복잡도 항 ----
+    sp2 = SelfPolicy(n_particles=3, w_cplx=1.0, seed=1)
+    sp2.theta = {"rho": np.array([0.0, 1.0, 2.0]),
+                 "omega": np.array([0.0, 0.0, 0.0]),
+                 "eta": np.array([0.0, 0.0, 0.0])}
+    c = sp2._complexity()
+    check("복잡도는 사전 중심에서 0, 멀수록 증가",
+          abs(c[0]) < 1e-12 and c[0] < c[1] < c[2],
+          f"{c.round(3).tolist()}")
+
+    # ---- α=0, β=4 고정: λ 가 동적 절편 ----
+    from AIF_IPD.core.constants import empathy_shift
+    lo = empathy_shift(0.0, 0.5); hi = empathy_shift(1.0, 0.5)
+    check("λ 가 절편 역할 (범위가 넓다)", hi - lo > 3.0,
+          f"s(0,·)={lo:+.2f} → s(1,·)={hi:+.2f}")
+    check("β 는 고정 4.0", abs(SelfPolicy().beta - 4.0) < 1e-12)
+
+    # ---- 입자 성질 ----
+    sp3 = SelfPolicy(n_particles=64, seed=2)
+    out = sp3.step(tft, 0.4, +1.0, +1.0, 0.8, 0.8, None)
+    check("가중치 합 = 1", abs(sp3.weights.sum() - 1.0) < 1e-9)
+    check("형질이 범위 내", all(
+        SELF_BOUNDS[ax][0] - 1e-9 <= sp3.theta[ax].min()
+        and sp3.theta[ax].max() <= SELF_BOUNDS[ax][1] + 1e-9
+        for ax in SELF_AXES))
+    check("ESS ∈ (0, K]", 0 < out["ess"] <= 64 + 1e-9)
+    pc = sp3.coop_prob_mixture(+1.0, +1.0, 0.4, 0.8)
+    check("혼합 협력확률 ∈ (0,1)", 0.0 < pc < 1.0, f"P(C)={pc:.3f}")
+
+    # ---- 사전 복원 ----
+    sp4 = SelfPolicy(n_particles=64, seed=3)
+    sp4.set_prior({"rho": (1.5, 0.2), "omega": (0.0, 0.2), "eta": (0.0, 0.2)})
+    check("set_prior 가 입자를 지정 위치로 재초기화",
+          abs(sp4.posterior_means()["rho"] - 1.5) < 0.15,
+          f"ρ̄={sp4.posterior_means()['rho']:.3f}")
+
+    # ---- 기저 역할 스왑: f 는 상대의 직전 행동 ----
+    sp5 = SelfPolicy(n_particles=1, seed=4)
+    sp5.theta = {"rho": np.array([2.0]), "omega": np.array([0.0]),
+                 "eta": np.array([0.0])}
+    p_after_c = float(sp5._coop_prob(sp5.theta, +1.0, 0.0, 0.4, 0.8)[0])
+    p_after_d = float(sp5._coop_prob(sp5.theta, -1.0, 0.0, 0.4, 0.8)[0])
+    check("ρ>0 이면 상대 협력 뒤 협력, 배신 뒤 배신 (호혜)",
+          p_after_c > 0.9 and p_after_d < 0.1,
+          f"P(C|그들C)={p_after_c:.3f}, P(C|그들D)={p_after_d:.3f}")
 
 
 # ==================================================================== 집단
@@ -457,8 +670,9 @@ def main() -> int:
     print("=" * 70)
     print("HalloReg 핵심 기제 단위 검증")
     print("=" * 70)
-    for fn in (test_constants, test_efe, test_self_model, test_core_affect,
-               test_empathy, test_inversion, test_agents, test_population,
+    for fn in (test_constants, test_efe, test_self_model, test_distributional,
+               test_core_affect, test_qrtd,
+               test_empathy, test_inversion, test_agents, test_self_policy, test_population,
                test_evolution, test_stats, test_recovery):
         fn()
     print("\n" + "=" * 70)

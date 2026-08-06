@@ -2,59 +2,43 @@
 core.core_affect
 ================
 
-**CoreAffect — 2차원 핵심정서(core affect): valence × arousal.**
+**CoreAffect — 2차원 핵심정서: valence × arousal.**
 
-Russell 의 핵심정서 원환과 Barrett 의 구성된 정서 이론(theory of constructed
-emotion)을 따라, 정서를 범주가 아니라 **내수용 예측부호화의 두 축**으로 구성한다.
+전제: 일차적 보상 획득이 내부 모델에 대한 항상성으로 이어지며, **기대 보상
+분포는 내수용감각 인식에 대한 생성 모델로 단순화**되어 간주된다. CoreAffect 는
+그 생성 모델과 관측 사이의 관계를 저차원 정동 두 축으로 축소한다.
 
-  · valence (쾌–불쾌)  ← 보상 예측오차(RPE)의 부호와 크기
-  · arousal (각성)     ← 믿음 갱신의 크기(베이지안 놀람, Bayesian surprise)
+────────────────────────────────────────────────────────────────────────
+valence — 사회적 모집단에서의 적합도 (수준 신호)
+────────────────────────────────────────────────────────────────────────
+    valence = 2 · F̂_ref( median(Q_현재상대) ) − 1
 
-[본 모듈이 구현하는 정확한 사양]
+Q_현재상대 : 현재 상대에 대한 기대 보상(가치) 분포 — QRTD 의 Z(s,a) 를 경험
+상황에 대해 EMA 축약한 분위수 벡터 (SelfModel.update_partner_value).
+F̂_ref     : 자기경계 안 **다른 타인들**의 기대 보상 분포를 거리반비례 가중
+평균한 참조분포(Wasserstein 무게중심)에서의 누적확률.
 
-  (1) SelfModel 은 identity 별 기대보상 분포를 사전으로 내려준다.
-      CoreAffect 는 t−1 관측으로 이를 갱신하고 SelfModel 에 되돌려준다.
+valence 는 **예측 오류가 아니다.** 현재의 생성 모델(기대 보상 분포)이 SelfModel
+이 지닌 사회적 환경에 대한 믿음 안에서 좋은 방향에 있는지 나쁜 방향에 있는지의
+**주관적 적합도**다. ALLD 를 상대하면 그에 대한 기대 보상 분포의 기댓값이 기억
+속 다른 이들의 것보다 낮게 형성되고, 그것이 부정적 valence 다.
 
-  (2) valence — SelfModel 이 추가로 공급하는 **기저(사회 전반) 기대보상 분포**를
-      기준으로 한 예측오차:
+참조가 시간이 아니라 **타자들**에게 있으므로 만성 착취에서도 소멸하지 않는다
+(시간 자기비교는 참조가 쫓아와 valence 가 소멸·역전됨을 실측으로 확인했다).
+현재 상대는 모집단에서 제외한다.
 
-          RPE = r_obs − E_{q_social}[r]
+────────────────────────────────────────────────────────────────────────
+arousal — 생성 모델의 갱신량 (오차 신호)
+────────────────────────────────────────────────────────────────────────
+    arousal = 1 − exp( − W₁(Z_{t−1}, Z_t) / span_V / κ )
 
-      RPE 의 기댓값이 클수록(양수) 긍정적, 작을수록(음수) 부정적 valence.
-      스케일은 기저 분포의 보상 표준편차로 정규화한다(정밀도 가중):
+t−1 의 기대 보상 분포와 t 의 기대 보상 분포의 불일치 — **모형 갱신량**이다.
+놀람의 대상은 즉각 보상이 아니라 상황의 가치이며, 오랜 협력 뒤의 한 번의
+배신은 보상 기대를 조금 바꾸지만 전망(Z)을 크게 무너뜨린다.
 
-          valence = tanh( RPE / (σ_social + σ_floor) )   ∈ (−1, +1)
-
-      정규화의 근거: 사회 환경 자체가 변동이 큰(σ 큰) 곳이라면 같은 크기의
-      RPE 라도 덜 놀랍다. 예측부호화에서 예측오차는 항상 기대 정밀도로 가중된다.
-
-  (3) arousal — **이번 상대 identity** 의 기대보상 분포가 이번 관측으로 얼마나
-      움직였는가:
-
-          arousal = 1 − exp( − KL( q_post ‖ q_prior ) / κ )   ∈ [0, 1)
-
-      q_prior : 갱신 이전 사후예측 categorical
-      q_post  : 갱신 이후 사후예측 categorical
-      KL 이 클수록 각성이 높다. 포화 사상(1 − e^{−x})을 쓰는 이유는 KL 이
-      무계인 반면 각성은 유계여야 λ_aff = V × A 가 λ 와 같은 스케일에 머물기
-      때문이다.
-
-  (4) λ_aff = valence × arousal   (정서적 동기, affective motivation)
-
-      곱셈 결합의 의미:
-        · 각성이 0 이면(예측대로였다) 정서는 λ 를 움직이지 않는다 — 놀람이 없으면
-          재조정할 이유가 없다.
-        · 각성이 높고 valence 가 음수면 λ_aff ≪ 0 → 강한 자기보호 방향.
-        · 각성이 높고 valence 가 양수면 λ_aff ≫ 0 → 관계 투자 방향.
-      이것이 곧 이상성(allostatic) 예측: **예측된 손실은 정서를 만들지 않고,
-      예측되지 않은 손실만 정서를 만든다.**
-
-[중요 — 이상성이 항상성으로 붕괴하지 않는 이유]
-기저 분포는 SelfModel 에서 social_lr ≪ 1 로 느리게만 이동한다. 따라서 착취자를
-계속 만나더라도 RPE 가 즉시 0 이 되지 않고, 기저가 이동하는 만큼만 서서히
-둔감해진다. 이는 "만성 스트레스 하에서 설정점이 이동한다"는 이상성의 예측과
-일치하며, 순수 항상성(즉시 순응) 모형이 갖는 역설 — 착취자를 정확히 예측하면
-자기보호 압력이 사라진다 — 을 회피한다.
+두 축의 분업: valence 는 **수준**(지속적 — 관계의 질), arousal 은 **오차**
+(자기소멸적 — 예측된 것은 놀랍지 않다). λ_aff = valence × arousal 이므로
+예측되지 않은 사건만이, 그 관계의 질의 방향으로, λ 를 움직인다.
 """
 
 from __future__ import annotations
@@ -68,133 +52,103 @@ from .self_model import SelfModel
 _EPS = 1e-12
 
 
-def _dirichlet_predictive(alpha: np.ndarray) -> np.ndarray:
-    """Dirichlet 농도 → 사후예측 categorical 확률벡터."""
-    a = np.asarray(alpha, dtype=float)
-    return a / max(a.sum(), _EPS)
-
-
-def _kl_categorical(p: np.ndarray, q: np.ndarray) -> float:
-    """KL(p ‖ q). 두 categorical 모두 양수 지지(Dirichlet 유래)라 안전."""
-    p = np.clip(np.asarray(p, dtype=float), _EPS, 1.0)
-    q = np.clip(np.asarray(q, dtype=float), _EPS, 1.0)
-    return float(np.sum(p * np.log(p / q)))
-
-
 class CoreAffect:
     """
-    핵심정서 생성기.
+    핵심정서 생성기 (v1.5.0 — QRTD 기반).
 
     Parameters
     ----------
     self_model : SelfModel
-        사전 공급자이자 기억 저장소. 매 스텝 (i) 기저 기대보상 분포와
-        (ii) identity 별 보상분포 사전을 받아오고, 갱신 결과를 되돌려준다.
+        기억 저장소. 현재 상대의 가치분포 갱신과 모집단 참조를 담당한다.
     payoffs : (4,) array
-        현재 보수 벡터 PAYOFF_SELF (가변 보수 환경에서는 매 라운드 갱신).
+        현재 보수 벡터 (정규화 상수 공급).
     kl_scale : float
-        arousal 포화 상수 κ. 작을수록 작은 믿음갱신에도 쉽게 각성한다.
-    sigma_floor : float
-        valence 정규화의 분모 하한. 기저 분포가 한 범주로 붕괴해 σ→0 이 될 때
-        tanh 인자가 발산하는 것을 막는다.
-    obs_weight : float
-        identity 별 Dirichlet 이 관측 하나로부터 받는 가중(기본 1.0 = 표준 계수).
+        arousal 포화 상수 κ.
     """
 
-    def __init__(self, self_model: SelfModel,
-                 payoffs: np.ndarray,
-                 kl_scale: float = 0.05,
-                 sigma_floor: float = 0.5,
+    def __init__(self, self_model: SelfModel, payoffs: np.ndarray,
+                 kl_scale: float = 0.05, sigma_floor: float = 0.5,
                  obs_weight: float = 1.0):
         self.self_model = self_model
         self.payoffs = np.asarray(payoffs, dtype=float).copy()
         self.kl_scale = float(kl_scale)
-        self.sigma_floor = float(sigma_floor)
-        self.obs_weight = float(obs_weight)
-
-        # 현재 상대의 기대보상 분포(Dirichlet 농도). begin_partner 에서 주입된다.
+        self.sigma_floor = float(sigma_floor)   # 서명 호환용 (미사용)
+        self.obs_weight = float(obs_weight)     # 서명 호환용 (미사용)
+        self.self_model.set_payoff_scale(self.payoffs)
         self.identity: Optional[int] = None
-        self.alpha = self_model.reward_prior(None)
-
-        # 최근 스텝 진단값 (로깅용)
         self.last = {"valence": 0.0, "arousal": 0.0, "lambda_aff": 0.0,
-                     "rpe": 0.0, "kl": 0.0}
+                     "rpe": 0.0, "surprise": 0.0, "value": float("nan")}
 
-    # ------------------------------------------------------------ 보수 갱신
     def set_payoffs(self, payoffs: np.ndarray) -> None:
-        """
-        가변 보수 환경 정합. 범주(4 joint outcome)는 불변이고 각 범주에 붙는
-        **값**만 바뀌므로, Dirichlet 믿음은 유지한 채 값 벡터만 교체하면 된다.
-        """
+        """비정상 보수 정합 — 정규화 상수 갱신."""
         self.payoffs = np.asarray(payoffs, dtype=float).copy()
+        self.self_model.set_payoff_scale(self.payoffs)
 
-    # ------------------------------------------------------------ 상대 전환
     def begin_partner(self, identity: Optional[int]) -> None:
-        """
-        새 상대와의 상호작용 시작. SelfModel 에서 그 identity 의 기대보상 분포
-        사전을 받아 현재 상태로 삼는다(재조우면 과거 기억, 신규면 무정보 사전).
-        """
         self.identity = identity
-        self.alpha = self.self_model.reward_prior(identity)
 
     # ------------------------------------------------------------ 한 스텝
-    def step(self, observed_state: int) -> dict:
+    def step(self, observed_state: int,
+             opponent_cooperated: Optional[bool] = None,
+             value_vector: Optional[np.ndarray] = None,
+             value_shift: Optional[float] = None,
+             z_snapshot: Optional[np.ndarray] = None) -> dict:
         """
         t−1 의 joint outcome 관측으로 정서를 구성한다.
 
-        절차
-        ----
-        1. q_prior  ← 갱신 이전 identity 별 사후예측 분포
-        2. α ← α + obs_weight · onehot(observed_state)      (Dirichlet 갱신)
-        3. q_post   ← 갱신 이후 사후예측 분포
-        4. RPE      = r_obs − E_{q_social}[r]                (기저는 SelfModel)
-        5. valence  = tanh(RPE / (σ_social + σ_floor))
-        6. arousal  = 1 − exp(−KL(q_post‖q_prior) / κ)
-        7. λ_aff    = valence × arousal
-        8. 갱신 결과를 SelfModel 에 commit (identity 기억 + 사회 기저 느린 갱신)
+        value_vector : 방금 겪은 (상태, 행위) 의 Z 분위수 벡터 — 현재 상대의
+                       기대 보상 분포를 EMA 갱신하는 재료.
+        value_shift  : W₁(Z_before, Z_after)/span_V — 모형 갱신량 (arousal).
+        z_snapshot   : Z_self 전체 스냅숏 — 재조우 복원용으로 기억에 보관.
 
-        반환: 진단 dict.
+        절차: (1) 가치분포 EMA 갱신 → (2) valence = 모집단 순위 →
+              (3) arousal = 갱신량 → (4) λ_aff = V×A → (5) 협력 여부 commit.
         """
         s = int(observed_state)
-
-        # --- 1. 갱신 이전 사후예측 (arousal 의 기준점) ---
-        q_prior = _dirichlet_predictive(self.alpha)
-
-        # --- 2. Dirichlet 켤레 갱신 ---
-        self.alpha = self.alpha.copy()
-        self.alpha[s] += self.obs_weight
-
-        # --- 3. 갱신 이후 사후예측 ---
-        q_post = _dirichlet_predictive(self.alpha)
-
-        # --- 4. 기저(사회 전반) 기대보상 대비 RPE ---
-        social = self.self_model.social_reward_prior()
-        r_base = SelfModel.expected_reward(social, self.payoffs)
-        sigma_base = SelfModel.reward_std(social, self.payoffs)
         r_obs = float(self.payoffs[s])
-        rpe = r_obs - r_base
 
-        # --- 5. valence: 정밀도 가중된 RPE 를 유계로 압착 ---
-        valence = float(np.tanh(rpe / (sigma_base + self.sigma_floor)))
+        # --- 1. 현재 상대의 기대 보상 분포 갱신 ---
+        if value_vector is not None:
+            self.self_model.update_partner_value(
+                self.identity, value_vector, z_snapshot=z_snapshot)
 
-        # --- 6. arousal: 베이지안 놀람의 포화 사상 ---
-        kl = _kl_categorical(q_post, q_prior)
-        arousal = float(1.0 - np.exp(-kl / max(self.kl_scale, _EPS)))
+        # --- 2. valence: 사회적 모집단에서의 적합도 (수준) ---
+        valence = self.self_model.social_valence(self.identity)
+        ent = self.self_model.memory.get(self.identity)
+        my_med = (float(ent.value_dist[len(ent.value_dist) // 2])
+                  if ent is not None and ent.value_dist is not None
+                  else float("nan"))
+        rpe = (my_med - self.self_model.reference_median(exclude=self.identity)
+               if np.isfinite(my_med) else 0.0)
 
-        # --- 7. 정서적 동기 ---
+        # --- 3. arousal: 생성 모델의 갱신량 (오차) ---
+        surprise = float(value_shift) if value_shift is not None else 0.0
+        arousal = float(1.0 - np.exp(-surprise / max(self.kl_scale, _EPS)))
+
+        # --- 4. 정서적 동기 ---
         lambda_aff = valence * arousal
 
-        # --- 8. 기억 commit (identity 사후 + 사회 기저의 느린 이동) ---
-        self.self_model.commit_reward(self.identity, self.alpha,
-                                      observed_state=s)
+        # --- 5. 기억 commit (협력률 → λ₀ 설정점) ---
+        self.self_model.commit_observation(
+            self.identity, opponent_cooperated=opponent_cooperated)
 
-        self.last = {"valence": valence, "arousal": arousal,
-                     "lambda_aff": lambda_aff, "rpe": float(rpe),
-                     "kl": float(kl), "r_base": float(r_base),
-                     "r_obs": r_obs}
+        self.last = {
+            "valence": float(valence), "arousal": arousal,
+            "lambda_aff": float(lambda_aff), "rpe": float(rpe),
+            "surprise": surprise, "tau_hat": float((valence + 1.0) / 2.0),
+            "r_base": self.self_model.reference_median(exclude=self.identity),
+            "r_mean": self.self_model.reference_median(exclude=self.identity),
+            "r_obs": r_obs, "value": my_med,
+            "pessimism": 0.0,
+        }
         return dict(self.last)
 
     # ------------------------------------------------------------ 진단
     def expected_reward(self) -> float:
-        """현재 상대에 대한 기대보상 E[r] (진단·시각화용)."""
-        return SelfModel.expected_reward(self.alpha, self.payoffs)
+        ent = self.self_model.memory.get(self.identity)
+        if ent is None or ent.value_dist is None:
+            return 0.0
+        return float(np.mean(ent.value_dist))
+
+    def pessimism(self) -> float:
+        return 0.0

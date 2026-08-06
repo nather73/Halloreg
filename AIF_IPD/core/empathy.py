@@ -115,21 +115,24 @@ class Empathy:
         return 0.5 * (a + l)
 
     # ------------------------------------------------------------ 한 스텝
-    def step(self, lambda_aff: float, lambda_ctx: float) -> float:
+    def step(self, lambda_aff: float, lambda_ctx: float = 0.0) -> float:
         """
-        λ_t = clip( λ_{t−1} + η·[(1 − w_cd)·λ_aff + w_cd·λ_ctx] ).
+        λ_t = clip( λ_{t−1} + η · λ_aff ).
 
-        반환: 갱신된 λ_t.
+        **v1.5.0 — λ 는 오직 CoreAffect(정서)만이 움직인다.** λ_ctx(추론된
+        α̂·λ̂_j 수준신호)는 제거되었다. OpponentInversion 의 영향은 호혜 경로
+        (ρ, ω, η — SelfPolicy)로 이관되었으므로, 같은 정보원이 두 경로를 모두
+        구동하면 두 친사회 경로의 해리 주장이 무너진다. 실측으로도 λ_ctx 가 λ
+        궤적을 지배하고 있었다(정서 비중 16~21%) — 공감 경로라 이름 붙인 것을
+        추론이 굴리고 있던 셈이다. lambda_ctx 인자는 서명 호환용이며 무시된다.
         """
-        drive = (1.0 - self.w_cd) * float(lambda_aff) \
-            + self.w_cd * float(lambda_ctx)
+        drive = float(lambda_aff)
         self.lam = float(np.clip(self.lam + self.gain * drive,
                                  self.lam_min, self.lam_max))
         self.last = {"lambda": self.lam, "lambda_aff": float(lambda_aff),
-                     "lambda_ctx": float(lambda_ctx), "drive": float(drive)}
+                     "lambda_ctx": 0.0, "drive": drive}
         return self.lam
 
-    # ------------------------------------------------------------ 초기화
     def reset(self, lam_init: float = None) -> float:
         """
         새 상대와의 관계 시작 시 λ 를 설정점으로 되돌린다.

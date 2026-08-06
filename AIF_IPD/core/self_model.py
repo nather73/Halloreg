@@ -4,40 +4,43 @@ core.self_model
 
 **SelfModel — 기억(memory) 저장소이자 사전(prior) 공급자.**
 
-[역할 재정의 — v1.0.0 아키텍처]
-이전 판에서 SelfModel 은 λ 의 항상성 설정점(λ_sp)을 직접 산출했다. 본 판에서는
-그 역할을 완전히 폐기하고, 다음 두 가지로만 남긴다.
+identity 별로 **(id, dist, theta, 기대 보상 분포)** 를 보관한다. v1.5.0 에서
+기대 보상 분포는 보상 관측의 주변분포(구 QuantileCode)가 아니라 **QRTD 가치
+Z(s,a) 로부터 유도된 분위수 벡터**다 — "이 사람과 있을 때 내가 놓이는 상황들의
+장기 가치 분포".
 
-  (1) **기억**: 상대 identity 별로 (id, dist, theta, expected reward distribution)
-      을 보관한다. 여기서
-        · theta : 상대 특성 파라미터의 사후 평균 (α, ρ, ω, η, β, λ_j)
-        · dist  : 그 사후의 축별 표준편차 — 즉 "θ 에 대한 믿음의 분포 폭"
-        · expected reward distribution : 그 상대와의 상호작용에서 기대되는
-          보상의 분포. 4-범주(CC/CD/DC/DD) Dirichlet 농도로 표현한다.
-  (2) **사전 공급**: 다음 라운드/다음 조우 시
-        · OpponentInversion 에 (id, theta) 를 θ 사전으로,
-        · CoreAffect 에 (id, expected reward distribution) 을 보상분포 사전으로
-      각각 내려보낸다. 두 모듈은 t−1 관측으로 갱신한 결과를 다시 SelfModel 에
-      commit 한다. 즉 SelfModel 자체는 **추론하지 않는다.**
+────────────────────────────────────────────────────────────────────────
+valence 의 사회적 참조 — 모집단 횡단비교
+────────────────────────────────────────────────────────────────────────
+본 연구의 전제: 일차적 보상 획득이 내부 모델에 대한 항상성으로 이어지며, 기대
+보상 분포는 내수용감각 인식에 대한 생성 모델로 단순화되어 간주된다. valence 는
+그 생성 모델(현재 상대에 대한 기대 보상 분포)이 **SelfModel 이 지닌 사회적
+환경에 대한 믿음** — 즉 자기경계(self boundary) 안의 다른 타인들의 기대 보상
+분포 — 에 대해 갖는 주관적 적합도다.
 
-[할로스타틱 설정점(allostatic setpoint)의 재정의]
-설정점은 더 이상 λ 가 아니다. SelfModel 은 자기가 접해온 **사회적 환경 전반**에
-대한 믿음으로부터 *기저 기대보상 분포* q_social(r) 를 유지하고, 이를 CoreAffect 에
-추가로 공급한다. CoreAffect 의 valence 는 이 기저 분포를 기준으로 한 보상예측오차
-(RPE)로 생성된다. 즉 설정점은 "정서가(valence)의 영점"이다.
+    참조분포  ref = Σ_k w_k · Q_k / Σ_k w_k     (k ≠ 현재 상대)
+    w_k ∝ 사회적 거리의 역가중 (쌍곡 할인)
+    valence = 2 · F̂_ref( median(Q_현재) ) − 1
 
-기저 분포는 **느리게** 갱신된다(social_lr ≪ 1). 이것이 항상성이 아니라 이상성
-(allostasis)인 이유다: 개체는 국소 사건에 즉각 순응하지 않고, 누적된 사회적
-기대를 기준으로 현재를 평가하되, 그 기준 자체도 장기적으로 이동한다.
+  · 분위수 벡터의 가중 평균은 분포들의 **Wasserstein 무게중심**이므로, ref 는
+    "내 사회적 관계들의 전형적 가치 분포" 라는 정확한 의미를 갖는다.
+  · 비교는 **중앙값 기준 순위**다: 현재 상대의 분포 중앙값이 참조분포에서
+    차지하는 누적확률.
+  · **참조가 시간이 아니라 타자들에게 있다**는 점이 결정적이다. 시간에 대한
+    자기비교(느린 이동평균)는 참조가 현재 상대를 쫓아가 만성 착취에서 valence
+    가 소멸·역전된다(실측 확인). 모집단 비교는 쫓아가지 않는다 — 착취자와
+    아무리 오래 있어도 기억 속 다른 관계들의 분포는 그대로이므로 "이 관계는
+    내가 아는 다른 관계들에 비해 나쁘다" 가 유지된다. 이것이 이상성이다.
+  · 현재 상대는 모집단에서 제외한다 (자기비교 혼입 방지).
 
-[왜 Dirichlet–Categorical 인가]
-"기대 보상 분포"는 보상 값 위의 분포다. IPD 에서 보상은 항상 4개 joint outcome
-(CC/CD/DC/DD)에 대응하는 4개 값 중 하나이므로, 보상 분포는 4-범주 categorical 로
-**정확히** 표현된다. 켤레사전인 Dirichlet 을 쓰면
-  · 사후 예측분포가 닫힌 형태(농도 정규화)로 나오고,
-  · CoreAffect 가 요구하는 갱신 전/후 KL-divergence 가 해석적으로 계산되며,
-  · 가변 보수 환경에서 범주는 불변인 채 각 범주에 붙는 **값**만 변하므로
-    비정상 보수 구조를 자연스럽게 흡수한다.
+────────────────────────────────────────────────────────────────────────
+사전 사회사 — 5인
+────────────────────────────────────────────────────────────────────────
+자기경계 안의 관계는 **5명 정도**면 충분하다 (21 은 분위수 채널 수였을 뿐,
+사회사 인원과 무관하다). 각 인물에는 (id, 거리, 협력률, **가치 분포**)를
+부여한다. 협력률로 보상 관측을 생성하지 않는다 — 가치 분포는 직접 부여하되,
+협력적 관계일수록 높은 가치를 갖도록 사상한다(r̄ = 1 + 2c ∈ [P, R] → V = r̄/(1−γ)).
+협력률 자체는 λ₀ 설정점(거리가중 협력률)의 원자료로만 쓰인다.
 """
 
 from __future__ import annotations
@@ -47,58 +50,51 @@ from typing import Dict, Optional
 
 import numpy as np
 
+from .distributional import DEFAULT_TAUS, vector_cdf
+
 _EPS = 1e-12
 
-# 상대 특성 θ 의 축 순서. inversion 모듈의 fg 기저와 일치시킨다.
 THETA_AXES = ("alpha", "rho", "omega", "eta", "beta", "lambda_j")
 
 
 @dataclass
 class MemoryEntry:
-    """상대 identity 하나에 대한 기억 항목."""
+    """상대 identity 하나에 대한 기억 항목: (id, dist, theta, 가치분포)."""
     identity: int
-    # theta : 축별 사후 평균 (상대 특성의 점추정)
     theta: Dict[str, float] = field(default_factory=dict)
-    # dist : 축별 사후 표준편차 (그 점추정을 얼마나 믿는지 = 믿음의 폭)
-    dist: Dict[str, float] = field(default_factory=dict)
-    # reward : 기대 보상 분포의 Dirichlet 농도 (4,) — 순서 [CC, CD, DC, DD]
-    reward: np.ndarray = field(default_factory=lambda: np.ones(4))
-    # 이 상대와 실제로 상호작용한 라운드 수
+    theta_sd: Dict[str, float] = field(default_factory=dict)
+    self_theta: Dict[str, float] = field(default_factory=dict)
+    self_theta_sd: Dict[str, float] = field(default_factory=dict)
+    # value_dist : **기대 보상(가치) 분포** — 분위수 벡터 (21,).
+    # 실험 상대는 Z(s,a) 의 경험점유 EMA, 사전 인물은 아래 r_bar 로부터
+    # **같은 QR-Huber TD 재귀**로 나란히 학습된다(_tick_reference).
+    value_dist: Optional[np.ndarray] = None
+    # r_bar : 사전 인물의 특성 보상(라운드당). 참조 가치분포를 현재 상대의 Z 와
+    # 같은 추정 단계로 굴리기 위한 원자료. 실험 상대는 None.
+    r_bar: Optional[float] = None
+    # z_snapshot : 마지막 commit 시점의 Z_self(s,a) 전체 (4,2,21) — 재조우 복원용.
+    z_snapshot: Optional[np.ndarray] = None
+    familiarity: float = 0.0
+    last_seen: int = 0
     n_obs: int = 0
+    coop_count: float = 0.0
 
 
 class SelfModel:
-    """
-    identity 기반 기억 + 사회적 기저분포 보유자.
-
-    Parameters
-    ----------
-    theta_prior_mean, theta_prior_std : dict
-        신규 identity 에 대한 θ 사전(무정보 사전). OpponentInversion 의 기본
-        사전과 동일한 값을 쓰며, 재조우 시에는 저장된 기억이 이를 대체한다.
-    dirichlet_prior : float
-        신규 identity 의 보상분포 Dirichlet 농도 초깃값(범주당). 값이 클수록
-        새 관측 하나가 분포를 덜 움직인다(= 강한 사전).
-    social_prior_strength : float
-        사회 전반 기저분포의 초기 농도 총합. 크면 기저(설정점)가 더 느리게 이동.
-    social_lr : float
-        관측 하나가 사회 기저분포에 기여하는 가중. ≪1 이어야 기저가 "느린 시간
-        척도"로 움직인다(이상성). 1.0 이면 identity 별 갱신과 같은 속도가 되어
-        RPE 가 즉시 소멸해버린다.
-    lam_floor, lam_ceil : float
-        λ 초깃값(λ_{t=0})의 하한/상한. 기저 기대보상이 낮을수록 λ_floor 에,
-        높을수록 λ_ceil 에 접근한다.
-    """
+    """identity 기억 + 사회적 거리 + 설정점 + 모집단 가치 참조."""
 
     def __init__(self,
                  theta_prior_mean: Optional[Dict[str, float]] = None,
                  theta_prior_std: Optional[Dict[str, float]] = None,
-                 dirichlet_prior: float = 1.0,
-                 social_prior_strength: float = 8.0,
-                 social_lr: float = 0.06,
+                 recency_tau: float = 200.0,
+                 familiarity_scale: float = 30.0,
+                 k_disc: float = 1.0,
+                 prior_coop_weight: float = 1.0,
+                 social_lr: float = 0.02,
+                 identity_lr: float = 0.15,
                  lam_floor: float = 0.10,
-                 lam_ceil: float = 0.70):
-        # ---- θ 무정보 사전 (신규 상대) ----
+                 lam_ceil: float = 0.70,
+                 taus=DEFAULT_TAUS):
         self.theta_prior_mean = dict(
             alpha=0.0, rho=0.5, omega=0.0, eta=0.0, beta=3.0, lambda_j=0.5)
         self.theta_prior_std = dict(
@@ -108,28 +104,68 @@ class SelfModel:
         if theta_prior_std:
             self.theta_prior_std.update(theta_prior_std)
 
-        self.dirichlet_prior = float(dirichlet_prior)
-        self.social_lr = float(social_lr)
+        self.recency_tau = float(recency_tau)
+        self.familiarity_scale = float(familiarity_scale)
+        self.k_disc = float(k_disc)
+        self.prior_coop_weight = float(prior_coop_weight)
+        self.social_lr = float(social_lr)      # (보존: 향후 참조 이동에 사용 가능)
+        self.identity_lr = float(identity_lr)  # value_dist 온라인 EMA 율
         self.lam_floor = float(lam_floor)
         self.lam_ceil = float(lam_ceil)
+        self.taus = np.asarray(taus, dtype=float)
 
-        # ---- 사회적 기저 기대보상 분포 (할로스타틱 설정점) ----
-        # 초기에는 4 결과가 동등하게 가능하다는 무정보 믿음.
-        self.social_reward = np.full(4, social_prior_strength / 4.0)
-
-        # ---- identity → MemoryEntry ----
+        self._payoff_span = 1.0
         self.memory: Dict[int, MemoryEntry] = {}
+        self.clock: int = 0
+
+    # ============================================================ 보수 스케일
+    def set_payoff_scale(self, payoffs: np.ndarray) -> None:
+        """보수 지지범위 기록 — 정규화 상수로만 쓴다."""
+        u = np.asarray(payoffs, dtype=float)
+        self._payoff_span = max(float(u.max() - u.min()), 1e-6)
+
+    @property
+    def payoff_span(self) -> float:
+        return self._payoff_span
+
+    # ============================================================ 사회적 거리
+    def social_distance(self, identity: Optional[int]) -> float:
+        """d = 1/(1 + F/F_scale) ∈ (0, 1]. 미지의 상대는 1."""
+        ent = self.memory.get(identity) if identity is not None else None
+        if ent is None:
+            return 1.0
+        return float(1.0 / (1.0 + ent.familiarity / self.familiarity_scale))
+
+    def distance_rank(self, identity: Optional[int]) -> float:
+        """무계 서열거리 N = F_scale / F (쌍곡 할인은 여기에 적용)."""
+        ent = self.memory.get(identity) if identity is not None else None
+        if ent is None or ent.familiarity <= _EPS:
+            return float("inf")
+        return float(self.familiarity_scale / ent.familiarity)
+
+    def distance_weight(self, identity: Optional[int]) -> float:
+        """거리 역가중 w = 1/(1 + k·N) — 가까울수록 크다 (Jones & Rachlin)."""
+        n = self.distance_rank(identity)
+        if not np.isfinite(n):
+            return 0.0
+        return float(1.0 / (1.0 + self.k_disc * n))
+
+    def _touch(self, identity: int) -> MemoryEntry:
+        """조우 통지: F ← F·exp(−Δt/T) + 1 (빈도 누적 + 최근성 망각)."""
+        ent = self.memory.setdefault(identity, MemoryEntry(
+            identity=int(identity), last_seen=self.clock))
+        dt = max(self.clock - ent.last_seen, 0)
+        ent.familiarity = ent.familiarity * float(
+            np.exp(-dt / max(self.recency_tau, _EPS))) + 1.0
+        ent.last_seen = self.clock
+        self.clock += 1
+        return ent
+
+    def observe_identity(self, identity: int) -> None:
+        self._touch(int(identity))
 
     # ============================================================ 사전 공급
     def theta_prior(self, identity: Optional[int]) -> Dict[str, tuple]:
-        """
-        OpponentInversion 에 내려보낼 (id, theta) 사전.
-
-        반환: {축: (평균, 표준편차)}.
-        재조우(identity 가 기억에 있음)면 저장된 (theta, dist) 를, 신규면 무정보
-        사전을 돌려준다. 재조우 시 사전이 좁아지므로 입자필터가 즉시 과거 관계
-        지점에서 출발한다 — "아, 그때 그 사람" 에 해당하는 조기 보정.
-        """
         ent = self.memory.get(identity) if identity is not None else None
         if ent is None or not ent.theta:
             return {ax: (self.theta_prior_mean[ax], self.theta_prior_std[ax])
@@ -137,114 +173,248 @@ class SelfModel:
         out = {}
         for ax in THETA_AXES:
             mu = float(ent.theta.get(ax, self.theta_prior_mean[ax]))
-            # 기억된 사후 폭을 그대로 쓰되, 완전 점질량이 되지 않도록 하한을 둔다.
-            # 하한이 없으면 상대가 변했을 때 입자필터가 새 가설을 만들지 못한다.
             sd_floor = 0.25 * self.theta_prior_std[ax]
-            sd = max(float(ent.dist.get(ax, self.theta_prior_std[ax])), sd_floor)
+            sd = max(float(ent.theta_sd.get(ax, self.theta_prior_std[ax])),
+                     sd_floor)
             out[ax] = (mu, sd)
         return out
 
-    def reward_prior(self, identity: Optional[int]) -> np.ndarray:
-        """
-        CoreAffect 에 내려보낼 (id, expected reward distribution) 사전.
-        반환: (4,) Dirichlet 농도. 신규 identity 면 균등 사전.
-        """
+    def self_theta_prior(self, identity: Optional[int]):
         ent = self.memory.get(identity) if identity is not None else None
-        if ent is None:
-            return np.full(4, self.dirichlet_prior)
-        return ent.reward.copy()
+        if ent is None or not ent.self_theta:
+            return None
+        return {ax: (float(ent.self_theta[ax]),
+                     max(float(ent.self_theta_sd.get(ax, 0.3)), 0.15))
+                for ax in ent.self_theta}
 
-    def social_reward_prior(self) -> np.ndarray:
-        """
-        **기저(baseline) 기대보상 분포** — 할로스타틱 설정점.
-        주변 사회적 환경 전반에 대한 믿음이며, CoreAffect 의 valence 영점이 된다.
-        반환: (4,) Dirichlet 농도.
-        """
-        return self.social_reward.copy()
+    def z_prior(self, identity: Optional[int]) -> Optional[np.ndarray]:
+        """재조우 시 복원할 Z_self(s,a) 스냅숏."""
+        ent = self.memory.get(identity) if identity is not None else None
+        if ent is None or ent.z_snapshot is None:
+            return None
+        return ent.z_snapshot.copy()
 
     # ============================================================ 기억 갱신
-    def commit_theta(self, identity: Optional[int],
-                     theta: Dict[str, float], dist: Dict[str, float]) -> None:
-        """OpponentInversion 이 갱신한 (theta, dist) 를 기억에 반영."""
+    def commit_theta(self, identity, theta, theta_sd) -> None:
         if identity is None:
             return
-        ent = self.memory.setdefault(identity, MemoryEntry(
-            identity=identity, reward=np.full(4, self.dirichlet_prior)))
+        ent = self.memory.setdefault(identity, MemoryEntry(identity=identity))
         ent.theta = {ax: float(theta.get(ax, 0.0)) for ax in THETA_AXES}
-        ent.dist = {ax: float(dist.get(ax, 0.0)) for ax in THETA_AXES}
+        ent.theta_sd = {ax: float(theta_sd.get(ax, 0.0)) for ax in THETA_AXES}
 
-    def commit_reward(self, identity: Optional[int],
-                      reward_dirichlet: np.ndarray,
-                      observed_state: Optional[int] = None) -> None:
+    def commit_self_theta(self, identity, theta, theta_sd) -> None:
+        if identity is None:
+            return
+        ent = self.memory.setdefault(identity, MemoryEntry(identity=identity))
+        ent.self_theta = {k: float(v) for k, v in theta.items()}
+        ent.self_theta_sd = {k: float(v) for k, v in theta_sd.items()}
+
+    def commit_observation(self, identity: Optional[int],
+                           opponent_cooperated: Optional[bool] = None) -> None:
+        """상대의 협력 여부 누적 — 거리가중 협력률(λ₀ 설정점)의 원자료."""
+        if identity is None:
+            return
+        ent = self.memory.setdefault(identity, MemoryEntry(identity=identity))
+        ent.n_obs += 1
+        if opponent_cooperated is not None:
+            ent.coop_count += 1.0 if opponent_cooperated else 0.0
+
+    def update_partner_value(self, identity: Optional[int],
+                             value_vector: np.ndarray,
+                             z_snapshot: Optional[np.ndarray] = None) -> None:
         """
-        CoreAffect 가 갱신한 기대보상 분포를 기억에 반영하고, 동시에 **사회적
-        기저분포**를 느린 학습률로 갱신한다.
+        현재 상대의 **기대 보상(가치) 분포**를 온라인 갱신한다.
 
-        사회 기저는 identity 별 사후 전체가 아니라 *이번 관측 하나*만 social_lr
-        가중으로 흡수한다. 이렇게 해야
-          · 한 상대에게 오래 노출되어도 기저가 그 상대로 완전히 수렴하지 않고,
-          · 여러 상대를 겪을수록 기저가 사회 전반의 평균으로 이동한다.
+        value_vector 는 방금 겪은 (상태, 행위) 의 Z 분위수 벡터다. EMA 로
+        누적하면 "이 사람과 있을 때 내가 실제로 놓이는 상황들의 가치 분포" —
+        경험 점유율 가중 축약 — 가 된다. 분위수 벡터의 EMA 는 Wasserstein
+        기하에서의 이동평균이므로 분포로서의 의미가 보존된다.
         """
-        if identity is not None:
-            ent = self.memory.setdefault(identity, MemoryEntry(
-                identity=identity, reward=np.full(4, self.dirichlet_prior)))
-            ent.reward = np.asarray(reward_dirichlet, dtype=float).copy()
-            ent.n_obs += 1
-        if observed_state is not None:
-            self.social_reward[int(observed_state)] += self.social_lr
+        if identity is None:
+            return
+        ent = self.memory.setdefault(identity, MemoryEntry(identity=identity))
+        v = np.asarray(value_vector, dtype=float)
+        if ent.value_dist is None:
+            ent.value_dist = v.copy()
+        else:
+            a = self.identity_lr
+            ent.value_dist = (1.0 - a) * ent.value_dist + a * v
+        if z_snapshot is not None:
+            ent.z_snapshot = np.asarray(z_snapshot, dtype=float).copy()
 
-    def observe_identity(self, identity: int) -> None:
-        """상대 identity 를 관측했다는 통지(신규면 빈 항목 생성)."""
-        self.memory.setdefault(identity, MemoryEntry(
-            identity=int(identity), reward=np.full(4, self.dirichlet_prior)))
+    # ============================================================ 참조의 동보 갱신
+    def tick_reference(self, gamma: float, lr: float, kappa: float) -> None:
+        """
+        사전 관계들의 가치분포를 **현재 상대의 Z 와 동일한 재귀**로 한 스텝
+        갱신한다. 매 라운드 QRTD 갱신 직후에 호출된다.
 
-    # ============================================================ 설정점 유도
-    @staticmethod
-    def expected_reward(dirichlet: np.ndarray, payoffs: np.ndarray) -> float:
-        """Dirichlet 농도 → 사후예측 categorical → 기대보상 E[r]."""
-        a = np.asarray(dirichlet, dtype=float)
-        p = a / max(a.sum(), _EPS)
-        return float(p @ np.asarray(payoffs, dtype=float))
+        [왜 필요한가 — 척도 정합]
+        이전 판은 사전 인물의 가치분포를 **이론적 정상상태** V = r̄/(1−γ) 로
+        직접 부여했다. 그런데 현재 상대의 Z 는 TD 부트스트랩이라 참값에 닿는 데
+        수백 라운드가 걸린다(CC 에서 이론 30, 600R 후 17). 그 결과 학습 초기에는
+        **모든 상대가 참조보다 낮게** 보였고, valence 가 상대의 성질이 아니라
+        **Z 의 학습 진행도**를 재는 지표가 되어 버렸다(실측: ALLC 상대에서
+        valence 가 −0.959 → +0.978 로 단조 상승, value 2.20 → 7.74 와 동행).
 
-    @staticmethod
-    def reward_std(dirichlet: np.ndarray, payoffs: np.ndarray) -> float:
-        """사후예측 하의 보상 표준편차 — RPE 의 정밀도 가중(스케일)에 쓴다."""
-        a = np.asarray(dirichlet, dtype=float)
-        p = a / max(a.sum(), _EPS)
+        참조를 같은 추정기·같은 학습률·같은 라운드 수로 굴리면 미수렴 편향이
+        **양변에서 상쇄**된다. 해석도 자연스럽다 — 기억 속 관계들에 대한 가치
+        모형도 현재 진행 중인 생성 모형이며, 완결된 사실이 아니다.
+
+        갱신은 분포적 TD 다: 목표 = r̄ + γ·(현재 분위수 벡터), 자기 부트스트랩
+        (사전 관계는 정상적 요약이므로 상태 전이가 없다).
+        """
+        g = float(gamma)
+        a = float(lr)
+        kap = max(float(kappa), 1e-6)
+        for ent in self.memory.values():
+            if ent.r_bar is None or ent.value_dist is None:
+                continue
+            cur = ent.value_dist
+            target = float(ent.r_bar) + g * cur          # (n,) 분포 목표
+            delta = target[None, :] - cur[:, None]
+            w = np.where(delta > 0.0, self.taus[:, None],
+                         1.0 - self.taus[:, None])
+            step = np.clip(delta, -kap, kap)
+            ent.value_dist = np.maximum.accumulate(
+                cur + a * np.mean(w * step, axis=1))
+
+    # ============================================================ 모집단 참조
+    def population_reference(self, exclude: Optional[int] = None
+                             ) -> Optional[np.ndarray]:
+        """
+        **자기경계 안 타인들의 기대 보상 분포의 거리반비례 가중 평균.**
+
+        분위수 벡터의 가중 평균 = Wasserstein 무게중심. 현재 상대(exclude)는
+        모집단에서 제외한다. 아무도 없으면 None (valence 는 중립 0).
+        """
+        num = None
+        den = 0.0
+        for pid, ent in self.memory.items():
+            if pid == exclude or ent.value_dist is None:
+                continue
+            w = self.distance_weight(pid)
+            if w <= _EPS:
+                continue
+            num = w * ent.value_dist if num is None else num + w * ent.value_dist
+            den += w
+        if num is None or den <= _EPS:
+            return None
+        return num / den
+
+    def social_valence(self, identity: Optional[int]) -> float:
+        """
+        valence = 2·F̂_ref( median(Q_현재) ) − 1.
+
+        현재 상대의 가치분포 **중앙값**이, 다른 타인들의 참조분포에서 차지하는
+        순위. 참조가 없거나 현재 분포가 없으면 중립 0.
+        """
+        ent = self.memory.get(identity) if identity is not None else None
+        if ent is None or ent.value_dist is None:
+            return 0.0
+        ref = self.population_reference(exclude=identity)
+        if ref is None:
+            return 0.0
+        med = float(ent.value_dist[len(ent.value_dist) // 2])
+        return float(2.0 * vector_cdf(ref, self.taus, med) - 1.0)
+
+    def reference_median(self, exclude: Optional[int] = None) -> float:
+        ref = self.population_reference(exclude=exclude)
+        return float(ref[len(ref) // 2]) if ref is not None else 0.0
+
+    # ============================================================ 사전 사회사
+    def seed_social_history(self, payoffs: np.ndarray,
+                            gamma: float = 0.9,
+                            value_init: float = 2.0,
+                            value_spread: float = 2.0,
+                            n_close: int = 1, n_middle: int = 2,
+                            n_far: int = 2,
+                            coop_mean: float = 0.55, coop_sd: float = 0.18,
+                            distance_coop_slope: float = 0.0,
+                            rng: Optional[np.random.Generator] = None) -> None:
+        """
+        실험 이전의 관계망 **5명**을 적재한다: (id, 거리, 협력률, 가치분포).
+
+        · 협력률 c_k ~ Beta(coop_mean, coop_sd) — λ₀ 설정점의 원자료로만 쓴다.
+          **보상 관측을 생성하지 않는다.**
+        · 가치분포는 직접 부여한다: r̄_k = 1 + 2c_k ∈ [P, R] (배신쌍→상호협력),
+          중심 V_k = r̄_k/(1−γ), 폭은 가치 척도의 30%. 협력적 관계일수록 높은
+          가치라는 사상이며 임의 부여의 한 규약이다.
+        · distance_coop_slope 기본 0 — 거리·협력 상관을 초기화에 심지 않는다.
+        """
+        rng = rng or np.random.default_rng(0)
         u = np.asarray(payoffs, dtype=float)
-        m = float(p @ u)
-        return float(np.sqrt(max(float(p @ (u - m) ** 2), 0.0)))
+        self.set_payoff_scale(u)
 
-    def lambda_setpoint(self, payoffs: np.ndarray) -> float:
-        """
-        **λ_{t=0} — Empathy 모듈의 초깃값.**
+        bands = [(n_close, 3.0), (n_middle, 0.6), (n_far, 0.1)]
+        pid = -1
+        m = float(np.clip(coop_mean, 0.02, 0.98))
+        s2 = float(max(coop_sd, 1e-3)) ** 2
+        nu = max(m * (1.0 - m) / s2 - 1.0, 0.1)
 
-        폐기된 λ_sp 를 대체한다. 사회적 기저 기대보상 E_social[r] 이
-          · 보상 지지집합의 중간값보다 높으면 → 우호적 사회 환경 → 높은 초기 공감
-          · 낮으면 → 적대적 사회 환경 → 낮은 초기 공감
-        이 되도록 로지스틱으로 사상한다.
+        for n_band, fam_mult in bands:
+            for _ in range(int(n_band)):
+                pid -= 1
+                n_touch = max(int(round(fam_mult * self.familiarity_scale)), 1)
+                for _ in range(n_touch):
+                    self._touch(pid)
+                d_k = self.social_distance(pid)
+                c_k = float(rng.beta(m * nu, (1.0 - m) * nu))
+                c_k = float(np.clip(
+                    c_k + distance_coop_slope * (0.5 - d_k), 0.02, 0.98))
 
-            λ_0 = floor + (ceil − floor) · σ( (E_social[r] − r_mid) / scale )
+                ent = self.memory[pid]
+                n_obs = max(int(round(0.5 * n_touch)), 2)
+                ent.n_obs += n_obs
+                ent.coop_count += float(round(c_k * n_obs))
 
-        r_mid 는 보상 지지집합의 산술평균(무정보 기준점), scale 은 지지집합의
-        표준편차. 무정보 사전(균등 Dirichlet)에서는 E_social[r] = r_mid 이므로
-        σ(0) = 0.5 → λ_0 = (floor + ceil)/2 = 0.40 (기본값에서). 즉 기억이 없는
-        개체는 중립적 공감에서 출발한다.
-        """
-        u = np.asarray(payoffs, dtype=float)
-        r_mid = float(np.mean(u))
-        scale = max(float(np.std(u)), 1e-3)
-        e_soc = self.expected_reward(self.social_reward, u)
-        sig = 1.0 / (1.0 + np.exp(-(e_soc - r_mid) / scale))
+                # 가치분포는 **직접 부여하지 않는다.** 현재 상대의 Z 와 같은
+                # 초깃값에서 출발해, 매 라운드 tick_reference 로 나란히 학습
+                # 된다. 부여하는 것은 특성 보상 r̄ 뿐이다.
+                #   r̄ = 1 + 2c ∈ [P, R] — 협력적 관계일수록 높은 보상.
+                ent.r_bar = 1.0 + 2.0 * c_k
+                ent.value_dist = (float(value_init)
+                                  + float(value_spread) * (self.taus - 0.5))
+
+    # ============================================================ 설정점
+    def weighted_cooperation(self) -> float:
+        num = self.prior_coop_weight * 0.5
+        den = self.prior_coop_weight
+        for pid, ent in self.memory.items():
+            if ent.n_obs <= 0:
+                continue
+            w = self.distance_weight(pid)
+            num += w * (ent.coop_count / ent.n_obs)
+            den += w
+        return float(num / max(den, _EPS))
+
+    def lambda_setpoint(self, payoffs: Optional[np.ndarray] = None,
+                        scale: float = 0.25) -> float:
+        """λ₀ = floor + (ceil − floor)·σ((c̄ − 0.5)/scale). 무기억 → 0.40."""
+        c_bar = self.weighted_cooperation()
+        sig = 1.0 / (1.0 + np.exp(-(c_bar - 0.5) / max(scale, 1e-6)))
         return float(self.lam_floor + (self.lam_ceil - self.lam_floor) * sig)
 
     # ============================================================ 진단
-    def snapshot(self, payoffs: np.ndarray) -> dict:
-        """로깅/시각화용 상태 요약."""
-        return {
-            "n_identities": len(self.memory),
-            "social_expected_reward": self.expected_reward(
-                self.social_reward, payoffs),
-            "social_strength": float(self.social_reward.sum()),
-            "lambda_setpoint": self.lambda_setpoint(payoffs),
-        }
+    def social_summary(self) -> dict:
+        rows = []
+        for pid, ent in sorted(self.memory.items()):
+            if ent.n_obs <= 0:
+                continue
+            rows.append({"id": pid, "distance": self.social_distance(pid),
+                         "rank": self.distance_rank(pid),
+                         "weight": self.distance_weight(pid),
+                         "coop": ent.coop_count / max(ent.n_obs, 1),
+                         "n_obs": ent.n_obs,
+                         "value_median": (float(ent.value_dist[
+                             len(ent.value_dist) // 2])
+                             if ent.value_dist is not None else None)})
+        return {"n_others": len(rows), "rows": rows,
+                "weighted_cooperation": self.weighted_cooperation(),
+                "lambda_setpoint": self.lambda_setpoint()}
+
+    def snapshot(self, payoffs=None) -> dict:
+        return {"n_identities": len(self.memory),
+                "weighted_cooperation": self.weighted_cooperation(),
+                "lambda_setpoint": self.lambda_setpoint(),
+                "distances": {pid: self.social_distance(pid)
+                              for pid in self.memory}}
