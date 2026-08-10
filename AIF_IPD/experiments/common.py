@@ -66,10 +66,23 @@ class Config:
     w_epi_r: float = 1.0
     w_cplx: float = 0.15
     payoff_access: str = "naive"
-    qrtd_gamma: float = 0.5
+    qrtd_gamma: float = 0.9
     qrtd_lr: float = 0.20
     w_cd: float = 0.5                # Empathy 의 정서–맥락 가중
     lam_gain: float = 0.05           # λ 적분 이득 η
+    w_tonic: float = 0.10            # (v1.8.0 폐기 — 서명 호환)
+    lam_gain_down: float = 0.45      # 위협 방향 이완률 (비대칭)
+    aff_gain: float = 0.30           # 정서 이득 (라운드 단위 급변 허용)
+    policy_mode: str = "lambda_only" # 행위 선택: λ 단독 (기존 "traits" 보존)
+    lam_mode: str = "allostatic"     # λ 조절: 알로스테시스 직접 사상
+    group_bias: float = 0.90         # 집단 적합성 편향 g (λ 상한)
+    allo_aff_gain: float = 0.0       # 알로스테시스 모드 정서 미세조절 이득
+    beta_es: float = 70.0            # es(λ,s) 로짓 정밀도 (정규화 절편 기준)
+    plan_sweeps: int = 1             # 라운드당 모형 기반 계획 스윕 횟수
+    reanchor_at: int = 8             # Z̃ 재기준화 시점 (R̂ 관측 수)
+    bootstrap: str = "sarsa"         # 부트스트랩: 'sarsa' | 'greedy'
+    alpha_kappa: float = 0.0         # 사회사 협력편향 α ~ N(0, κ²)
+    sp_disposition: float = 0.50     # 보상적 λ_sp 의 성향 성분 m
     quick: bool = False              # 스모크 모드
     max_compositions: int = 0        # 0 이면 전수 열거
 
@@ -82,7 +95,20 @@ class Config:
                 "w_cplx": self.w_cplx,
                 "payoff_access": self.payoff_access,
                 "qrtd_gamma": self.qrtd_gamma, "qrtd_lr": self.qrtd_lr,
-                "w_cd": self.w_cd, "lam_gain": self.lam_gain}
+                "w_cd": self.w_cd, "lam_gain": self.lam_gain,
+                "w_tonic": self.w_tonic,
+                "aff_gain": self.aff_gain,
+                "lam_gain_down": self.lam_gain_down,
+                "policy_mode": self.policy_mode,
+                "lam_mode": self.lam_mode,
+                "group_bias": self.group_bias,
+                "allo_aff_gain": self.allo_aff_gain,
+                "beta_es": self.beta_es,
+                "plan_sweeps": self.plan_sweeps,
+                "reanchor_at": self.reanchor_at,
+                "bootstrap": self.bootstrap,
+                "alpha_kappa": self.alpha_kappa,
+                "sp_disposition": self.sp_disposition}
 
     def empathic_kwargs(self, lam: float) -> dict:
         """고정 λ 대조군 생성 인자."""

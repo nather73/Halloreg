@@ -149,12 +149,18 @@ def test_self_model() -> None:
 
     # valence: 나쁜 상대(가치 낮음) → 음수, 좋은 상대 → 양수
     taus = sm3.taus
-    # 참조는 QRTD 초깃값(2.0)에서 출발해 tick_reference 로 학습된다.
-    # 검사를 위해 참조를 충분히 굴려 인물 간 차이가 벌어지게 한다.
-    for _ in range(200):
-        sm3.tick_reference(gamma=0.9, lr=0.05, kappa=1.25)
+    # v1.7.0: 참조는 **정적 기억**이다. 협력률에 따라 직접 배치되며 굴리지 않는다.
     ref_med = sm3.reference_median()
-    check("참조가 학습으로 이동", ref_med > 2.5, f"참조 중앙값={ref_med:.2f}")
+    # v2.7.0: Z̃ = (1−γ)Z 정규화 → 참조도 **라운드당 평균 보상** 척도 [1, 3].
+    check("참조가 정규화 가치 척도에 놓인다 (r̄)", 1.0 < ref_med < 3.5,
+          f"참조 중앙값={ref_med:.2f}")
+    meds = sorted(float(e.value_dist[10]) for e in sm3.memory.values()
+                  if e.value_dist is not None)
+    check("5인의 가치가 서로 벌어져 있다 (참조 산포)",
+          meds[-1] - meds[0] > 0.1, f"범위 [{meds[0]:.2f}, {meds[-1]:.2f}]")
+    c0, sp0 = sm3.value_prior()
+    check("value_prior 가 기억의 중심·산포를 준다",
+          1.0 < c0 < 3.5 and sp0 > 0.05, f"({c0:.2f}, {sp0:.2f})")
     lo = (ref_med - 3.0) + 0.0 * (taus - 0.5)     # 참조보다 낮은 관계
     hi = (ref_med + 3.0) + 0.0 * (taus - 0.5)     # 참조보다 높은 관계
     sm3.update_partner_value(500, lo)
@@ -208,67 +214,72 @@ def test_distributional() -> None:
 
 
 def test_core_affect() -> None:
-    print("\n[4] CoreAffect — 모집단 참조 valence × 모형갱신 arousal")
+    print("\n[4] CoreAffect — 상태 valence × 갱신량 arousal, λ_sp 분리")
     reset_payoffs()
     sm = SelfModel()
     sm.seed_social_history(PAYOFF_SELF, gamma=0.9,
                            rng=np.random.default_rng(1))
-    for _ in range(200):
-        sm.tick_reference(gamma=0.9, lr=0.05, kappa=1.25)
     ca = CoreAffect(sm, PAYOFF_SELF)
     ca.begin_partner(1)
     taus = sm.taus
     med = sm.reference_median()
 
-    # 나쁜 가치 벡터를 겪는 상대 → 음의 valence (사회적 적합도 낮음)
-    bad = (med - 3.0) + 0.5 * (taus - 0.5)
-    out_bad = ca.step(CD, opponent_cooperated=False,
-                      value_vector=bad, value_shift=0.02)
-    check("나쁜 관계 → valence < 0", out_bad["valence"] < 0,
-          f"V={out_bad['valence']:+.3f}")
-    check("valence 부호 = RPE(중앙값 차) 부호",
-          np.sign(out_bad["valence"]) == np.sign(out_bad["rpe"]))
+    # --- valence 는 이제 **상태 간** 적합도 (외부에서 주입) ---
+    o_bad = ca.step(CD, opponent_cooperated=False,
+                    value_vector=(med - 3.0) + 0.5 * (taus - 0.5),
+                    value_shift=0.02, state_valence=-0.6)
+    check("valence 는 주입된 상태 적합도를 그대로 쓴다",
+          abs(o_bad["valence"] + 0.6) < 1e-12, f"V={o_bad['valence']:+.3f}")
+    check("λ_aff = valence × arousal",
+          abs(o_bad["lambda_aff"]
+              - o_bad["valence"] * o_bad["arousal"]) < 1e-12)
 
-    # 좋은 가치 벡터 → 양의 valence
+    # --- λ_sp 는 **관계 간** 적합도에서 나온다 ---
+    check("나쁜 관계 → λ_sp 가 낮다", o_bad["lam_sp"] < 0.4,
+          f"λ_sp={o_bad['lam_sp']:.3f} (fitness={o_bad['fitness']:+.3f})")
+    check("나쁜 관계 → fitness < 0", o_bad["fitness"] < 0)
+
     sm2 = SelfModel()
     sm2.seed_social_history(PAYOFF_SELF, gamma=0.9,
                             rng=np.random.default_rng(1))
-    for _ in range(200):
-        sm2.tick_reference(gamma=0.9, lr=0.05, kappa=1.25)
     ca2 = CoreAffect(sm2, PAYOFF_SELF)
     ca2.begin_partner(1)
     good = (sm2.reference_median() + 3.0) + 0.5 * (sm2.taus - 0.5)
-    out_good = ca2.step(CC, opponent_cooperated=True,
-                        value_vector=good, value_shift=0.02)
-    check("좋은 관계 → valence > 0", out_good["valence"] > 0,
-          f"V={out_good['valence']:+.3f}")
-    check("valence ∈ (−1, 1)", abs(out_good["valence"]) < 1.0)
-    check("λ_aff = valence × arousal",
-          abs(out_good["lambda_aff"]
-              - out_good["valence"] * out_good["arousal"]) < 1e-12)
+    o_good = ca2.step(CC, opponent_cooperated=True, value_vector=good,
+                      value_shift=0.02, state_valence=+0.6)
+    check("좋은 관계 → λ_sp 가 높다", o_good["lam_sp"] > o_bad["lam_sp"],
+          f"{o_good['lam_sp']:.3f} vs {o_bad['lam_sp']:.3f}")
+    check("좋은 관계 → fitness > 0", o_good["fitness"] > 0)
 
-    # arousal = 모형 갱신량의 단조 포화
-    a_small = ca2.step(CC, value_vector=good, value_shift=0.005)["arousal"]
-    a_big = ca2.step(CC, value_vector=good, value_shift=0.20)["arousal"]
+    # --- arousal: 갱신량의 단조증가 + **하한** ---
+    a_small = ca2.step(CC, value_vector=good, value_shift=0.005,
+                       state_valence=0.0)["arousal"]
+    a_big = ca2.step(CC, value_vector=good, value_shift=0.20,
+                     state_valence=0.0)["arousal"]
     check("arousal 은 갱신량의 단조증가", a_big > a_small,
           f"{a_small:.4f} < {a_big:.4f}")
-    check("갱신량 0 → arousal 0",
-          ca2.step(CC, value_vector=good, value_shift=0.0)["arousal"] < 1e-12)
+    a_zero = ca2.step(CC, value_vector=good, value_shift=0.0,
+                      state_valence=0.0)["arousal"]
+    check("arousal 하한 > 0 (정서가 λ 통로를 잃지 않도록)",
+          abs(a_zero - ca2.arousal_floor) < 1e-12, f"a_min={a_zero:.4f}")
 
-    # **참조 비추종**: 착취를 반복해도 참조(타인들)는 그대로 → valence 유지
-    v0 = ca.step(CD, value_vector=bad, value_shift=0.01)["valence"]
+    # --- 만성 착취에서 λ_sp 가 소멸하지 않는다 (모집단 참조) ---
+    bad_vec = (med - 3.0) + 0.5 * (taus - 0.5)
+    sp0 = ca.step(CD, value_vector=bad_vec, value_shift=0.01,
+                  state_valence=-0.5)["lam_sp"]
     for _ in range(200):
-        ca.step(CD, value_vector=bad, value_shift=0.01)
-    v1 = ca.last["valence"]
-    check("만성 착취에도 valence 소멸·역전 없음 (모집단 참조)",
-          v1 < -0.3 and abs(v1 - v0) < 0.2,
-          f"v[0]={v0:+.3f} → v[200]={v1:+.3f} — 시간 자기비교면 역전됐을 것")
+        ca.step(CD, value_vector=bad_vec, value_shift=0.01,
+                state_valence=-0.5)
+    sp1 = ca.last["lam_sp"]
+    check("만성 착취에도 λ_sp 가 낮게 유지 (참조가 쫓아오지 않음)",
+          sp1 < 0.4 and abs(sp1 - sp0) < 0.2,
+          f"λ_sp[0]={sp0:.3f} → [200]={sp1:.3f}")
 
-    # 퇴화 경로 (QRTD 없는 대조군)
+    # 퇴화 경로
     sm3 = SelfModel(); ca3 = CoreAffect(sm3, PAYOFF_SELF); ca3.begin_partner(1)
     o = ca3.step(CC)
-    check("value_vector 없이도 동작 (중립 정서)",
-          o["valence"] == 0.0 and o["arousal"] == 0.0)
+    check("value_vector 없이도 동작 (valence 중립)",
+          o["valence"] == 0.0 and o["arousal"] == ca3.arousal_floor)
 
 
 def test_empathy() -> None:
@@ -283,19 +294,35 @@ def test_empathy() -> None:
           and abs(em.contextual(-10.0, 0.0)) <= 1.0)
 
     prev = em.lam
-    new = em.step(lambda_aff=0.6, lambda_ctx=0.4)
-    # v1.5.0: λ_ctx 는 무시된다 — λ 는 오직 정서만이 움직인다.
-    expected = prev + 0.05 * 0.6
-    check("갱신식 = λ + η·λ_aff (λ_ctx 무시)", abs(new - expected) < 1e-12,
-          f"{new:.6f} vs {expected:.6f}")
+    new = em.step(lambda_aff=0.6, lambda_ctx=0.4, valence=-0.2, lam_sp=0.7)
+    # v1.8.0: 느린 설정점 이완 + 빠른 정서. λ_ctx 는 무시된다.
+    expected = min(prev + 0.05 * (0.7 - prev) + em.aff_gain * 0.6, em.lam_max)
+    check("갱신식 = λ + η_sp(λ_sp−λ) + g_aff·λ_aff",
+          abs(new - expected) < 1e-12, f"{new:.6f} vs {expected:.6f}")
     check("lambda_ctx 인자가 결과에 영향 없음",
-          abs(Empathy(lam_init=0.4, gain=0.05).step(0.6, 0.0)
-              - Empathy(lam_init=0.4, gain=0.05).step(0.6, 0.9)) < 1e-12)
+          abs(Empathy(lam_init=0.4, gain=0.05).step(0.6, 0.0, valence=0.1)
+              - Empathy(lam_init=0.4, gain=0.05).step(0.6, 0.9, valence=0.1))
+          < 1e-12)
+    # 두 시간척도: 설정점은 느리게, 정서는 라운드 단위로.
+    # v2.8.0: **비대칭 이완** — 하강은 η_down(0.45), 상승은 η_up(0.05).
+    e_sp = Empathy(lam_init=0.5, gain=0.05, aff_gain=0.30, gain_down=0.45)
+    e_sp.step(lambda_aff=0.0, lam_sp=0.0, threat=True)
+    check("낮은 λ_sp 는 λ 를 빠르게 끌어내린다 (위협 학습)",
+          0.25 < e_sp.lam < 0.30, f"λ={e_sp.lam:.4f}")
+    e_up = Empathy(lam_init=0.5, gain=0.05, aff_gain=0.30, gain_down=0.45)
+    e_up.step(lambda_aff=0.0, lam_sp=1.0)
+    check("높은 λ_sp 는 λ 를 느리게 끌어올린다 (신뢰 회복)",
+          0.52 < e_up.lam < 0.53, f"λ={e_up.lam:.4f}")
+    e_af = Empathy(lam_init=0.5, gain=0.05, aff_gain=0.30)
+    e_af.step(lambda_aff=-0.8, lam_sp=0.5)
+    check("정서는 한 라운드에 크게 움직인다 (설정점보다 6배 이득)",
+          e_af.lam < 0.30, f"λ={e_af.lam:.4f}")
 
-    em2 = Empathy(lam_init=0.99, w_cd=0.0, gain=1.0)
-    check("λ 상한 클리핑", em2.step(10.0, 0.0) <= 1.0)
+    em2 = Empathy(lam_init=0.79, w_cd=0.0, gain=1.0, aff_gain=1.0)
+    check("λ 상한 클리핑 (0.80)", em2.step(10.0, 0.0) <= 0.80 + 1e-12,
+          f"λ={em2.lam:.4f}")
     em3 = Empathy(lam_init=0.01, w_cd=0.0, gain=1.0)
-    check("λ 하한 클리핑", em3.step(-10.0, 0.0) >= 0.0)
+    check("λ 하한 클리핑 (0.0)", em3.step(-10.0, 0.0) >= 0.0)
 
 
 # ==================================================================== 입자필터
@@ -451,13 +478,15 @@ def test_qrtd() -> None:
           f"shape={z.z_self.values.shape}")
     # 항상 CC 만 일어나는 환경 → Z(s,C) → R/(1−γ) = 3/0.1 = 30
     # Huber 스텝이 포화하므로 수렴이 선형이다 — 충분히 반복한다.
+    # v2.6.0: 마지막 인자는 협력확률이 아니라 **실제 다음 행위** a' (SARSA).
     for _ in range(20000):
-        z.update(0, 0, float(PAYOFF_SELF[CC]), float(PAYOFF_OTHER[CC]), 0, 1.0)
+        z.update(0, 0, float(PAYOFF_SELF[CC]), float(PAYOFF_OTHER[CC]), 0, COOP)
     v = z.value(0, 0, "self")
-    check("QRTD 부트스트랩: Z → r/(1−γ) 로 수렴", abs(v - 30.0) < 4.0,
-          f"Z(s,C)={v:.2f} (이론값 30.0)")
-    check("Z 는 1-step 보상보다 크다 (수익을 학습)",
-          v > float(PAYOFF_SELF[CC]))
+    # v2.7.0: 정규화 수익 Z̃ = (1−γ)Z 이므로 고정점은 **라운드당 평균 보상** r̄.
+    check("QRTD 부트스트랩: Z̃ → r̄ 로 수렴", abs(v - 3.0) < 0.4,
+          f"Z̃(s,C)={v:.2f} (이론값 3.0)")
+    check("Z̃ 는 라운드당 평균 보상 척도다 (수익/지평)",
+          abs(v - float(PAYOFF_SELF[CC])) < 0.5)
 
 
 
@@ -471,7 +500,8 @@ def test_self_policy() -> None:
     alld = dict(alpha=-3.0, rho=0.0, omega=0.0, eta=0.0, beta=4.0, lambda_j=0.2)
 
     # ---- 1-step 평가 + 종단 Z (rollout 폐기) ----
-    sp = SelfPolicy(n_particles=1, w_epi=0.0, w_cplx=0.0, seed=0)
+    sp = SelfPolicy(n_particles=1, w_epi_j=0.0, w_epi_r=0.0, w_cplx=0.0,
+                       seed=0)
     check("rollout 이 폐기되고 _evaluate 로 대체됨",
           hasattr(sp, "_evaluate") and not hasattr(sp, "_rollout"))
     sp.theta = {"rho": np.array([0.0]), "omega": np.array([0.0]),

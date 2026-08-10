@@ -57,6 +57,11 @@ _EPS = 1e-12
 THETA_AXES = ("alpha", "rho", "omega", "eta", "beta", "lambda_j")
 
 
+#: 사전 사회사 하 거리가중 (ratio − 0.5) 의 모집단 적률 (몬테카를로 산출).
+ALPHA_RATIO_MEAN = 0.02552757
+ALPHA_RATIO_SD = 0.05500370
+
+
 @dataclass
 class MemoryEntry:
     """상대 identity 하나에 대한 기억 항목: (id, dist, theta, 가치분포)."""
@@ -75,6 +80,9 @@ class MemoryEntry:
     # z_snapshot : 마지막 commit 시점의 Z_self(s,a) 전체 (4,2,21) — 재조우 복원용.
     z_snapshot: Optional[np.ndarray] = None
     familiarity: float = 0.0
+    adv_self: Optional[float] = None    # 점유가중 ΔZ_self (행위 이점)
+    adv_other: Optional[float] = None   # 점유가중 ΔZ_other
+    value_other: Optional[np.ndarray] = None  # 정책 하 기대 Z_other (α 용)
     last_seen: int = 0
     n_obs: int = 0
     coop_count: float = 0.0
@@ -91,9 +99,9 @@ class SelfModel:
                  k_disc: float = 1.0,
                  prior_coop_weight: float = 1.0,
                  social_lr: float = 0.02,
-                 identity_lr: float = 0.15,
-                 lam_floor: float = 0.10,
-                 lam_ceil: float = 0.70,
+                 identity_lr: float = 0.40,   # v2.8.0: λ_sp 조기 반응 (0.15 → 0.40)
+                 lam_floor: float = 0.0,
+                 lam_ceil: float = 0.80,
                  taus=DEFAULT_TAUS):
         self.theta_prior_mean = dict(
             alpha=0.0, rho=0.5, omega=0.0, eta=0.0, beta=3.0, lambda_j=0.5)
@@ -221,7 +229,8 @@ class SelfModel:
 
     def update_partner_value(self, identity: Optional[int],
                              value_vector: np.ndarray,
-                             z_snapshot: Optional[np.ndarray] = None) -> None:
+                             z_snapshot: Optional[np.ndarray] = None,
+                             value_other: Optional[np.ndarray] = None) -> None:
         """
         현재 상대의 **기대 보상(가치) 분포**를 온라인 갱신한다.
 
@@ -233,6 +242,11 @@ class SelfModel:
         if identity is None:
             return
         ent = self.memory.setdefault(identity, MemoryEntry(identity=identity))
+        if value_other is not None:
+            vo = np.asarray(value_other, dtype=float)
+            ent.value_other = (vo if ent.value_other is None
+                               else (1.0 - self.identity_lr) * ent.value_other
+                               + self.identity_lr * vo)
         v = np.asarray(value_vector, dtype=float)
         if ent.value_dist is None:
             ent.value_dist = v.copy()
@@ -243,40 +257,33 @@ class SelfModel:
             ent.z_snapshot = np.asarray(z_snapshot, dtype=float).copy()
 
     # ============================================================ 참조의 동보 갱신
-    def tick_reference(self, gamma: float, lr: float, kappa: float) -> None:
+    def value_prior(self) -> tuple:
         """
-        사전 관계들의 가치분포를 **현재 상대의 Z 와 동일한 재귀**로 한 스텝
-        갱신한다. 매 라운드 QRTD 갱신 직후에 호출된다.
+        **새 관계에 대한 무정보 사전** — (중심, 폭).
 
-        [왜 필요한가 — 척도 정합]
-        이전 판은 사전 인물의 가치분포를 **이론적 정상상태** V = r̄/(1−γ) 로
-        직접 부여했다. 그런데 현재 상대의 Z 는 TD 부트스트랩이라 참값에 닿는 데
-        수백 라운드가 걸린다(CC 에서 이론 30, 600R 후 17). 그 결과 학습 초기에는
-        **모든 상대가 참조보다 낮게** 보였고, valence 가 상대의 성질이 아니라
-        **Z 의 학습 진행도**를 재는 지표가 되어 버렸다(실측: ALLC 상대에서
-        valence 가 −0.959 → +0.978 로 단조 상승, value 2.20 → 7.74 와 동행).
+        기억 속 관계들의 가치분포에서 중심과 산포를 읽는다. QRTD 의 Z 초기화에
+        쓰이며, 이로써 참조와 Z 가 **구성상 같은 척도**에서 출발한다.
 
-        참조를 같은 추정기·같은 학습률·같은 라운드 수로 굴리면 미수렴 편향이
-        **양변에서 상쇄**된다. 해석도 자연스럽다 — 기억 속 관계들에 대한 가치
-        모형도 현재 진행 중인 생성 모형이며, 완결된 사실이 아니다.
+        [왜 이것이 옳은 출발점인가 — v1.7.0]
+        이전 판은 Z 를 init=2.0 에서 시작했다. γ=0.9 의 참 가치 범위 [0, 50]
+        에서 거의 최하단이라 사실상 **비관적 초기화**였고, 낙관적 초기화만큼이나
+        인위적이다. 그 결과 학습 과도기 내내 현재 상대가 참조보다 낮게 보였다.
 
-        갱신은 분포적 TD 다: 목표 = r̄ + γ·(현재 분위수 벡터), 자기 부트스트랩
-        (사전 관계는 정상적 요약이므로 상태 전이가 없다).
+        원리적 출발점은 "전형적인 관계의 가치" 이고, 에이전트가 그것을 얻는
+        곳은 사전 사회사다. **"새 관계는 내가 겪어온 관계들과 비슷할 것이다"** 는
+        낙관도 비관도 아닌 참에 가까운 사전이다. 시드마다 사회사가 다르므로
+        관계 기대 수준에 개체차가 생기는 것도 자연스럽다.
         """
-        g = float(gamma)
-        a = float(lr)
-        kap = max(float(kappa), 1e-6)
-        for ent in self.memory.values():
-            if ent.r_bar is None or ent.value_dist is None:
-                continue
-            cur = ent.value_dist
-            target = float(ent.r_bar) + g * cur          # (n,) 분포 목표
-            delta = target[None, :] - cur[:, None]
-            w = np.where(delta > 0.0, self.taus[:, None],
-                         1.0 - self.taus[:, None])
-            step = np.clip(delta, -kap, kap)
-            ent.value_dist = np.maximum.accumulate(
-                cur + a * np.mean(w * step, axis=1))
+        rows = [e.value_dist for e in self.memory.values()
+                if e.value_dist is not None and e.r_bar is not None]
+        if not rows:
+            return (2.0, 2.0)
+        meds = np.array([r[len(r) // 2] for r in rows], dtype=float)
+        widths = np.array([r[-1] - r[0] for r in rows], dtype=float)
+        # 폭은 관계 간 산포와 관계 내 폭 중 큰 쪽 — 참조가 지나치게 좁아
+        # valence 가 포화하는 것을 막는다.
+        spread = max(float(meds.std() * 2.0), float(widths.mean()), 1e-3)
+        return (float(np.median(meds)), spread)
 
     # ============================================================ 모집단 참조
     def population_reference(self, exclude: Optional[int] = None
@@ -301,6 +308,35 @@ class SelfModel:
             return None
         return num / den
 
+    def social_fitness(self, identity: Optional[int]) -> float:
+        """
+        **관계 간 적합도** ∈ (−1, 1) — 현재 상대가 기억 속 다른 관계들에 비해
+        얼마나 좋은가. λ 설정점 λ_sp 의 원천이다.
+
+            fitness = 2·F̂_ref( median(Q_현재) ) − 1
+            ref     = Σ_k w_k·Q_k / Σ_k w_k   (거리반비례 가중, 현재 상대 제외)
+
+        [v1.8.0 — 두 비교의 분리]
+        이전 판은 이 값을 그대로 valence 로 썼다. 그러나 관계 간 비교는
+        **어느 정도로 마음을 열 것인가**(설정점)의 문제이고, 매 라운드의 정서적
+        동요는 **지금 이 상황이 이 관계 안에서 좋은가 나쁜가**의 문제다. 둘을
+        하나로 묶으면 상태별 처방이 정서에 실리지 못한다.
+
+        실측이 그 대가를 보여준다: WSLS 상대 CD 상태는 Z 상 배신이 옳은데
+        (ΔZ = −3.88, DD 를 경유해야 CC 로 복귀 가능) 행동 협력률이 0.696 이라
+        우회로 진입률이 0.189 에 그쳤다(TFT 의 강제 우회 0.877 과 대비).
+        상태 수준 valence 를 도입하면 WSLS 의 CD 가 −0.497(최하), DD 가
+        −0.205(최상위권)로 **TFT 와 정반대 순서**가 되어 신호가 살아난다.
+        """
+        ent = self.memory.get(identity) if identity is not None else None
+        if ent is None or ent.value_dist is None:
+            return 0.0
+        ref = self.population_reference(exclude=identity)
+        if ref is None:
+            return 0.0
+        med = float(ent.value_dist[len(ent.value_dist) // 2])
+        return float(2.0 * vector_cdf(ref, self.taus, med) - 1.0)
+
     def social_valence(self, identity: Optional[int]) -> float:
         """
         valence = 2·F̂_ref( median(Q_현재) ) − 1.
@@ -324,8 +360,7 @@ class SelfModel:
     # ============================================================ 사전 사회사
     def seed_social_history(self, payoffs: np.ndarray,
                             gamma: float = 0.9,
-                            value_init: float = 2.0,
-                            value_spread: float = 2.0,
+                            within: float = 1.0,
                             n_close: int = 1, n_middle: int = 2,
                             n_far: int = 2,
                             coop_mean: float = 0.55, coop_sd: float = 0.18,
@@ -342,6 +377,10 @@ class SelfModel:
         · distance_coop_slope 기본 0 — 거리·협력 상관을 초기화에 심지 않는다.
         """
         rng = rng or np.random.default_rng(0)
+        # v2.7.0: Z̃ = (1−γ)Z 정규화에 맞춰 기억의 가치분포도 라운드당
+        # 평균 보상 척도로 생성한다. 참조와 Z 가 같은 척도여야 fitness 가
+        # 의미를 갖는다.
+        v_scale = 1.0
         u = np.asarray(payoffs, dtype=float)
         self.set_payoff_scale(u)
 
@@ -367,13 +406,104 @@ class SelfModel:
                 ent.n_obs += n_obs
                 ent.coop_count += float(round(c_k * n_obs))
 
-                # 가치분포는 **직접 부여하지 않는다.** 현재 상대의 Z 와 같은
-                # 초깃값에서 출발해, 매 라운드 tick_reference 로 나란히 학습
-                # 된다. 부여하는 것은 특성 보상 r̄ 뿐이다.
-                #   r̄ = 1 + 2c ∈ [P, R] — 협력적 관계일수록 높은 보상.
+                # **가치분포를 직접 부여한다.** (v1.7.0 — r̄ 재귀 폐기)
+                # 이전 판은 r̄ 만 주고 tick_reference 로 매 라운드 굴렸다.
+                # 그러나 참조는 학습 대상이 아니라 **기억**이므로 정적인 것이
+                # 옳고, 굴리면 5인이 모두 r̄/(1−γ) 로 수렴해 참조 폭이 좁아진다.
+                #
+                # 협력적 관계일수록 높은 가치에 배치한다:
+                #   r̄_k = 1 + 2c_k ∈ [P, R],  V_k = r̄_k/(1−γ)
+                # 각 인물은 자기 폭을 가지므로, 5인의 가중평균인 참조분포에
+                # **관계 간 산포**가 남는다 — 현재 상대가 그 안에서 순위를 갖는다.
+                # (v2.0 실험) 행위 이점 쌍 — 기억에는 호혜성 정보가 없으므로
+                # '무기억(상태 독립) 상대' 모형에서 도출한다. 상대가 확률 c_k 로
+                # 협력하고 내 행위에 반응하지 않는다면, 내 행위는 당 라운드만
+                # 바꾼다:
+                #   ΔZ_self  = c(R−T) + (1−c)(S−P)   (< 0, PD 지배구조)
+                #   ΔZ_other = c(R−S) + (1−c)(T−P)   (> 0)
+                pv = np.asarray(payoffs, dtype=float).reshape(-1)
+                R_, S_, T_, P_ = pv[0], pv[1], pv[2], pv[3]
+                ent.adv_self = c_k * (R_ - T_) + (1 - c_k) * (S_ - P_)
+                ent.adv_other = c_k * (R_ - S_) + (1 - c_k) * (T_ - P_)
                 ent.r_bar = 1.0 + 2.0 * c_k
-                ent.value_dist = (float(value_init)
-                                  + float(value_spread) * (self.taus - 0.5))
+                center = ent.r_bar * v_scale
+                ent.value_dist = center + within * v_scale * (self.taus - 0.5)
+                # 타자 가치 수준 — 상대가 이 관계에서 얻은 것. 내가 협력률 c_k
+                # 로 대우받았다면 상대는 대칭적으로 (1 + 2·(1−c_k)) 를 받는다
+                # (PD 의 영합적이지 않은 비대칭: 내가 덜 받으면 상대가 더 받음).
+                r_o = 1.0 + 2.0 * (1.0 - c_k)
+                ent.value_other = (r_o * v_scale
+                                   + within * v_scale * (self.taus - 0.5))
+
+    def cooperation_bias(self, kappa: float = 2.0) -> float:
+        """
+        **사회사 기반 협력 편향 α** (v2.2).
+
+            ratio_k = Z̄_self^(k) / (Z̄_self^(k) + Z̄_other^(k))
+            α = κ · Σ_k w_k·(ratio_k − 0.5) / Σ_k w_k · (1/σ_ref)
+
+        ratio = 0.5 (내가 얻은 만큼 상대도 얻음) 이면 α = 0. 내가 더 얻었으면
+        양수(협력 쪽), 덜 얻었으면 음수(방어 쪽)다. w_k 는 사회적 거리 역가중
+        이므로 가까운 관계가 지배한다.
+
+        [해석] 사회적 부채 구조다 — 내 관계들에서 내가 상대보다 많이 얻어
+        왔다면 새 관계에 협력적으로 접근한다. 관계망이 나를 착취해 왔다면
+        방어적으로 접근한다. λ 가 '지금 이 상대·이 상황' 을 담당한다면 α 는
+        **'나는 어떤 사회적 세계에서 왔는가'** 를 담당한다.
+
+        κ = 2.0 은 표준편차 스케일이다 — ratio 편차를 그 참조 산포로 나눈 뒤
+        2 를 곱하므로, 사회사가 평균에서 1σ 떨어지면 α ≈ ±2 (로짓 단위)가 된다.
+        """
+        num = den = 0.0
+        for pid, ent in self.memory.items():
+            if ent.value_dist is None or ent.value_other is None:
+                continue
+            zs = float(np.mean(ent.value_dist))
+            zo = float(np.mean(ent.value_other))
+            tot = zs + zo
+            if abs(tot) < 1e-9:
+                continue
+            w = self.distance_weight(pid)
+            num += w * (zs / tot - 0.5)
+            den += w
+        if den <= 1e-9:
+            return 0.0
+        # 개체 간 산포로 표준화한다. ALPHA_RATIO_SD 는 사전 사회사 생성분포
+        # (coop_mean=0.55, coop_sd=0.18) 하에서 거리가중 (ratio − 0.5) 의
+        # **모집단 표준편차**로, 2000 표본 몬테카를로로 한 번 산출한 상수다.
+        # 이로써 α ~ N(0, kappa²) 가 되어 kappa 가 곧 표준편차가 된다.
+        z = (num / den - ALPHA_RATIO_MEAN) / ALPHA_RATIO_SD
+        return float(kappa * z)
+
+    def lambda_sp_compensatory(self, identity, adv_self, adv_other,
+                               m: float = 0.20, i0: float = 0.0) -> tuple:
+        """
+        **보상적 λ 설정점** — 이 관계가 요구하는 공감량을 기준선으로.
+
+            λ_sp = clip( λ*_j(I₀) + m·Φ_j , 0, 1 )
+            λ*_j(I₀) = (I₀ − A_self) / (A_other − A_self)     (요구 성분)
+            Φ_j      = 2·F̂_ref(median(Q_j)) − 1               (성향 성분)
+
+        [왜 요구 성분이 기준선인가 — v2.0]
+        적합도-아핀 사상 λ_sp = ½(1+Φ) 은 **무차별점과 무관하게** 값을 정한다.
+        그래서 λ-단독 정책에서 방어가 무너졌다: ALLD 상대 λ=0.161 인데 무차별점이
+        0.126 이라 여유가 0.035 뿐이고, 절편이 −0.038 ≈ 0 이 되어 행동이 동전
+        던지기가 됐다(협력률 0.487).
+        λ*_j(I₀) 를 기준선으로 두면 λ_sp 가 **항상 그 관계의 임계 근방**에서
+        출발하고, m·Φ 가 좋은 관계는 위로 나쁜 관계는 아래로 민다 — 부호가
+        임계 대비로 정해지므로 방어와 협력이 모두 구조적으로 보장된다.
+
+        A_self > 0 (자기 이익만으로 협력이 유리)이면 요구량은 0 이다.
+        """
+        if adv_other - adv_self <= 1e-9:
+            base = 0.5
+        elif adv_self > 0.0:
+            base = 0.0          # 협력이 지배적 — 공감 요구 없음
+        else:
+            base = float(np.clip((i0 - adv_self) / (adv_other - adv_self),
+                                 0.0, 1.0))
+        phi = self.social_fitness(identity)
+        return float(np.clip(base + m * phi, 0.0, 1.0)), float(phi), base
 
     # ============================================================ 설정점
     def weighted_cooperation(self) -> float:

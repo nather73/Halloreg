@@ -90,14 +90,21 @@ class Empathy:
     """
 
     def __init__(self, lam_init: float, w_cd: float = 0.5,
-                 gain: float = 0.05, lam_min: float = 0.0,
-                 lam_max: float = 1.0, alpha_scale: float = 2.0):
+                 gain: float = 0.05, w_tonic: float = 0.10,
+                 w_sp: float = 1.0, aff_gain: float = 0.30, lam_min: float = 0.0,
+                 lam_max: float = 0.80, alpha_scale: float = 2.0,
+                 gain_down: float = 0.45):
         self.lam_min = float(lam_min)
         self.lam_max = float(lam_max)
+        #: 하강 방향 이완률 (위협 학습). 상승 방향은 self.gain.
+        self.gain_down = float(gain_down)
         self.lam_init = float(np.clip(lam_init, lam_min, lam_max))
         self.lam = self.lam_init
         self.w_cd = float(np.clip(w_cd, 0.0, 1.0))
         self.gain = float(gain)
+        self.w_tonic = float(w_tonic)   # (v1.8.0 폐기 — 서명 호환)
+        self.w_sp = float(w_sp)         # 설정점 이완 강도
+        self.aff_gain = float(aff_gain) # 정서 이득 (라운드 단위 급변 허용)
         self.alpha_scale = float(alpha_scale)
 
         # 최근 스텝 진단값
@@ -115,22 +122,64 @@ class Empathy:
         return 0.5 * (a + l)
 
     # ------------------------------------------------------------ 한 스텝
-    def step(self, lambda_aff: float, lambda_ctx: float = 0.0) -> float:
+    def step(self, lambda_aff: float, lambda_ctx: float = 0.0,
+             valence: float = 0.0, lam_sp: Optional[float] = None,
+             threat: bool = False) -> float:
         """
-        λ_t = clip( λ_{t−1} + η · λ_aff ).
+        **두 시간척도의 분리** (v1.8.0).
 
-        **v1.5.0 — λ 는 오직 CoreAffect(정서)만이 움직인다.** λ_ctx(추론된
-        α̂·λ̂_j 수준신호)는 제거되었다. OpponentInversion 의 영향은 호혜 경로
-        (ρ, ω, η — SelfPolicy)로 이관되었으므로, 같은 정보원이 두 경로를 모두
-        구동하면 두 친사회 경로의 해리 주장이 무너진다. 실측으로도 λ_ctx 가 λ
-        궤적을 지배하고 있었다(정서 비중 16~21%) — 공감 경로라 이름 붙인 것을
-        추론이 굴리고 있던 셈이다. lambda_ctx 인자는 서명 호환용이며 무시된다.
+            λ_t = clip( λ_{t−1} + η_sp·(λ_sp − λ_{t−1})  +  g_aff·λ_aff )
+                              └─ 느린 이완 ─┘        └─ 빠른 정서 ─┘
+
+          · λ_sp (설정점) — **관계 간** 적합도. "이 상대가 내가 아는 다른
+            관계들에 비해 좋은가." 점진적으로 이동한다 (η_sp = gain = 0.05).
+          · λ_aff = V×A  — **상태 간** 적합도의 위상성 반응. "지금 이 상황이
+            이 관계 안에서 좋은가." 라운드 단위로 급변할 수 있어야 한다
+            (g_aff = aff_gain, 기본 1.0 — 사실상 무제약).
+
+        [왜 정서 이득을 분리하는가]
+        이전 판은 두 성분을 같은 η=0.05 로 눌렀다. 그러면 λ 가 라운드당 최대
+        0.05 밖에 못 움직여, **상태 전환 속도(1라운드)를 따라가지 못한다.**
+        WSLS 상대 CD 처럼 '한 라운드 배신으로 우회해야 탈출되는' 상태에서
+        상태 valence 가 −0.497 로 강하게 음수인데도 λ 가 그 라운드 안에
+        반응하지 못해 우회 진입률이 0.189 에 머물렀다.
+
+        설정점은 관계의 성질이므로 느려야 하고, 정서는 상황의 성질이므로
+        빨라야 한다 — 시간척도가 다른 두 신호를 하나의 이득으로 묶은 것이
+        설계 오류였다.
         """
-        drive = float(lambda_aff)
-        self.lam = float(np.clip(self.lam + self.gain * drive,
-                                 self.lam_min, self.lam_max))
+        drive_sp = 0.0
+        # **비대칭 이완** (v2.8.0) — 위협은 빠르게, 신뢰는 느리게.
+        #     η_eff = η_down  (λ_sp < λ, 하강)
+        #           = η_up    (그 외, 상승)
+        # 착취자 상대에서 λ 가 0 으로 내려오는 데 η=0.05 로는 시상수 20R,
+        # 실측 ~100R 이 걸렸다. H3/H4 는 200R 이라 과도기가 절반을 차지해
+        # ALLD 열에서만 라운드당 0.33 을 잃었다(TFT 1.073 vs HalloReg 0.744).
+        # η_down = 0.45 면 시상수 ≈ 2.2R, 5R 이내에 90% 도달한다.
+        #
+        # 비대칭 자체에 근거가 있다: 배신 학습은 빠르고 신뢰 회복은 느리다는
+        # 것이 사회적 학습의 안정적 비대칭이며, 이상성 관점에서도 위협 방향의
+        # 예측적 조절이 먼저 작동하는 것이 정상이다.
+        # 빠른 이완은 **위협일 때만** 걸린다 (threat = 관계 적합도 Φ < 0).
+        # 단순히 λ_sp < λ 를 기준으로 삼으면 좋은 관계에서도 오작동한다 —
+        # ALLC 상대는 A_self > 0 이라 요구 공감량이 0 이고 λ_sp = m·Φ ≈ 0.40
+        # 인데, 초기 λ = 0.5 보다 낮다는 이유로 급강하해 λ 가 오히려 떨어졌다
+        # (실측 0.386 → 0.282). 위협 학습의 비대칭은 '나쁜 관계' 에 대한
+        # 것이지 '아래 방향' 전부에 대한 것이 아니다.
+        eta = self.gain
+        if lam_sp is not None:
+            drive_sp = self.w_sp * (float(lam_sp) - self.lam)
+            if threat and float(lam_sp) < self.lam:
+                eta = self.gain_down
+        self.lam = float(np.clip(
+            self.lam + eta * drive_sp + self.aff_gain * float(lambda_aff),
+            self.lam_min, self.lam_max))
         self.last = {"lambda": self.lam, "lambda_aff": float(lambda_aff),
-                     "lambda_ctx": 0.0, "drive": drive}
+                     "lambda_ctx": 0.0, "valence": float(valence),
+                     "lam_sp": float(lam_sp) if lam_sp is not None
+                     else float("nan"),
+                     "drive": self.gain * drive_sp
+                     + self.aff_gain * float(lambda_aff)}
         return self.lam
 
     def reset(self, lam_init: float = None) -> float:
@@ -142,3 +191,29 @@ class Empathy:
             self.lam_init = float(np.clip(lam_init, self.lam_min, self.lam_max))
         self.lam = self.lam_init
         return self.lam
+
+
+def empathy_shift_z(lam, adv_self, adv_other):
+    """
+    **Z 기반 공감 절편** — es(λ, s), v2.1.
+
+        es(λ, s) = (1−λ)·[Z̄_self(s,C) − Z̄_self(s,D)]
+                 +    λ ·[Z̄_other(s,C) − Z̄_other(s,D)]
+
+    [왜 (λ, p) 가 아니라 (λ, s) 인가]
+    구식 empathy_shift(λ, p) = (T−S)λ + (R−T+P−S)p + (S−P) 는 **1-step 보수와
+    상대 협력확률**의 해석해였다. 세 가지 한계가 있었다.
+      · 보수행렬을 안다고 전제한다 (payoff_access="naive" 와 모순).
+      · 지평이 1 이라 '지금 배신하면 다음 K 라운드가 나빠진다' 를 못 본다.
+      · 상태 s 에 의존하지 않아 CD 와 DD 를 구분하지 못한다.
+    Z 기반 형태는 셋을 모두 해소한다 — Z 는 관측으로 학습되고(naive 정합),
+    γ-지평의 미래를 담으며, (상태, 행위)로 색인되므로 맥락 의존적이다.
+
+    한계도 분명하다: Z 는 **현재 정책 하의 값**이므로 정책이 이미 협력적이면
+    A_self 도 협력을 지지하는 자기강화 구조가 있다. 그리고 on-policy 평가라
+    '가능한 최선' 이 아니라 '지금 하고 있는 것의 값' 을 잰다.
+
+    무차별점: es = 0 ⟺ λ* = A_self / (A_self − A_other).
+    """
+    return (1.0 - lam) * adv_self + lam * adv_other
+

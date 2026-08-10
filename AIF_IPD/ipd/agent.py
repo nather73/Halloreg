@@ -47,6 +47,7 @@ from AIF_IPD.core.constants import joint_index
 from AIF_IPD.core.qrtd import QuantileTD, RewardModel, state_index
 from AIF_IPD.core.self_model import SelfModel
 from .tom.self_policy import SELF_AXES, SelfPolicy
+from AIF_IPD.core.empathy import empathy_shift_z
 from .tom import (
     GatedToM, ObservationContext, OpponentInversion, RecursiveSocialEFE,
     TheoryOfMind,
@@ -74,6 +75,10 @@ class EmpathicAgent:
     """
 
     #: 로깅 채널 목록 — 하위 클래스가 확장한다.
+    #: 하위 클래스가 덮어쓰는 행위 선택 모드 (EmpathicAgent 는 형질 경로).
+    policy_mode = "traits"
+    beta_es = 45.0
+
     LOG_KEYS = ("action", "lam", "pred_coop", "reliability",
                 "S_rho", "S_omega", "S_eta", "SD_S_rho", "SD_S_omega",
                 "SD_S_eta", "policy_ess", "policy_G", "q_coop",
@@ -139,6 +144,8 @@ class EmpathicAgent:
         self.reward_model = None
         self.qrtd = None
         self._prev_sa = None
+        #: SARSA 보류 전이 (s, a, r_self, r_other, s_next) — a' 관측 후 적용.
+        self._pending = None
         self._shift_used = float("nan")
         self._shift_oracle = float("nan")
 
@@ -190,6 +197,19 @@ class EmpathicAgent:
                     self.lam = float(v)
             self.social_efe.lam = self.lam
         return self.lam
+
+    def _occ_adv(self):
+        """점유율 가중 행위 이점 (A_self, A_other) — 보상적 λ_sp 의 입력."""
+        if self.qrtd is None or self.qrtd.n_obs <= 3:
+            return None
+        d = self._state_visits / max(self._state_visits.sum(), 1e-9)
+        a_s = float(np.sum([d[ss] * (self.qrtd.value(ss, COOP, "self")
+                                     - self.qrtd.value(ss, DEFECT, "self"))
+                            for ss in range(4)]))
+        a_o = float(np.sum([d[ss] * (self.qrtd.value(ss, COOP, "other")
+                                     - self.qrtd.value(ss, DEFECT, "other"))
+                            for ss in range(4)]))
+        return (a_s, a_o)
 
     def _regulate(self, observed_state: int, opp_action: int,
                   inferred: dict) -> dict:
@@ -294,13 +314,24 @@ class EmpathicAgent:
         else:
             u_s = u_o = None
 
-        # --- 우도 절편: λ-가중 **수익 이점**, (1−γ) 로 라운드당 등가 단위화 ---
-        # A_x = Z_x(s,C) − Z_x(s,D) 는 수익 차이라 규모가 보상의 1/(1−γ) 배다.
-        # 정규화 없이 쓰면 |절편| ≈ 2.5 로 σ(4·절편) 이 포화해 ρ·ω·η 가 로짓에서
-        # 밀려난다(실측). (1−γ) 를 곱하면 '라운드당 평균 이점' 이 되어 1-step
-        # 보상과 같은 차원이 되고 형질 항과 견줄 수 있다.
+        # --- 우도 절편: λ-가중 수익 이점 ---
+        #   A_x(s) = Z̄_x(s, C) − Z̄_x(s, D)
+        #   shift  = (1−γ)·[ (1−λ)·A_self + λ·A_other ]
+        #
+        # [v1.9.0 — 즉각항/꼬리항 분리 폐기]
+        # v1.7~1.8 은 즉각항을 R̂(1-step)에서, 꼬리항을 Z 에서 가져와 합쳤다.
+        # 그러나 Z 자체가 "이 상태에서 이 행위의 장기 가치" 이므로 그 차이가
+        # 곧 행위 이점이고, 두 원천을 섞는 것은 인위적이다. R̂ 를 끌어온 이유는
+        # 미방문 칸이 초깃값에 머문다는 것이었는데, 그것은 절편의 문제가 아니라
+        # **학습률의 문제**였다. QuantileTD 의 방문 횟수 적응 학습률
+        # (lr = max(1/(1+n), lr_base))로 원인을 직접 제거했으므로 — 한 번 겪어
+        # 보상이 낮으면 그 즉시 그 행위의 기대 보상이 내려간다 — 절편은 Z 만으로
+        # 일관되게 구성한다.
         shift_i = None
-        if self.qrtd is not None and self.qrtd.n_obs > 20:
+        # v2.8.0: 게이트 8 → 3. λ 가 5~7R 내에 반응해야 하므로, 이점 추정이
+        # 거칠더라도 조기에 쓰는 편이 낫다 (방문 적응 lr 로 첫 관측이 즉시
+        # 반영되므로 부호는 대체로 옳다).
+        if self.qrtd is not None and self.qrtd.n_obs > 3:
             s_cur = state_index(
                 COOP if self.my_last is None else int(self.my_last),
                 COOP if not self.opp_actions else int(self.opp_actions[-1]))
@@ -308,21 +339,53 @@ class EmpathicAgent:
                       - self.qrtd.value(s_cur, DEFECT, "self"))
             a_other = (self.qrtd.value(s_cur, COOP, "other")
                        - self.qrtd.value(s_cur, DEFECT, "other"))
-            shift_i = float((1.0 - self.qrtd.gamma)
-                            * ((1.0 - lam) * a_self + lam * a_other))
-        elif self.payoff_access == "naive":
-            shift_i = self.reward_model.shift(lam, p_other)
+            # **es(λ, s) — Z 만으로 계산되는 공감 절편** (v2.1)
+            raw_es = float(empathy_shift_z(lam, a_self, a_other))
+            # **절편 정규화** (v3.0) — es 를 고정 참조 산포로 나눈다.
+            #   es_norm = es / σ_ref,  σ_ref = (1−γ)·(r_max − r_min)
+            # 정규화 Z̃ 에서 한 라운드 행위가 만드는 이점의 이론적 최대 규모가
+            # (1−γ)·보상폭 이다. 이 값으로 나누면 es 가 '가능한 최대 이점 대비
+            # 몇 배' 라는 무차원량이 된다.
+            #
+            # [왜 고정 참조인가]
+            # 실측 산포로 나누면 되먹임이 생긴다 — 행동이 극단화될수록 산포가
+            # 줄고 그러면 절편이 커져 더 극단화된다(v1.9 형질 정규화에서
+            # 겪은 것과 같은 구조). 고정 참조는 그 고리를 만들지 않는다.
+            #
+            # [무엇을 고치는가]
+            # on-policy 부트스트랩이 Z̃(s,C) 와 Z̃(s,D) 를 서로를 향해 압착해,
+            # ALLD 상대에서 A_self 가 이론값 −0.10 의 1/4(−0.024)에 그쳤다.
+            # 그 결과 λ=0.010 을 달성하고도 로짓이 −0.81 에 머물러 협력률
+            # 0.344 가 남았다. 정규화는 이 압착을 척도 수준에서 되돌린다.
+            shift_i = raw_es / self._es_scale
 
         term = (self.qrtd.terminal_value
-                if (self.qrtd is not None and self.qrtd.n_obs > 20) else None)
+                if (self.qrtd is not None and self.qrtd.n_obs > 3) else None)
 
-        pol = self.self_policy.step(theta_j, lam, f_me, g_me,
+        if self.policy_mode == "lambda_only":
+            # (v2.0 실험) **λ-단독 행위 선택** — 형질 (ρ, ω, η) 폐기.
+            #   P(C) = σ( β · s_t(λ) ),  s_t = c·[(1−λ)A_s + λA_o]/scale
+            # 상태·맥락 의존성은 A_x(s) = Z̄_x(s,C) − Z̄_x(s,D) 가 담고,
+            # 관계 의존성은 λ 의 동적 조절이 담는다. 호혜처럼 보이는 행동은
+            # 상태 의존 절편에서, 성향처럼 보이는 것은 λ 궤적에서 나온다.
+            # 단일 파라미터 β_es 로 통합 (v2.1). 이전에는 shift_gain(0.30) ×
+            # shift_beta(8.0) ÷ trait_scale(1.046) 이 곱해져 실질 이득 2.295 를
+            # 세 상수로 중복 표현했고, 분모는 **폐기된 형질**의 사전 규모라
+            # 의미가 없었다. 이제 로짓 정밀도 하나만 남는다.
+            # 로짓 = α (사회사 편향) + β_es·es(λ, s)
+            _z = self.alpha_bias + (0.0 if shift_i is None
+                                    else self.beta_es * shift_i)
+            q_c = float(1.0 / (1.0 + np.exp(-_z)))
+            pol = {"ess": float("nan"), "theta_mean": {}, "pc": q_c}
+        else:
+            pol = self.self_policy.step(theta_j, lam, f_me, g_me,
                                     p_other, p_self, ig_j=ig_j,
                                     u_self=u_s, u_other=u_o,
                                     terminal=term, shift_i=shift_i,
                                     p_coop_j=p_coop_j, ig_r=ig_r)
-        q_c = self.self_policy.coop_prob_mixture(f_me, g_me, lam, p_other,
-                                                 shift=shift_i)
+        if self.policy_mode != "lambda_only":
+            q_c = self.self_policy.coop_prob_mixture(f_me, g_me, lam, p_other,
+                                                     shift=shift_i)
         self._shift_used = (shift_i if shift_i is not None
                             else empathy_shift(lam, p_other))
         self._shift_oracle = empathy_shift(lam, p_other)
@@ -436,10 +499,11 @@ class HalloRegAgent(EmpathicAgent):
         "valence", "arousal", "lambda_aff", "lambda_ctx", "rpe", "surprise",
         "expected_reward", "baseline_reward", "pessimism", "social_distance",
         "shift_used", "shift_oracle", "qrtd_n", "value",
+        "lam_sp", "allo_phi", "fitness",
         "lambda_setpoint")
 
     def __init__(self, w_cd: float = 0.5, lam_gain: float = 0.05,
-                 lam_min: float = 0.0, lam_max: float = 1.0,
+                 lam_min: float = 0.0, lam_max: float = 0.80,
                  social_lr: float = 0.02, identity_lr: float = 0.15,
                  kl_scale: float = 0.05,
                  recency_tau: float = 200.0, familiarity_scale: float = 30.0,
@@ -448,7 +512,19 @@ class HalloRegAgent(EmpathicAgent):
                  identity_memory: bool = True, regulate: bool = True,
                  alpha_scale: float = 2.0,
                  payoff_access: str = "naive",
-                 qrtd_gamma: float = 0.5, qrtd_lr: float = 0.20,
+                 qrtd_gamma: float = 0.9, qrtd_lr: float = 0.20,
+                 w_tonic: float = 0.10,
+                 aff_gain: float = 0.30,
+                 lam_gain_down: float = 0.45,
+                 lam_mode: str = "allostatic",
+                 group_bias: float = 0.90,
+                 allo_aff_gain: float = 0.0,
+                 policy_mode: str = "lambda_only",
+                 beta_es: float = 70.0, sp_disposition: float = 0.50,
+                 bootstrap: str = "sarsa",
+                 plan_sweeps: int = 1,
+                 reanchor_at: int = 8,
+                 alpha_kappa: float = 0.0,
                  seed_history: bool = True,
                  history_coop_mean: float = 0.55,
                  history_coop_sd: float = 0.18,
@@ -480,16 +556,41 @@ class HalloRegAgent(EmpathicAgent):
         #              얼마가 정보 접근 특권인지 분리 불가).
         #   "oracle" : 보수행렬 직접 관측. 상한 기준·절제 대조로만 쓴다.
         self.payoff_access = str(payoff_access)
+        self.policy_mode = str(policy_mode)
+        #: λ 조절 방식 — 'integrator'(현행) | 'allostatic'(직접 사상, v2.9 탐색).
+        self.lam_mode = str(lam_mode)
+        #: 집단 적합성 편향 g — 생존이 보장될 때 λ 가 도달하는 상한.
+        self.group_bias = float(group_bias)
+        #: 알로스테시스 모드의 정서 미세조절 이득.
+        self.allo_aff_gain = float(allo_aff_gain)
+        # λ-단독에서는 절편이 로짓의 **유일한** 항이므로 정밀도를 따로 둔다.
+        # 형질 4항이 나눠 갖던 로짓 예산을 절편 하나가 감당해야 한다.
+        self.beta_es = float(beta_es)
+        #: es 정규화의 고정 참조 산포 — (1−γ)·보상폭.
+        self._es_scale = max((1.0 - float(qrtd_gamma))
+                             * float(PAYOFF_SELF.max() - PAYOFF_SELF.min()),
+                             1e-6)
+        self.alpha_kappa = float(alpha_kappa)
+        self.core_affect.sp_disposition = float(sp_disposition)
+        # (v2.1) 형질 사전 규모 분모는 폐기되었다 — 폐기된 형질의 규모를
+        # 살아있는 절편의 분모로 쓰는 것은 의미가 없었고, β_es 하나로 흡수된다.
         self.reward_model = RewardModel(lr=max(qrtd_lr * 2, 0.02))
         self.qrtd = QuantileTD(gamma=qrtd_gamma, lr=qrtd_lr,
                                seed=(kwargs.get("seed", 0) or 0) + 5171)
         self.reward_model.set_scale(float(PAYOFF_SELF.max()
                                           - PAYOFF_SELF.min()))
-        # Z 의 Huber 임계는 **가치 척도**(보상 범위 / (1−γ))에 맞춘다.
-        self.qrtd.set_scale(float(PAYOFF_SELF.max() - PAYOFF_SELF.min())
-                            / max(1.0 - qrtd_gamma, 1e-6))
+        # v2.7.0: Z̃ = (1−γ)Z 정규화이므로 Huber 임계도 **보상 척도**로 잡는다.
+        self.qrtd.set_scale(float(PAYOFF_SELF.max() - PAYOFF_SELF.min()))
+        self.qrtd.bootstrap = str(bootstrap)
+        #: 라운드당 모형 기반 계획 스윕 횟수 (0 이면 순수 TD).
+        self.plan_sweeps = int(plan_sweeps)
+        #: 이 관측 수에서 Z̃ 를 R̂ 기반 값으로 1 회 재기준화한다 (0 이면 없음).
+        self.reanchor_at = int(reanchor_at)
+        self._reanchored = False
 
         self._prev_sa = None            # 직전 (상태, 행위) — TD 전이 구성용
+        self._state_visits = np.zeros(4)   # 경험적 상태 점유율 d(s)
+
         # ---- 사전 사회사 적재 ----
         # 개체는 백지로 사회에 진입하지 않는다. 실험 이전의 관계망(가까운 사람 ·
         # 지인 · 먼 타인)을 미리 적재해야 거리가중 설정점이 실제로 작동한다.
@@ -498,18 +599,42 @@ class HalloRegAgent(EmpathicAgent):
         if seed_history:
             self.self_model.seed_social_history(
                 PAYOFF_SELF, gamma=qrtd_gamma,
-                value_init=self.qrtd.init_value,
-                value_spread=self.qrtd.init_spread,
                 coop_mean=history_coop_mean,
                 coop_sd=history_coop_sd,
                 distance_coop_slope=history_distance_slope,
                 rng=np.random.default_rng(
                     (kwargs.get("seed", 0) or 0) * 7919 + 104729))
 
-        lam0 = self.self_model.lambda_setpoint(PAYOFF_SELF)
+        # 사회사가 적재된 뒤 Z 를 '전형적 관계의 가치' 에서 출발시킨다.
+        # 참조(기억 속 관계들)와 Z(현재 관계)가 같은 척도에서 시작하므로,
+        # 첫 라운드 valence 가 중립이 된다.
+        _c, _sp = self.self_model.value_prior()
+        self.qrtd.reinit(_c, _sp)
+
+        if self.policy_mode == "lambda_only":
+            # (v2.2) λ₀ 폐기 — λ = λ_sp + λ_val 로, 사회사 정보는 α 가 담당한다.
+            # λ 는 이제 '이 상대·이 상황' 만을 담는 순수 조절 변수다. 중립값
+            # 0.5 에서 출발해 첫 조우 직후 λ_sp 로 이완한다.
+            lam0 = 0.5
+        else:
+            lam0 = self.self_model.lambda_setpoint(PAYOFF_SELF)
         self.empathy = Empathy(lam_init=lam0, w_cd=w_cd, gain=lam_gain,
+                               w_tonic=w_tonic, aff_gain=aff_gain, gain_down=lam_gain_down,
                                lam_min=lam_min, lam_max=lam_max,
                                alpha_scale=alpha_scale)
+
+        #: 사회사 기반 협력 편향 α — 사회사 적재 후 1회 확정, 로짓의 가산항.
+        #   α ~ N(0, κ²).  '나는 어떤 사회적 세계에서 왔는가' 를 담는다.
+        self.alpha_bias = (
+            self.self_model.cooperation_bias(kappa=self.alpha_kappa)
+            if self.policy_mode == "lambda_only" else 0.0)
+        # 보상적 λ_sp 의 목표 절편 I₀ (v2.2).
+        #   로짓 = α + β_es·es(λ, s) 이므로, 중립 행동(로짓 0)에 필요한 es 는
+        #   es* = −α/β_es 다. λ_sp 가 이 값을 목표로 삼아야 α 와 정합한다.
+        #   I₀ = 0 으로 두면 λ_sp 가 α 의 존재를 모른 채 무차별점만 겨냥해,
+        #   협력적 사회사(α>0)에서도 공감 요구량을 과대평가하고 그 반대도 같다.
+        self.core_affect.sp_i0 = float(-self.alpha_bias / max(self.beta_es,
+                                                              1e-6))
 
         self.lam = lam0
         self.social_efe.lam = lam0
@@ -573,23 +698,99 @@ class HalloRegAgent(EmpathicAgent):
             s_now = state_index(my_prev, int(opp_action))
             # 갱신 전후의 Z(s,a) 를 비교해 **상황가치 믿음의 이동량**을 얻는다.
             # 이것이 arousal 의 인자다 — 보상 분포의 이동이 아니라 전망의 붕괴다.
-            before = self.qrtd.z_self.values[s_prev, a_prev].copy()
-            self.qrtd.update(s_prev, a_prev, r_s, r_o, s_now, self._last_qc)
-            after = self.qrtd.z_self.values[s_prev, a_prev]
+            # **참 SARSA — 전이를 한 라운드 보류한다** (v2.6.0)
+            # 지금 라운드 t 에서 완성되는 전이는 (s_{t-1}, a_{t-1}) → s_t 인데,
+            # 부트스트랩이 요구하는 a' = a_t 는 아직 선택되지 않았다. 반면
+            # 라운드 t−1 에 보류해 둔 전이 (s_{t-2}, a_{t-2}) → s_{t-1} 의
+            # a' = a_{t-1} 은 **이미 관측되었다**. 그것을 지금 적용한다.
+            #   보류분의 s_next 는 s_prev 와 같고, a_prev 가 곧 그 상태에서
+            #   실제로 선택된 행위다.
+            if self._pending is None:
+                before = after = self.qrtd.z_self.values[s_prev, a_prev].copy()
+            else:
+                p_s, p_a, p_rs, p_ro, p_sn = self._pending
+                before = self.qrtd.z_self.values[p_s, p_a].copy()
+                self.qrtd.update(p_s, p_a, p_rs, p_ro, p_sn, a_prev)
+                after = self.qrtd.z_self.values[p_s, p_a]
+            self._pending = (s_prev, a_prev, r_s, r_o, s_now)
+
+            # --- (C) 초기화 재기준화 ---
+            # 사회사 사전(≈2.11)은 '전형적 관계' 의 값이라 나쁜 관계에서는
+            # 참값의 3 배에서 출발하는 낙관적 초기화가 된다. R̂ 이 최소한의
+            # 관측을 모으면 **이 관계의 값**으로 한 번 다시 앉힌다 — 하강
+            # 거리가 1/3 로 줄어 이후 수축이 빨라진다. (Sutton & Barto §2.6)
+            if (not self._reanchored and self.reanchor_at > 0
+                    and self.reward_model.n_obs >= self.reanchor_at):
+                rv_s = self.reward_model.payoff_vector("self")
+                rv_o = self.reward_model.payoff_vector("other")
+                for _arr, _rv in ((self.qrtd.z_self, rv_s),
+                                  (self.qrtd.z_other, rv_o)):
+                    _c = float(np.mean(_rv))
+                    _arr.values[:] = (_arr.values
+                                      - float(np.mean(_arr.values)) + _c)
+                self._reanchored = True
+
+            # --- (A) 모형 기반 계획 스윕 ---
+            if self.plan_sweeps > 0 and self.reward_model.n_obs > 3:
+                # 상태별 p_j — 상태 s = (내 직전 행위, 상대 직전 행위) 가
+                # 곧 ToM 의 맥락 (f, g) 이다. 상대의 조건부 전략(TFT 등)이
+                # 모형 안에서 보존된다.
+                _pj = np.array([
+                    float(self.inversion.predict_coop(
+                        1.0 - 2.0 * float(ss // 2), 1.0 - 2.0 * float(ss % 2)))
+                    for ss in range(4)])
+                self.qrtd.plan_sweep(
+                    self.reward_model,
+                    p_coop_j=_pj,
+                    p_coop_self=float(self._last_qc),
+                    n_sweeps=self.plan_sweeps)
             span_v = float(self.core_affect.payoffs.max()
                            - self.core_affect.payoffs.min())
-            span_v = max(span_v / max(1.0 - self.qrtd.gamma, 1e-6), 1e-6)
+            span_v = max(span_v, 1e-6)   # v2.7.0: Z̃ 는 보상 척도
             v_shift = float(np.mean(np.abs(after - before)) / span_v)
             # valence 의 재료: 방금 겪은 (상태, 행위) 의 Z 분위수 벡터 전체.
             # SelfModel 이 EMA 축약해 '이 상대에 대한 기대 보상 분포' 로 유지
             # 하고, 모집단 참조와의 중앙값 순위가 valence 가 된다.
-            v_vec = after.copy()
-            v_now = float(np.median(after))
-        # 참조(사전 관계들의 가치분포)를 **같은 재귀로 한 스텝** 굴린다.
-        # 현재 상대의 Z 와 학습 단계를 맞춰 미수렴 편향을 상쇄한다.
-        if self.qrtd is not None:
-            self.self_model.tick_reference(
-                self.qrtd.gamma, self.qrtd.z_self.lr, self.qrtd.z_self.kappa)
+            # **정책 하 기대가치로 주변화** (v1.7.0).
+            # 이전에는 '방금 밟은 칸' 의 Z 를 그대로 썼다. 그러면 칸 방문의
+            # 우연성이 그대로 들어와 valence 가 진동한다(실측: ALLC 상대에서
+            # 부호가 네 번 뒤집힘). valence 가 물어야 할 것은 "방금 이 수가
+            # 좋았나" 가 아니라 **"이 관계가 좋은가"** 이므로,
+            #     Q = Σ_s d(s)·Σ_a π(a|s)·Z(s,a)
+            # 로 주변화한다. d(s) 는 **경험적 상태 점유율**(이 관계에서 내가
+            # 실제로 놓이는 상황의 빈도), π 는 현재 협력확률이다.
+            self._state_visits[s_prev] += 1.0
+            d = self._state_visits / max(self._state_visits.sum(), 1e-9)
+            pc = float(self._last_qc)
+            v_vec = np.zeros_like(after)
+            for ss in range(4):
+                if d[ss] <= 1e-12:
+                    continue
+                v_vec += d[ss] * (pc * self.qrtd.z_self.values[ss, 0]
+                                  + (1.0 - pc) * self.qrtd.z_self.values[ss, 1])
+            v_now = float(np.median(v_vec))
+            # **상태 간 적합도** — 이 관계 안에서 지금 상태가 좋은가.
+            #   V(s') = π(C)·Z(s',C) + (1−π)·Z(s',D)  (정책 하 상태가치)
+            #   valence = 2·Σ_{s': V(s')≤V(s)} d(s') − 1
+            # 점유율 d 로 가중된 백분위이므로, 드물게 겪는 상태가 과대평가되지
+            # 않는다. WSLS 상대에서 CD 가 최하·DD 가 최상위권으로 뒤집히는
+            # 신호가 여기서 나온다(TFT 와 정반대 순서).
+            _vs = np.array([pc * self.qrtd.value(ss, COOP, "self")
+                            + (1.0 - pc) * self.qrtd.value(ss, DEFECT, "self")
+                            for ss in range(4)], dtype=float)
+            # **현재 상태는 참조에서 제외한다.** 포함하면 자기 질량이 백분위에
+            # 들어가, 가장 자주 머무는 상태가 그 사실만으로 높은 순위를 얻는다
+            # (실측: ALLD 상대에서 DD 점유가 커지자 DD 의 valence 가 올라 λ 가
+            # 0.79 까지 상승 — 착취자에게 협력률 0.94). 관계 간 비교에서 현재
+            # 상대를 제외하는 것과 같은 이유다.
+            _mask = np.ones(4, dtype=bool)
+            _mask[s_prev] = False
+            _den = float(d[_mask].sum())
+            if _den > 1e-9:
+                _num = float(d[_mask & (_vs <= _vs[s_prev])].sum())
+                _st_val = float(2.0 * (_num / _den) - 1.0)
+            else:
+                _st_val = 0.0
 
         # --- 2. 핵심정서 구성 ---
         # 상대의 협력 여부를 함께 넘긴다 — SelfModel 이 거리가중 협력률(친사회성
@@ -597,6 +798,9 @@ class HalloRegAgent(EmpathicAgent):
         affect = self.core_affect.step(
             observed_state, opponent_cooperated=(int(opp_action) == COOP),
             value_vector=v_vec, value_shift=v_shift,
+            state_valence=(_st_val if self._prev_sa is not None else None),
+            adv=(self._occ_adv() if self.policy_mode == "lambda_only"
+                 else None),
             z_snapshot=(self.qrtd.z_self.values
                         if self.qrtd is not None else None))
 
@@ -612,14 +816,68 @@ class HalloRegAgent(EmpathicAgent):
         # --- 4. λ 갱신 (v1.5.0: 순수 정서 구동 — λ_ctx 제거) ---
         # OpponentInversion 의 영향은 호혜 경로(ρ,ω,η)로 이관되었다. λ 는
         # 오직 CoreAffect 의 λ_aff 만이 움직인다.
-        if self.regulate:
-            self.lam = self.empathy.step(affect["lambda_aff"])
+        if self.regulate and self.lam_mode == "allostatic":
+            # **알로스테시스 직접 사상** (v2.9 탐색) — 적분기 폐기.
+            #     E_t     = Σ_s d(s)·[q_c·Z̃(s,C) + (1−q_c)·Z̃(s,D)]
+            #               (이 관계에서 예상되는 라운드당 자원 유입)
+            #     r_surv  = max_a min_{a_j} R̂(a, a_j)
+            #               (자기보호만으로 확보 가능한 생존 자원 — 게임의 보장수준)
+            #     top     = R̂(C, C)   (상호협력의 공동 최적)
+            #     φ       = (E_t − r_surv) / (top − r_surv)   (잉여율)
+            #     λ_t     = g · clip(φ, 0, 1)  (+ 정서 미세 조절)
+            # 예상 유입이 생존 기준 아래면 λ → 0 (선제적 자기보호, allostatic
+            # deviation 대응), 잉여가 있으면 그에 비례해 λ ↑ (집단 적합성 편향
+            # g 가 상한). r_surv 와 top 이 학습된 R̂ 에서 나오므로 보수 레짐이
+            # 바뀌면 기준점이 함께 재계산된다 — 비정상 환경 적응의 직접 기제.
+            lam_allo = self.group_bias * 0.5   # 무정보 기본값
+            self._allo_phi = np.nan
+            if self.reward_model.n_obs > 3:
+                # E_t 는 **ToM 기반 1-step 예측**으로 계산한다 (Z̃ 가 아니라).
+                #   E_t = q_c·[p_j·R̂(C,C) + (1−p_j)·R̂(C,D)]
+                #       + (1−q_c)·[p_j·R̂(D,C) + (1−p_j)·R̂(D,D)]
+                # Z̃ 점유가중을 쓰면 미방문 협력 분기가 사회사 사전(≈2.1)에
+                # 머물러 E 가 낙관 오염된다 — ALLD 상대에서 λ 가 0.65 까지
+                # 올라 착취당하는 것을 실측으로 확인했다. ToM 예측은 p_j 가
+                # 미방문 분기의 가중치를 지우므로(착취자면 p_j → 0) 오염이
+                # 없고, 상대 모형의 갱신 속도로 **선제적으로** 반응한다 —
+                # 이것이 반응적(항상성)이 아닌 예측적(이상성) 조절이다.
+                qc = float(self._last_qc)
+                _f = 1.0 - 2.0 * float(self.my_last if self.my_last is not None
+                                       else 0)
+                _g = (1.0 - 2.0 * float(self.opp_actions[-1])
+                      if self.opp_actions else 0.0)
+                pj = float(self.inversion.predict_coop(_f, _g))
+                rv = self.reward_model.payoff_vector("self")
+                e_t = (qc * (pj * rv[0] + (1 - pj) * rv[1])
+                       + (1 - qc) * (pj * rv[2] + (1 - pj) * rv[3]))
+                r_surv = float(max(min(rv[0], rv[1]), min(rv[2], rv[3])))
+                top = float(rv[0])
+                if top - r_surv > 1e-6:
+                    phi_a = (e_t - r_surv) / (top - r_surv)
+                    self._allo_phi = float(phi_a)
+                    lam_allo = self.group_bias * float(np.clip(phi_a, 0.0, 1.0))
+                    # 정서 미세 조절 (상태 처방 통로 유지, 소이득)
+                    lam_allo = float(np.clip(
+                        lam_allo + self.allo_aff_gain * affect["lambda_aff"],
+                        0.0, self.group_bias))
+            self.lam = lam_allo
+            self.empathy.lam = self.lam
+        elif self.regulate:
+            self.lam = self.empathy.step(
+                affect["lambda_aff"], valence=affect["valence"],
+                lam_sp=affect.get("lam_sp"),
+                # 위협 = 관계 간 적합도가 음수 (모집단 참조보다 나쁜 관계).
+                threat=bool(np.isfinite(affect.get("fitness", np.nan))
+                            and affect["fitness"] < 0.0))
         else:
             self.lam = self.empathy.lam      # 설정점 고정 (절제 대조)
         self.social_efe.lam = self.lam
 
         return {"valence": affect["valence"], "arousal": affect["arousal"],
                 "lambda_aff": affect["lambda_aff"], "lambda_ctx": 0.0,
+                "lam_sp": affect.get("lam_sp", float("nan")),
+                "fitness": affect.get("fitness", float("nan")),
+                "allo_phi": float(getattr(self, "_allo_phi", float("nan"))),
                 "rpe": affect["rpe"], "surprise": affect["surprise"],
                 "expected_reward": self.core_affect.expected_reward(),
                 "baseline_reward": affect["r_base"],
@@ -640,6 +898,8 @@ class HalloRegAgent(EmpathicAgent):
         super()._record(action, lam, res, belief_update, reg)
         # 첫 라운드는 관측이 없어 reg 가 비어 있다 → 중립값으로 채운다.
         defaults = {"valence": 0.0, "arousal": 0.0, "lambda_aff": 0.0,
+                    "lam_sp": float("nan"), "fitness": float("nan"),
+                    "allo_phi": float("nan"),
                     "lambda_ctx": 0.0, "rpe": 0.0, "surprise": 0.0,
                     "expected_reward": self.core_affect.expected_reward(),
                     "baseline_reward":

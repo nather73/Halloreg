@@ -68,10 +68,13 @@ class CoreAffect:
 
     def __init__(self, self_model: SelfModel, payoffs: np.ndarray,
                  kl_scale: float = 0.05, sigma_floor: float = 0.5,
-                 obs_weight: float = 1.0):
+                 obs_weight: float = 1.0, arousal_floor: float = 0.05):
         self.self_model = self_model
         self.payoffs = np.asarray(payoffs, dtype=float).copy()
         self.kl_scale = float(kl_scale)
+        self.arousal_floor = float(arousal_floor)
+        self.sp_disposition = 0.50   # m — 성향 성분의 크기
+        self.sp_i0 = 0.0             # I₀ — 목표 절편
         self.sigma_floor = float(sigma_floor)   # 서명 호환용 (미사용)
         self.obs_weight = float(obs_weight)     # 서명 호환용 (미사용)
         self.self_model.set_payoff_scale(self.payoffs)
@@ -92,7 +95,9 @@ class CoreAffect:
              opponent_cooperated: Optional[bool] = None,
              value_vector: Optional[np.ndarray] = None,
              value_shift: Optional[float] = None,
-             z_snapshot: Optional[np.ndarray] = None) -> dict:
+             z_snapshot: Optional[np.ndarray] = None,
+             state_valence: Optional[float] = None,
+             adv: Optional[tuple] = None) -> dict:
         """
         t−1 의 joint outcome 관측으로 정서를 구성한다.
 
@@ -112,8 +117,24 @@ class CoreAffect:
             self.self_model.update_partner_value(
                 self.identity, value_vector, z_snapshot=z_snapshot)
 
-        # --- 2. valence: 사회적 모집단에서의 적합도 (수준) ---
-        valence = self.self_model.social_valence(self.identity)
+        # --- 2. valence: **상태 간** 적합도 (이 관계 안에서 지금이 좋은가) ---
+        #     valence = 2·F̂_{s'}( V(s_현재) ) − 1
+        #     F̂ 는 점유율 d(s') 로 가중된 상태가치 분포에서의 백분위.
+        # 관계 간 비교(이 상대가 다른 이들보다 좋은가)는 λ_sp 로 분리되었다.
+        valence = float(state_valence) if state_valence is not None else 0.0
+
+        # --- 2b. λ 설정점: **관계 간** 적합도 ---
+        if adv is not None:
+            # v2.0 — 보상적: 이 관계가 요구하는 공감량을 기준선으로.
+            lam_sp, fitness, _base = self.self_model.lambda_sp_compensatory(
+                self.identity, adv[0], adv[1], m=self.sp_disposition,
+                i0=self.sp_i0)
+        else:
+            fitness = self.self_model.social_fitness(self.identity)
+            lam_sp = float(np.clip(
+                0.5 * (1.0 + fitness), self.self_model.lam_floor,
+                self.self_model.lam_ceil))
+
         ent = self.self_model.memory.get(self.identity)
         my_med = (float(ent.value_dist[len(ent.value_dist) // 2])
                   if ent is not None and ent.value_dist is not None
@@ -122,8 +143,12 @@ class CoreAffect:
                if np.isfinite(my_med) else 0.0)
 
         # --- 3. arousal: 생성 모델의 갱신량 (오차) ---
+        # **하한 a_min > 0.** arousal 이 0 으로 수렴하면 λ_aff = V×A 가 소멸해
+        # 정서가 λ 를 전혀 움직이지 못한다(학습이 끝난 관계에서 특히). 하한을
+        # 두면 수준 신호(valence)가 항상 최소한의 통로를 갖는다.
         surprise = float(value_shift) if value_shift is not None else 0.0
         arousal = float(1.0 - np.exp(-surprise / max(self.kl_scale, _EPS)))
+        arousal = float(max(arousal, self.arousal_floor))
 
         # --- 4. 정서적 동기 ---
         lambda_aff = valence * arousal
@@ -139,6 +164,7 @@ class CoreAffect:
             "r_base": self.self_model.reference_median(exclude=self.identity),
             "r_mean": self.self_model.reference_median(exclude=self.identity),
             "r_obs": r_obs, "value": my_med,
+            "fitness": float(fitness), "lam_sp": lam_sp,
             "pessimism": 0.0,
         }
         return dict(self.last)
