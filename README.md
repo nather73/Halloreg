@@ -3,6 +3,10 @@
 반복 죄수의 딜레마(Iterated Prisoner's Dilemma, IPD)에서 **친사회성이 내생적으로
 조절되는** 능동추론(Active Inference) 에이전트의 구현.
 
+> Choi, H., Albarracin, M., Pae, H., & Kim, H.
+> *Adaptive Prosociality Through Hierarchical Allostatic Regulation in Social
+> Dynamics: A Simulation Study.*
+
 ---
 
 ## 1. 무엇이 문제인가

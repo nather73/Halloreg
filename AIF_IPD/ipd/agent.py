@@ -358,6 +358,23 @@ class EmpathicAgent:
             # 그 결과 λ=0.010 을 달성하고도 로짓이 −0.81 에 머물러 협력률
             # 0.344 가 남았다. 정규화는 이 압착을 척도 수준에서 되돌린다.
             shift_i = raw_es / self._es_scale
+            # **인식적 항 복원** (v3.1) — EFE 의 epistemic value 를 절편에
+            # 더한다. 두 행위의 차분이므로 정책 로짓에 그대로 얹힌다:
+            #     logit = β_es·es_norm + w_j·ΔIG_j + w_r·ΔIG_R
+            # ΔIG_x = IG_x(C) − IG_x(D).
+            #
+            # [왜 절편에 더하는가] λ-단독 전환 후 SelfPolicy 의 EFE 가 호출되지
+            # 않아 인식항이 행위 선택에서 소실되어 있었다. 2 행위 문제에서
+            # softmax(−G) 는 로짓 차분의 시그모이드와 동치이므로, 차분을 절편에
+            # 더하는 것이 EFE 형태를 보존하는 최소 복원이다.
+            #
+            # [왜 초기에만 작동하는가] IG_R 의 불확실성은 spread/√(1+n) 이라
+            # 방문이 쌓이면 0 으로 감쇠하고, IG_j 도 사후가 수축하면 KL 이
+            # 줄어든다. 별도 스케줄 없이 **탐색이 저절로 꺼진다**.
+            if self.w_ig_r > 0.0 and ig_r is not None:
+                shift_i += self.w_ig_r * float(ig_r[COOP] - ig_r[DEFECT])
+            if self.w_ig_j > 0.0 and ig_j is not None:
+                shift_i += self.w_ig_j * float(ig_j[COOP] - ig_j[DEFECT])
 
         term = (self.qrtd.terminal_value
                 if (self.qrtd is not None and self.qrtd.n_obs > 3) else None)
@@ -517,13 +534,17 @@ class HalloRegAgent(EmpathicAgent):
                  aff_gain: float = 0.30,
                  lam_gain_down: float = 0.45,
                  lam_mode: str = "allostatic",
-                 group_bias: float = 0.90,
+                 group_bias: float = 1.00,
                  allo_aff_gain: float = 0.0,
                  policy_mode: str = "lambda_only",
                  beta_es: float = 70.0, sp_disposition: float = 0.50,
                  bootstrap: str = "sarsa",
                  plan_sweeps: int = 1,
                  reanchor_at: int = 8,
+                 w_ig_r: float = 0.15,
+                 w_ig_j: float = 0.15,
+                 r_surv_fixed: Optional[float] = None,
+                 e_source: str = "z",
                  alpha_kappa: float = 0.0,
                  seed_history: bool = True,
                  history_coop_mean: float = 0.55,
@@ -567,6 +588,13 @@ class HalloRegAgent(EmpathicAgent):
         # 형질 4항이 나눠 갖던 로짓 예산을 절편 하나가 감당해야 한다.
         self.beta_es = float(beta_es)
         #: es 정규화의 고정 참조 산포 — (1−γ)·보상폭.
+        #: 생존 기준점 고정값 (None = 학습된 R̂ 의 보장수준 maximin).
+        self.r_surv_fixed = (None if r_surv_fixed is None
+                             else float(r_surv_fixed))
+        #: E_t 의 원천 — 'reward' (R̂ 1-step ToM 예측) | 'z' (Z̃ 장기 가치).
+        self.e_source = str(e_source)
+        self.w_ig_r = float(w_ig_r)
+        self.w_ig_j = float(w_ig_j)
         self._es_scale = max((1.0 - float(qrtd_gamma))
                              * float(PAYOFF_SELF.max() - PAYOFF_SELF.min()),
                              1e-6)
@@ -842,15 +870,32 @@ class HalloRegAgent(EmpathicAgent):
                 # 없고, 상대 모형의 갱신 속도로 **선제적으로** 반응한다 —
                 # 이것이 반응적(항상성)이 아닌 예측적(이상성) 조절이다.
                 qc = float(self._last_qc)
-                _f = 1.0 - 2.0 * float(self.my_last if self.my_last is not None
-                                       else 0)
-                _g = (1.0 - 2.0 * float(self.opp_actions[-1])
-                      if self.opp_actions else 0.0)
-                pj = float(self.inversion.predict_coop(_f, _g))
                 rv = self.reward_model.payoff_vector("self")
-                e_t = (qc * (pj * rv[0] + (1 - pj) * rv[1])
-                       + (1 - qc) * (pj * rv[2] + (1 - pj) * rv[3]))
-                r_surv = float(max(min(rv[0], rv[1]), min(rv[2], rv[3])))
+                if (self.e_source == "z" and self.qrtd is not None
+                        and self.qrtd.n_obs > 3):
+                    # **Z̃ 기반 E_t** (v3.2) — 장기 가치가 λ 를 주도한다.
+                    #   E_t = q_c·Z̃(s_t, C) + (1−q_c)·Z̃(s_t, D)
+                    # Z̃ 는 라운드당 평균 수익 척도라 r_surv 와 직접 비교된다.
+                    # 현재 상태로 조건화되므로 λ 가 **상태 의존적**이 된다 —
+                    # 같은 관계 안에서도 나쁜 국면에서는 λ 가 내려간다.
+                    # (v2.9 의 Z 점유가중 실패는 계획 스윕 도입 전의 일이다.
+                    #  당시엔 미방문 분기가 사전값 2.1 에 머물러 낙관 순환을
+                    #  만들었지만, 이제 매 라운드 8칸 전부가 R̂·p_j(s) 로
+                    #  백업되므로 그 오염원이 없다.)
+                    e_t = (qc * self.qrtd.value(observed_state, COOP, "self")
+                           + (1 - qc) * self.qrtd.value(observed_state,
+                                                        DEFECT, "self"))
+                else:
+                    _f = 1.0 - 2.0 * float(self.my_last
+                                           if self.my_last is not None else 0)
+                    _g = (1.0 - 2.0 * float(self.opp_actions[-1])
+                          if self.opp_actions else 0.0)
+                    pj = float(self.inversion.predict_coop(_f, _g))
+                    e_t = (qc * (pj * rv[0] + (1 - pj) * rv[1])
+                           + (1 - qc) * (pj * rv[2] + (1 - pj) * rv[3]))
+                r_surv = (self.r_surv_fixed
+                          if self.r_surv_fixed is not None else
+                          float(max(min(rv[0], rv[1]), min(rv[2], rv[3]))))
                 top = float(rv[0])
                 if top - r_surv > 1e-6:
                     phi_a = (e_t - r_surv) / (top - r_surv)

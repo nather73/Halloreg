@@ -75,7 +75,11 @@ class Config:
     aff_gain: float = 0.30           # 정서 이득 (라운드 단위 급변 허용)
     policy_mode: str = "lambda_only" # 행위 선택: λ 단독 (기존 "traits" 보존)
     lam_mode: str = "allostatic"     # λ 조절: 알로스테시스 직접 사상
-    group_bias: float = 0.90         # 집단 적합성 편향 g (λ 상한)
+    group_bias: float = 1.00         # 집단 적합성 편향 g (λ 상한)
+    w_ig_r: float = 0.15             # 절편의 인식항 가중 — 보상 구조 IG
+    w_ig_j: float = 0.15             # 절편의 인식항 가중 — 상대 의도 IG
+    e_source: str = "z"              # E_t 원천: 'z' (Z̃ 장기가치) | 'reward'
+    r_surv_fixed: object = None      # 생존 기준점 고정값 (None=학습 maximin)
     allo_aff_gain: float = 0.0       # 알로스테시스 모드 정서 미세조절 이득
     beta_es: float = 70.0            # es(λ,s) 로짓 정밀도 (정규화 절편 기준)
     plan_sweeps: int = 1             # 라운드당 모형 기반 계획 스윕 횟수
@@ -102,6 +106,10 @@ class Config:
                 "policy_mode": self.policy_mode,
                 "lam_mode": self.lam_mode,
                 "group_bias": self.group_bias,
+                "w_ig_r": self.w_ig_r,
+                "w_ig_j": self.w_ig_j,
+                "e_source": self.e_source,
+                "r_surv_fixed": self.r_surv_fixed,
                 "allo_aff_gain": self.allo_aff_gain,
                 "beta_es": self.beta_es,
                 "plan_sweeps": self.plan_sweeps,
