@@ -80,6 +80,7 @@ def default_type_specs(halloreg_kwargs: Optional[dict] = None
 # ============================================================ 유형쌍 행렬 추정
 def estimate_pair_matrices(type_specs: Dict[str, dict], n_rounds: int,
                            seeds: int, n_jobs: int,
+                           eval_from: int = 0,
                            regime: Optional[str] = None,
                            env_error: float = 0.05,
                            seed_offset: int = 0,
@@ -135,12 +136,18 @@ def estimate_pair_matrices(type_specs: Dict[str, dict], n_rounds: int,
     Pi_raw = np.zeros((k, k, seeds))
     CC_raw = np.zeros((k, k, seeds))
     for (i, j) in pairs:
-        my = np.array([float(np.mean(res[registry[(i, j, sd)]]["hist"]["my_payoff"]))
-                       for sd in range(seeds)])
-        op = np.array([float(np.mean(res[registry[(i, j, sd)]]["hist"]["opp_payoff"]))
-                       for sd in range(seeds)])
-        cc = np.array([float(np.mean(res[registry[(i, j, sd)]]["hist"]["state"] == CC))
-                       for sd in range(seeds)])
+        # eval_from: **학습 후 평가 창** — 워밍업(초기 학습 구간)을 평균에서
+        # 제외한다. 0 이면 전 구간(기존 동작).
+        _e0 = max(0, min(int(eval_from), n_rounds - 1))
+        my = np.array([float(np.mean(
+            res[registry[(i, j, sd)]]["hist"]["my_payoff"][_e0:]))
+            for sd in range(seeds)])
+        op = np.array([float(np.mean(
+            res[registry[(i, j, sd)]]["hist"]["opp_payoff"][_e0:]))
+            for sd in range(seeds)])
+        cc = np.array([float(np.mean(
+            res[registry[(i, j, sd)]]["hist"]["state"][_e0:] == CC))
+            for sd in range(seeds)])
         if i == j:
             # 자기쌍: 양측 모두 같은 유형이므로 두 관점을 평균한다
             Pi_raw[i, i] = 0.5 * (my + op)
@@ -158,7 +165,7 @@ def estimate_pair_matrices(type_specs: Dict[str, dict], n_rounds: int,
         "CCm": CC_raw.mean(axis=2),
         "CCm_raw": CC_raw,
         "n_rounds": n_rounds, "seeds": seeds, "regime": regime,
-        "env_error": env_error,
+        "env_error": env_error, "eval_from": int(eval_from),
     }
 
 
@@ -285,7 +292,7 @@ def run_round_robin(counts: Sequence[int], type_specs: Dict[str, dict],
                     regime: Optional[str] = None,
                     env_error: float = 0.05,
                     persistent: bool = False,
-                    n_jobs: int = 1) -> Dict:
+                    n_jobs: int = 1, eval_from: int = 0) -> Dict:
     """
     **직접** 라운드로빈 시뮬레이션 — 해석적 분해식의 검증용.
 
@@ -330,12 +337,14 @@ def run_round_robin(counts: Sequence[int], type_specs: Dict[str, dict],
                          env_err_a=env_error, env_err_b=env_error,
                          noise_seed=seed * 31 + d,
                          partner_id_a=1000 + j, partner_id_b=1000 + i)
-            total_cc += int(np.sum(h["state"] == CC))
-            total_rounds += n_rounds
-            pay_sum[labels[i]] += float(np.sum(h["my_payoff"]))
-            pay_rounds[labels[i]] += n_rounds
-            pay_sum[labels[j]] += float(np.sum(h["opp_payoff"]))
-            pay_rounds[labels[j]] += n_rounds
+            _e0 = max(0, min(int(eval_from), n_rounds - 1))
+            _nr = n_rounds - _e0
+            total_cc += int(np.sum(h["state"][_e0:] == CC))
+            total_rounds += _nr
+            pay_sum[labels[i]] += float(np.sum(h["my_payoff"][_e0:]))
+            pay_rounds[labels[i]] += _nr
+            pay_sum[labels[j]] += float(np.sum(h["opp_payoff"][_e0:]))
+            pay_rounds[labels[j]] += _nr
     else:
         # ---- 병렬 경로 (다이애드 독립) ----
         specs = [{"agent": cfg_for(i, d), "opponent": cfg_for(j, d),
@@ -347,12 +356,14 @@ def run_round_robin(counts: Sequence[int], type_specs: Dict[str, dict],
                        desc="라운드로빈 검증")
         for d, (i, j) in enumerate(pairs):
             h = res[d]["hist"]
-            total_cc += int(np.sum(h["state"] == CC))
-            total_rounds += n_rounds
-            pay_sum[labels[i]] += float(np.sum(h["my_payoff"]))
-            pay_rounds[labels[i]] += n_rounds
-            pay_sum[labels[j]] += float(np.sum(h["opp_payoff"]))
-            pay_rounds[labels[j]] += n_rounds
+            _e0 = max(0, min(int(eval_from), n_rounds - 1))
+            _nr = n_rounds - _e0
+            total_cc += int(np.sum(h["state"][_e0:] == CC))
+            total_rounds += _nr
+            pay_sum[labels[i]] += float(np.sum(h["my_payoff"][_e0:]))
+            pay_rounds[labels[i]] += _nr
+            pay_sum[labels[j]] += float(np.sum(h["opp_payoff"][_e0:]))
+            pay_rounds[labels[j]] += _nr
 
     by_type = {nm: (pay_sum[nm] / pay_rounds[nm]) if pay_rounds[nm] else np.nan
                for nm in names}

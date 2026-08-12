@@ -192,6 +192,12 @@ class QuantileTD:
         self.rng = np.random.default_rng(seed)
         shape = (N_STATES, N_ACTIONS)
         # 참조분포가 같은 출발점을 쓰도록 초깃값을 노출한다 (척도 정합).
+        #: ① 관측수 기반 수축 — n0 (None 이면 꺼짐).
+        #:    bvec(s,a) = w·Z̃(s,a) + (1−w)·r̄_rel,  w = n/(n+n0)
+        #: 미방문 칸이 임의 초깃값이 아니라 **이 관계의 실측 보상 평균**을
+        #: 추적한다 (Stein/Efron–Morris 수축; 재기준화의 연속화).
+        self.shrink_n0 = None
+        self.rbar = {"self": float("nan"), "other": float("nan")}
         self.init_value = float(init)
         self.init_spread = float(spread)
         #: (상태, 행위)별 방문 횟수 — 표본평균 학습률의 분모.
@@ -294,11 +300,12 @@ class QuantileTD:
         # **정규화 수익** Z̃ = (1−γ)Z 이므로 보상도 (1−γ) 배로 들어간다:
         #     Z̃(s,a) = (1−γ)r + γ Z̃(s',a')
         # 고정점은 Z̃ → r̄ (라운드당 평균 보상)이라 보상과 같은 [0, 5] 척도다.
+        self.note_reward(r_self, r_other)
         _w_r = 1.0 - self.gamma
-        tgt_s = _w_r * float(r_self) + self.gamma * self.z_self.values[s_next,
-                                                                      a_next]
-        tgt_o = _w_r * float(r_other) + self.gamma * self.z_other.values[
-            s_next, a_next]
+        tgt_s = (_w_r * float(r_self)
+                 + self.gamma * self.bvec(s_next, a_next, "self"))
+        tgt_o = (_w_r * float(r_other)
+                 + self.gamma * self.bvec(s_next, a_next, "other"))
         prev = self.z_self.values[s, int(a_i)].copy()
 
         # **방문 횟수 적응 학습률** (v1.9.0)
@@ -332,11 +339,43 @@ class QuantileTD:
         return td_target, shift
 
     # ============================================================ 조회
+    def note_reward(self, r_self: float, r_other: float) -> None:
+        """관계 실측 보상 평균 r̄_rel 갱신 (① 수축의 참조). 1-step 은
+        update() 가, n-step 은 에이전트가 매 라운드 호출한다."""
+        for _k, _r in (("self", r_self), ("other", r_other)):
+            if not np.isfinite(self.rbar[_k]):
+                self.rbar[_k] = float(_r)
+            else:
+                _b = max(1.0 / (1.0 + self.n_obs), 0.20)
+                self.rbar[_k] += _b * (float(_r) - self.rbar[_k])
+
+    def apply_target(self, s: int, a_i: int, tgt_s: np.ndarray,
+                     tgt_o: np.ndarray) -> None:
+        """③ n-step 목표 분포로 (s,a) 칸을 직접 회귀 (1-step update 와 동일
+        규칙: 방문 적응 lr, QR-Huber). n_sa·n_obs 도 동일하게 계수한다."""
+        lr_eff = max(1.0 / (1.0 + float(self.n_sa[int(s), int(a_i)])),
+                     self.lr_base)
+        self.z_self._apply((int(s), int(a_i)), np.asarray(tgt_s, float),
+                           lr=lr_eff)
+        self.z_other._apply((int(s), int(a_i)), np.asarray(tgt_o, float),
+                            lr=lr_eff)
+        self.n_sa[int(s), int(a_i)] += 1
+        self.n_obs += 1
+
+    def bvec(self, s: int, a: int, which: str = "self") -> np.ndarray:
+        """부트스트랩용 분위수 벡터 — ① 수축이 켜져 있으면 r̄_rel 로 수축."""
+        arr = self.z_self if which == "self" else self.z_other
+        v = arr.values[int(s), int(a)]
+        if self.shrink_n0 is None or not np.isfinite(self.rbar[which]):
+            return v
+        w = float(self.n_sa[int(s), int(a)]) / (
+            float(self.n_sa[int(s), int(a)]) + float(self.shrink_n0))
+        return w * v + (1.0 - w) * self.rbar[which]
+
     def value(self, s: int, a: int, which: str = "self",
               tau: Optional[float] = None) -> float:
         """기대 가치 V̂(s, a). tau 인자는 서명 호환용이며 무시된다."""
-        arr = self.z_self if which == "self" else self.z_other
-        return mean_value(arr.values[int(s), int(a)])
+        return float(np.mean(self.bvec(s, a, which)))
 
     def terminal_value(self, s: int, p_coop: float, lam: float) -> float:
         """
@@ -413,8 +452,27 @@ class QuantileTD:
         cw = np.cumsum(ww) - 0.5 * ww
         return np.interp(self.taus, cw, x)
 
+    def _conv_project(self, r_atoms: np.ndarray, v_atoms: np.ndarray,
+                      w_r: float) -> np.ndarray:
+        """
+        **완전한 분포 벨만 목표** — (1−γ)R + γV 의 법칙 (v3.3).
+
+        R ~ R̂ 분포(21원자), V ~ 부트스트랩 분포(21원자)가 독립이라는 가정
+        하에 합성곱한다: 441 개 등질량 원자 (1−γ)r_k + γ v_m 을 만들고
+        중점 누적 규약으로 τ 격자에 사영한다.
+
+        이전에는 R̂ 을 평균 스칼라로만 넣어 보상의 분포적 불확실성이 목표의
+        모양에 전파되지 않았다 — 목표 폭이 전적으로 부트스트랩에서 왔다.
+        완전형은 비정상 레짐에서 R̂ 이 실제로 퍼질 때 그 폭을 Z̃ 로 전달한다.
+        """
+        b = w_r * r_atoms[:, None] + self.gamma * v_atoms[None, :]
+        x = np.sort(b.ravel())
+        cw = (np.arange(x.size) + 0.5) / x.size
+        return np.interp(self.taus, cw, x)
+
     def plan_sweep(self, rmodel, p_coop_j: float, p_coop_self: float,
-                   n_sweeps: int = 1) -> None:
+                   n_sweeps: int = 1, update: str = "replace",
+                   lr: float = 0.5) -> None:
         """
         **학습된 생성모형 위에서의 분포적 가치 반복** (Dyna 형 계획 스윕).
 
@@ -451,7 +509,13 @@ class QuantileTD:
         pj = np.clip(np.asarray(p_coop_j, dtype=float).reshape(-1), 0.0, 1.0)
         if pj.size == 1:
             pj = np.full(4, float(pj[0]))
-        pc = float(np.clip(p_coop_self, 0.0, 1.0))
+        # p_coop_self 도 **상태별 벡터 (4,)** 를 허용한다 (v3.3). 내 연속
+        # 정책은 σ(β_es·es(λ, s')) 로 상태에 의존하므로, 스칼라 하나로 두면
+        # SARSA 에서 고쳤던 것과 같은 '상태 무관 정책' 근사가 계획에 남는다.
+        pc = np.clip(np.asarray(p_coop_self, dtype=float).reshape(-1),
+                     0.0, 1.0)
+        if pc.size == 1:
+            pc = np.full(4, float(pc[0]))
         w_r = 1.0 - self.gamma
         for _ in range(int(n_sweeps)):
             for arr, rvec in ((self.z_self, rmodel.r_self),
@@ -459,7 +523,7 @@ class QuantileTD:
                 # 다음 상태에서 정책 π 로 주변화한 가치 (4,) × N
                 nxt = np.stack([
                     self._mix_quantiles(arr.values[sp, 0],
-                                        arr.values[sp, 1], pc)
+                                        arr.values[sp, 1], float(pc[sp]))
                     for sp in range(4)])
                 new = np.empty_like(arr.values)
                 for s in range(4):
@@ -468,11 +532,49 @@ class QuantileTD:
                         br = []
                         for aj in (0, 1):
                             j = joint_index(a, aj)
-                            br.append(w_r * float(mean_value(rvec.values[j]))
-                                      + self.gamma * nxt[j])
+                            br.append(self._conv_project(
+                                rvec.values[j], nxt[j], w_r))
                         new[s, a] = self._mix_quantiles(br[0], br[1],
                                                        float(pj[s]))
-                arr.values[:] = np.maximum.accumulate(new, axis=-1)
+                if update == "conf":
+                    # ④ **모형 신뢰도 조건 Dyna** — 계획 학습률을 '이 칸의
+                    # 목표를 만드는 모형(R̂)이 얼마나 관측됐는가' 로 조건화.
+                    #   α(s,a) = p_j(s)·w(n_R̂[(a,C)]) + (1−p_j(s))·w(n_R̂[(a,D)])
+                    #   w(n) = n/(n+2)
+                    # 방문 기반(dyna)의 실패 원인 — 오염 칸이 곧 다방문 칸 —
+                    # 을 조건화 변수 교정으로 해소한다: 모형이 잘 추정된
+                    # 곳(다관측 분기)은 α→1 (교체 근사, 오염 소거 유지),
+                    # 모형이 불확실한 곳은 표본이 우세.
+                    nv = rmodel.n_visit
+                    for s2 in range(4):
+                        for a2 in range(2):
+                            _wc = nv[joint_index(a2, 0)] / (
+                                nv[joint_index(a2, 0)] + 2.0)
+                            _wd = nv[joint_index(a2, 1)] / (
+                                nv[joint_index(a2, 1)] + 2.0)
+                            _lr = float(pj[s2] * _wc + (1.0 - pj[s2]) * _wd)
+                            arr._apply((s2, a2), new[s2, a2],
+                                       lr=max(_lr, 0.05))
+                elif update == "dyna":
+                    # **Dyna 대칭형** (탐색) — 계획에 직접 학습과 **동일한**
+                    # 방문 적응 학습률 α_eff = max(1/(1+n(s,a)), 0.20) 을 쓴다.
+                    # 미방문 칸은 α ≈ 1 (사실상 교체 — 반사실 분기의 신속
+                    # 교정), 다방문 칸은 α = 0.20 (표본 정보가 우세).
+                    for s2 in range(4):
+                        for a2 in range(2):
+                            _lr = max(1.0 / (1.0 + float(self.n_sa[s2, a2])),
+                                      0.20)
+                            arr._apply((s2, a2), new[s2, a2], lr=_lr)
+                elif update == "td":
+                    # **증분형 계획** (탐색) — 교체 대신 TD 형:
+                    #   Z̃ ← Z̃ + α·(T_model Z̃ − Z̃)  의 분위수 대응물.
+                    # 목표는 전부 옛 값에서 계산됐으므로(동기), _apply 로
+                    # 칸별 분위수 회귀를 적용해도 Jacobi 성이 유지된다.
+                    for s2 in range(4):
+                        for a2 in range(2):
+                            arr._apply((s2, a2), new[s2, a2], lr=lr)
+                else:
+                    arr.values[:] = np.maximum.accumulate(new, axis=-1)
 
 
 class RewardModel:

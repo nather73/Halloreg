@@ -101,13 +101,29 @@ def ci_shock(base: float, shock: float,
 # ------------------------------------------------------------------ 카탈로그
 #: 이름 → CI 함수. 실험 CLI 와 워커가 이 이름으로만 레짐을 참조한다
 #: (함수 객체는 spawn 에서 pickle 하기 곤란하므로 **문자열로 전달**한다).
+#: 레짐 패턴의 반복 주기 (라운드). 지평 T 가 아니라 **고정 주기**에 패턴을
+#: 정의하고 t mod PERIOD 로 반복한다 (v3.7). 이유: 지평 전체에 패턴을 펼치면
+#: '600R 학습 후 601~800R 평가' 프로토콜에서 평가창이 패턴의 꼬리 일부만
+#: 보게 된다. 주기 반복이면 평가창(200R)이 정확히 한 주기의 전 국면을 담고,
+#: 학습 구간(600R)이 같은 패턴을 3회 경험해 '학습된 비정상 적응'을 잰다.
+REGIME_PERIOD: int = 200
+
+
+def ci_periodic(fn: CIFn, period: int = REGIME_PERIOD) -> CIFn:
+    """(t, T) → (t mod period, period) 로 감싸 패턴을 주기 반복시킨다."""
+    def f(t: int, T: int) -> float:
+        return fn(int(t) % int(period), int(period))
+    return f
+
+
 CI_REGIMES: Dict[str, CIFn] = {
     "stationary": ci_constant(0.4),
-    "blocks": ci_blocks([1.2, 0.4, -0.3, 0.4, 1.2]),
-    "oscillate": ci_oscillate(-0.3, 1.2, period=30),
-    "aba": ci_aba(1.0, -0.3),
-    "drift": ci_drift(1.2, -0.2),
-    "shock": ci_shock(0.4, -0.5, onset_frac=0.40, width_frac=0.15),
+    "blocks": ci_periodic(ci_blocks([1.2, 0.4, -0.3, 0.4, 1.2])),
+    "oscillate": ci_oscillate(-0.3, 1.2, period=30),   # 이미 30R 주기
+    "aba": ci_periodic(ci_aba(1.0, -0.3)),
+    "drift": ci_periodic(ci_drift(1.2, -0.2)),
+    "shock": ci_periodic(ci_shock(0.4, -0.5, onset_frac=0.40,
+                                  width_frac=0.15)),
 }
 
 #: H4/H4A/H5 에서 사용하는 비정상 레짐 목록 (stationary 제외).

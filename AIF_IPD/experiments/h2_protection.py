@@ -263,7 +263,9 @@ def run_discrimination(cfg: Config, reg: Registry) -> dict:
     lam_final = {c: np.zeros(cfg.seeds) for c, _ in conds}
     coop_late = {c: np.zeros(cfg.seeds) for c, _ in conds}
     lam_traces = {c: np.zeros((cfg.seeds, cfg.rounds)) for c, _ in conds}
-    half = cfg.rounds // 2
+    # eval_from 이 지정되면 '학습 후' 창을 그것으로 (기본: 후반부).
+    half = (int(cfg.eval_from) if getattr(cfg, "eval_from", 0) > 0
+            else cfg.rounds // 2)
 
     for ci, (cname, _) in enumerate(conds):
         for sd in range(cfg.seeds):

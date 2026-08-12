@@ -53,7 +53,8 @@ TYPE_COLORS = {
 class Config:
     """실험 전역 설정 (CLI 가 채운다)."""
     seeds: int = 120                 # 기본 시드 수 (사양 고정값)
-    rounds: int = 120                # 기본 라운드 수 (사양 고정값)
+    rounds: int = 120
+    eval_from: int = 0               # 평가 창 시작 (0=전 구간; 예: 800R 중 600)                # 기본 라운드 수 (사양 고정값)
     jobs: int = -1                   # 병렬 워커 (-1 → 코어수 − 1)
     results: Path = Path("results")
     env_error: float = 0.05          # 환경 계층 실행오류 (모든 유형 대칭)
@@ -75,15 +76,21 @@ class Config:
     aff_gain: float = 0.30           # 정서 이득 (라운드 단위 급변 허용)
     policy_mode: str = "lambda_only" # 행위 선택: λ 단독 (기존 "traits" 보존)
     lam_mode: str = "allostatic"     # λ 조절: 알로스테시스 직접 사상
-    group_bias: float = 1.00         # 집단 적합성 편향 g (λ 상한)
-    w_ig_r: float = 0.15             # 절편의 인식항 가중 — 보상 구조 IG
-    w_ig_j: float = 0.15             # 절편의 인식항 가중 — 상대 의도 IG
+    group_bias: float = 0.50         # (레거시) lam_lo=None 일 때만 λ = g·φ 로 사용
+    lam_lo: float = -0.5             # λ 사상 하한 (v3.7: 결핍 시 경쟁적 태세)
+    lam_hi: float = 1.0              # λ 사상 상한 (v3.7: 잉여 시 완전 이타 — HR-HR 협력 잠금)
+    w_ig_r: float = 3.5              # −G_social 의 인식 가중 w_R (β 밖 등가값)
+    w_ig_j: float = 3.5              # −G_social 의 인식 가중 w_θ (β 밖 등가값)
     e_source: str = "z"              # E_t 원천: 'z' (Z̃ 장기가치) | 'reward'
     r_surv_fixed: object = None      # 생존 기준점 고정값 (None=학습 maximin)
     allo_aff_gain: float = 0.0       # 알로스테시스 모드 정서 미세조절 이득
-    beta_es: float = 70.0            # es(λ,s) 로짓 정밀도 (정규화 절편 기준)
+    beta_g: float = 3.0              # 사회적 EFE 정밀도 β
+    w_u: float = 70.0 / 3.0          # 실용 가중 w_U (β·w_U = 70 유지)
     plan_sweeps: int = 1             # 라운드당 모형 기반 계획 스윕 횟수
     reanchor_at: int = 8             # Z̃ 재기준화 시점 (R̂ 관측 수)
+    plan_update: str = "conf"        # 계획 갱신: 'conf'(모형 신뢰도 Dyna) | 'replace' | 'dyna' | 'td'
+    n_step: int = 1                  # on-policy n-step SARSA 의 n (1 = 1-step)
+    plan_lr: float = 0.5             # plan_update='td' 전용 고정 학습률
     bootstrap: str = "sarsa"         # 부트스트랩: 'sarsa' | 'greedy'
     alpha_kappa: float = 0.0         # 사회사 협력편향 α ~ N(0, κ²)
     sp_disposition: float = 0.50     # 보상적 λ_sp 의 성향 성분 m
@@ -106,14 +113,20 @@ class Config:
                 "policy_mode": self.policy_mode,
                 "lam_mode": self.lam_mode,
                 "group_bias": self.group_bias,
+                "lam_lo": self.lam_lo,
+                "lam_hi": self.lam_hi,
                 "w_ig_r": self.w_ig_r,
                 "w_ig_j": self.w_ig_j,
                 "e_source": self.e_source,
                 "r_surv_fixed": self.r_surv_fixed,
                 "allo_aff_gain": self.allo_aff_gain,
-                "beta_es": self.beta_es,
+                "beta_g": self.beta_g,
+                "w_u": self.w_u,
                 "plan_sweeps": self.plan_sweeps,
                 "reanchor_at": self.reanchor_at,
+                "plan_update": self.plan_update,
+                "plan_lr": self.plan_lr,
+                "n_step": self.n_step,
                 "bootstrap": self.bootstrap,
                 "alpha_kappa": self.alpha_kappa,
                 "sp_disposition": self.sp_disposition}

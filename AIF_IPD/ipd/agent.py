@@ -145,7 +145,7 @@ class EmpathicAgent:
         self.qrtd = None
         self._prev_sa = None
         #: SARSA 보류 전이 (s, a, r_self, r_other, s_next) — a' 관측 후 적용.
-        self._pending = None
+        self._pending = []
         self._shift_used = float("nan")
         self._shift_oracle = float("nan")
 
@@ -357,7 +357,8 @@ class EmpathicAgent:
             # ALLD 상대에서 A_self 가 이론값 −0.10 의 1/4(−0.024)에 그쳤다.
             # 그 결과 λ=0.010 을 달성하고도 로짓이 −0.81 에 머물러 협력률
             # 0.344 가 남았다. 정규화는 이 압착을 척도 수준에서 되돌린다.
-            shift_i = raw_es / self._es_scale
+            # −G_social 의 실용항: w_U · es_norm  (v3.4)
+            shift_i = self.w_u * (raw_es / self._es_scale)
             # **인식적 항 복원** (v3.1) — EFE 의 epistemic value 를 절편에
             # 더한다. 두 행위의 차분이므로 정책 로짓에 그대로 얹힌다:
             #     logit = β_es·es_norm + w_j·ΔIG_j + w_r·ΔIG_R
@@ -389,9 +390,12 @@ class EmpathicAgent:
             # shift_beta(8.0) ÷ trait_scale(1.046) 이 곱해져 실질 이득 2.295 를
             # 세 상수로 중복 표현했고, 분모는 **폐기된 형질**의 사전 규모라
             # 의미가 없었다. 이제 로짓 정밀도 하나만 남는다.
-            # 로짓 = α (사회사 편향) + β_es·es(λ, s)
+            # **사회적 EFE** (v3.4): 로짓 = α + β·(−G_social(C|λ, s_t)),
+            #   −G_social = w_U·es_norm + w_R·ΔIG_R + w_θ·ΔIG_j
+            # (es 는 정의상 C−D 차분이고, IG 항도 차분으로 두어 2행위
+            #  softmax(−G) 와 정확히 동치인 시그모이드 형이다.)
             _z = self.alpha_bias + (0.0 if shift_i is None
-                                    else self.beta_es * shift_i)
+                                    else self.beta_g * shift_i)
             q_c = float(1.0 / (1.0 + np.exp(-_z)))
             pol = {"ess": float("nan"), "theta_mean": {}, "pc": q_c}
         else:
@@ -534,15 +538,21 @@ class HalloRegAgent(EmpathicAgent):
                  aff_gain: float = 0.30,
                  lam_gain_down: float = 0.45,
                  lam_mode: str = "allostatic",
-                 group_bias: float = 1.00,
+                 group_bias: float = 0.50,
+                 lam_lo: float = -0.5, lam_hi: float = 1.0,
                  allo_aff_gain: float = 0.0,
                  policy_mode: str = "lambda_only",
-                 beta_es: float = 70.0, sp_disposition: float = 0.50,
+                 beta_g: float = 3.0, w_u: float = 70.0 / 3.0,
+                 beta_es: Optional[float] = None,
+                 sp_disposition: float = 0.50,
                  bootstrap: str = "sarsa",
                  plan_sweeps: int = 1,
+                 plan_update: str = "conf",
+                 plan_lr: float = 0.5,
+                 n_step: int = 1,
                  reanchor_at: int = 8,
-                 w_ig_r: float = 0.15,
-                 w_ig_j: float = 0.15,
+                 w_ig_r: float = 3.5,
+                 w_ig_j: float = 3.5,
                  r_surv_fixed: Optional[float] = None,
                  e_source: str = "z",
                  alpha_kappa: float = 0.0,
@@ -582,11 +592,25 @@ class HalloRegAgent(EmpathicAgent):
         self.lam_mode = str(lam_mode)
         #: 집단 적합성 편향 g — 생존이 보장될 때 λ 가 도달하는 상한.
         self.group_bias = float(group_bias)
+        #: λ 사상 범위 (v3.7 검토): λ = lam_lo + (lam_hi−lam_lo)·clip(φ,0,1).
+        #: None 이면 기존 [0, g] (λ = g·φ). 음수 lam_lo 는 결핍 시 **경쟁적
+        #: (반공감) 태세** — es = (1−λ)A_self + λ·A_other 에서 λ<0 이면 상대
+        #: 이득이 내 로짓에 음(−)으로 들어간다 (처벌/억지).
+        self.lam_lo = None if lam_lo is None else float(lam_lo)
+        self.lam_hi = None if lam_hi is None else float(lam_hi)
         #: 알로스테시스 모드의 정서 미세조절 이득.
         self.allo_aff_gain = float(allo_aff_gain)
         # λ-단독에서는 절편이 로짓의 **유일한** 항이므로 정밀도를 따로 둔다.
         # 형질 4항이 나눠 갖던 로짓 예산을 절편 하나가 감당해야 한다.
-        self.beta_es = float(beta_es)
+        #: 사회적 EFE 의 정밀도 β 와 실용 가중 w_U (v3.4).
+        #:     −G_social(C|λ,s) = w_U·es(λ,s)/σ_ref + w_R·ΔIG_R + w_θ·ΔIG_j
+        #:     P(C) = σ(β·(−G_social))
+        #: beta_es 를 직접 주면 w_u = beta_es/β 로 환산한다 (하위호환).
+        self.beta_g = float(beta_g)
+        self.w_u = (float(w_u) if beta_es is None
+                    else float(beta_es) / max(self.beta_g, 1e-9))
+        #: 파생량 β·w_U — 실용항 단독 정밀도. 계획의 q_c(s') 가 이를 쓴다.
+        self.beta_es = self.beta_g * self.w_u
         #: es 정규화의 고정 참조 산포 — (1−γ)·보상폭.
         #: 생존 기준점 고정값 (None = 학습된 R̂ 의 보장수준 maximin).
         self.r_surv_fixed = (None if r_surv_fixed is None
@@ -612,6 +636,10 @@ class HalloRegAgent(EmpathicAgent):
         self.qrtd.bootstrap = str(bootstrap)
         #: 라운드당 모형 기반 계획 스윕 횟수 (0 이면 순수 TD).
         self.plan_sweeps = int(plan_sweeps)
+        self.plan_update = str(plan_update)
+        self.plan_lr = float(plan_lr)
+        #: ③ on-policy n-step SARSA 의 n (1 = 기존 1-step).
+        self.n_step = max(1, int(n_step))
         #: 이 관측 수에서 Z̃ 를 R̂ 기반 값으로 1 회 재기준화한다 (0 이면 없음).
         self.reanchor_at = int(reanchor_at)
         self._reanchored = False
@@ -734,13 +762,42 @@ class HalloRegAgent(EmpathicAgent):
             #   보류분의 s_next 는 s_prev 와 같고, a_prev 가 곧 그 상태에서
             #   실제로 선택된 행위다.
             if self._pending is None:
+                self._pending = []
+            if not self._pending:
                 before = after = self.qrtd.z_self.values[s_prev, a_prev].copy()
-            else:
-                p_s, p_a, p_rs, p_ro, p_sn = self._pending
+            elif self.n_step <= 1:
+                p_s, p_a, p_rs, p_ro, p_sn = self._pending[0]
                 before = self.qrtd.z_self.values[p_s, p_a].copy()
                 self.qrtd.update(p_s, p_a, p_rs, p_ro, p_sn, a_prev)
                 after = self.qrtd.z_self.values[p_s, p_a]
-            self._pending = (s_prev, a_prev, r_s, r_o, s_now)
+                self._pending = []
+            else:
+                # ③ **on-policy n-step SARSA** — 가장 오래된 전이를,
+                # 중간 보상들의 할인합과 γⁿ 부트스트랩으로 완결한다:
+                #   y = Σ_{k<n} γᵏ(1−γ)r_{t0+k} + γⁿ·Z̃(s_{t0+n}, a_{t0+n})
+                # 부트스트랩(임의 초기화 칸이 목표에 들어오는 통로)의
+                # 가중이 γ → γⁿ 으로 줄어, 동결 칸의 낙관 주입이 기하적으로
+                # 감쇠한다 (Sutton & Barto 7장).
+                self.qrtd.note_reward(r_s, r_o)   # n-step 경로의 r̄ 갱신
+                before = self.qrtd.z_self.values[
+                    self._pending[0][0], self._pending[0][1]].copy()
+                after = before
+                if len(self._pending) >= self.n_step:
+                    p_s, p_a = self._pending[0][0], self._pending[0][1]
+                    g_s = g_o = 0.0
+                    _wr = 1.0 - self.qrtd.gamma
+                    for _k, _e in enumerate(self._pending):
+                        g_s += (self.qrtd.gamma ** _k) * _wr * _e[2]
+                        g_o += (self.qrtd.gamma ** _k) * _wr * _e[3]
+                    _gn = self.qrtd.gamma ** len(self._pending)
+                    _bs = self.qrtd.bvec(s_prev, a_prev, "self")
+                    _bo = self.qrtd.bvec(s_prev, a_prev, "other")
+                    self.qrtd.apply_target(p_s, p_a,
+                                           g_s + _gn * _bs,
+                                           g_o + _gn * _bo)
+                    after = self.qrtd.z_self.values[p_s, p_a]
+                    self._pending.pop(0)
+            self._pending.append((s_prev, a_prev, r_s, r_o, s_now))
 
             # --- (C) 초기화 재기준화 ---
             # 사회사 사전(≈2.11)은 '전형적 관계' 의 값이라 나쁜 관계에서는
@@ -767,11 +824,27 @@ class HalloRegAgent(EmpathicAgent):
                     float(self.inversion.predict_coop(
                         1.0 - 2.0 * float(ss // 2), 1.0 - 2.0 * float(ss % 2)))
                     for ss in range(4)])
+                # 연속정책도 상태별로 — q_c(s') = σ(β_es·es(λ_t, s')/σ_ref).
+                # (인식항은 상태별 산출 비용이 커 계획에서는 실용항만 쓴다 —
+                #  학습 후반에는 어차피 소멸하는 항이라 근사 오차가 작다.)
+                if self.qrtd.n_obs > 8:
+                    _qc = np.empty(4)
+                    for _s in range(4):
+                        _as = (self.qrtd.value(_s, COOP, "self")
+                               - self.qrtd.value(_s, DEFECT, "self"))
+                        _ao = (self.qrtd.value(_s, COOP, "other")
+                               - self.qrtd.value(_s, DEFECT, "other"))
+                        _es = ((1.0 - self.lam) * _as + self.lam * _ao) \
+                            / self._es_scale
+                        _qc[_s] = 1.0 / (1.0 + np.exp(-self.beta_es * _es))
+                else:
+                    _qc = np.full(4, float(self._last_qc))
                 self.qrtd.plan_sweep(
                     self.reward_model,
                     p_coop_j=_pj,
-                    p_coop_self=float(self._last_qc),
-                    n_sweeps=self.plan_sweeps)
+                    p_coop_self=_qc,
+                    n_sweeps=self.plan_sweeps,
+                    update=self.plan_update, lr=self.plan_lr)
             span_v = float(self.core_affect.payoffs.max()
                            - self.core_affect.payoffs.min())
             span_v = max(span_v, 1e-6)   # v2.7.0: Z̃ 는 보상 척도
@@ -857,7 +930,11 @@ class HalloRegAgent(EmpathicAgent):
             # deviation 대응), 잉여가 있으면 그에 비례해 λ ↑ (집단 적합성 편향
             # g 가 상한). r_surv 와 top 이 학습된 R̂ 에서 나오므로 보수 레짐이
             # 바뀌면 기준점이 함께 재계산된다 — 비정상 환경 적응의 직접 기제.
-            lam_allo = self.group_bias * 0.5   # 무정보 기본값
+            if self.lam_lo is not None:
+                _hi = self.lam_hi if self.lam_hi is not None else 1.0
+                lam_allo = self.lam_lo + (_hi - self.lam_lo) * 0.5
+            else:
+                lam_allo = self.group_bias * 0.5   # 무정보 기본값
             self._allo_phi = np.nan
             if self.reward_model.n_obs > 3:
                 # E_t 는 **ToM 기반 1-step 예측**으로 계산한다 (Z̃ 가 아니라).
@@ -900,11 +977,20 @@ class HalloRegAgent(EmpathicAgent):
                 if top - r_surv > 1e-6:
                     phi_a = (e_t - r_surv) / (top - r_surv)
                     self._allo_phi = float(phi_a)
-                    lam_allo = self.group_bias * float(np.clip(phi_a, 0.0, 1.0))
+                    _ph = float(np.clip(phi_a, 0.0, 1.0))
+                    if self.lam_lo is not None:
+                        lam_allo = (self.lam_lo
+                                    + ((self.lam_hi if self.lam_hi is not None
+                                        else 1.0) - self.lam_lo) * _ph)
+                    else:
+                        lam_allo = self.group_bias * _ph
                     # 정서 미세 조절 (상태 처방 통로 유지, 소이득)
+                    _clo = (self.lam_lo if self.lam_lo is not None else 0.0)
+                    _chi = (self.lam_hi if self.lam_lo is not None
+                            else self.group_bias)
                     lam_allo = float(np.clip(
                         lam_allo + self.allo_aff_gain * affect["lambda_aff"],
-                        0.0, self.group_bias))
+                        _clo, _chi))
             self.lam = lam_allo
             self.empathy.lam = self.lam
         elif self.regulate:

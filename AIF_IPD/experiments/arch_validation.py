@@ -198,10 +198,21 @@ def run(cfg: Config) -> dict:
                 phi_a = np.asarray(log["allo_phi"], dtype=float)
                 m_a = np.isfinite(phi_a) & np.isfinite(lam)
                 if int(m_a.sum()) > 0:
-                    rec_a = cfg.group_bias * np.clip(phi_a[m_a], 0.0, 1.0)
-                    rec_a = np.clip(
-                        rec_a + cfg.allo_aff_gain * l_aff[m_a],
-                        0.0, cfg.group_bias)
+                    _lo = getattr(cfg, "lam_lo", None)
+                    if _lo is not None:
+                        # v3.7: λ = lam_lo + (lam_hi−lam_lo)·clip(φ, 0, 1)
+                        _hi = getattr(cfg, "lam_hi", 1.0)
+                        rec_a = (_lo + (_hi - _lo)
+                                 * np.clip(phi_a[m_a], 0.0, 1.0))
+                        rec_a = np.clip(
+                            rec_a + cfg.allo_aff_gain * l_aff[m_a],
+                            _lo, _hi)
+                    else:
+                        rec_a = cfg.group_bias * np.clip(phi_a[m_a],
+                                                         0.0, 1.0)
+                        rec_a = np.clip(
+                            rec_a + cfg.allo_aff_gain * l_aff[m_a],
+                            0.0, cfg.group_bias)
                     lam_max_dev = max(
                         lam_max_dev,
                         float(np.max(np.abs(lam[m_a] - rec_a))))
@@ -303,7 +314,13 @@ def run(cfg: Config) -> dict:
     # V5c: **척도 정합** — 학습 초기에 모든 상대가 음의 valence 를 받으면
     # valence 가 상대의 성질이 아니라 Z 의 학습 진행도를 재는 것이다.
     # 참조를 이론 정상상태로 부여했던 이전 판의 결함(첫 라운드 −0.96)을 막는다.
-    early = {k: float(np.mean(val_traces[k][:, 1:4])) for k in PROBE_TYPES}
+    # [v3.5.0 재조작화] n-step SARSA 는 첫 완결까지 n 라운드가 걸리므로,
+    # '학습 초기' 창을 **첫 가치 갱신 직후 3R** 로 옮긴다. 그 전 구간은
+    # 갱신이 없어 백분위가 유사동률의 미세 섭동 해소로 채워지고(순위 통계의
+    # 증폭), 그것은 척도 정합의 문제가 아니다. n_step=1 이면 기존과 동일.
+    _w0 = max(1, int(getattr(cfg, "n_step", 1)))
+    early = {k: float(np.mean(val_traces[k][:, _w0:_w0 + 3]))
+             for k in PROBE_TYPES}
     checks.append({
         # v1.7.0: Z 가 사회사 사전(전형적 관계의 가치)에서 출발하므로 첫
         # 라운드 valence 는 **중립 근처**여야 한다. 이전 판처럼 −0.96 으로
@@ -311,7 +328,8 @@ def run(cfg: Config) -> dict:
         "id": "V5c", "name": "학습 초기 valence 가 중립 근처 (척도 정합)",
         "passed": bool(abs(early["allc"]) < 0.6 and abs(early["alld"]) < 0.6),
         "detail": " | ".join(f"{PROBE_LABEL[k]}={early[k]:+.3f}"
-                             for k in PROBE_TYPES) + " (초기 3R)",
+                             for k in PROBE_TYPES)
+                  + f" (첫 갱신 후 3R, w0={_w0})",
     })
 
     # ================================================== V6. λ 의 조건별 분기

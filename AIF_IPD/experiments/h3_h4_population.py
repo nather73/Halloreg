@@ -162,6 +162,7 @@ def run_stationary(cfg: Config, reg: Registry, comps: np.ndarray) -> dict:
                 len(comps), len(ALL_TYPES) * (len(ALL_TYPES) + 1) // 2)
     specs = default_type_specs(cfg.halloreg_kwargs())
     pair = estimate_pair_matrices(specs, cfg.rounds, cfg.seeds, cfg.jobs,
+                                  eval_from=getattr(cfg, "eval_from", 0),
                                   regime=None, env_error=cfg.env_error,
                                   seed_offset=0)
     an = analyze_regime(pair, comps)
@@ -193,6 +194,7 @@ def run_nonstationary(cfg: Config, reg: Registry, comps: np.ndarray) -> dict:
     for ri, rg in enumerate(regimes):
         LOGGER.info("[H4/H4A] 레짐 '%s' (%d/%d)", rg, ri + 1, len(regimes))
         pair = estimate_pair_matrices(specs, cfg.rounds, cfg.seeds, cfg.jobs,
+                                  eval_from=getattr(cfg, "eval_from", 0),
                                       regime=rg, env_error=cfg.env_error,
                                       seed_offset=1000 * (ri + 1))
         per_regime[rg] = {"pair": pair, "analysis": analyze_regime(pair, comps)}
@@ -242,6 +244,7 @@ def _verify_decomposition(cfg: Config, specs: dict, pair: dict,
     for j, i in enumerate(idx):
         c = comps[i]
         direct = run_round_robin(c, specs, cfg.rounds, seed=100 + j,
+                                 eval_from=getattr(cfg, "eval_from", 0),
                                  regime=regime, env_error=cfg.env_error,
                                  persistent=False, n_jobs=cfg.jobs)
         pred_cc = float(population_cc(pair["CCm"], c))

@@ -81,6 +81,9 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="조건당 시드(반복) 수")
     p.add_argument("--rounds", type=int, default=120,
                    help="다이애드당 라운드 수")
+    p.add_argument("--eval-from", type=int, default=0,
+                   help="평가 창 시작 라운드 (0=전 구간; 예: --rounds 800 "
+                        "--eval-from 600 이면 601~800R 로 가설 검증)")
     p.add_argument("--jobs", type=int, default=-1,
                    help="병렬 워커 수. -1 = (논리 코어 수 − 1). "
                         "CPU 바운드 단일스레드 작업이므로 물리 코어 수 지정을 권장")
@@ -128,6 +131,7 @@ def build_config(args: argparse.Namespace) -> Config:
 
     cfg = Config(
         seeds=args.seeds, rounds=args.rounds, jobs=args.jobs,
+        eval_from=args.eval_from,
         results=results, env_error=args.env_error,
         n_particles=args.particles, horizon=args.horizon, w_cplx=args.w_cplx, w_epi_j=args.w_epi_j, w_epi_r=args.w_epi_r, policy_gamma=args.policy_gamma, prop_sd=args.prop_sd, policy_particles=args.policy_particles,
         payoff_access=args.payoff_access,
