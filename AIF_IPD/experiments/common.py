@@ -78,7 +78,8 @@ class Config:
     lam_mode: str = "allostatic"     # λ 조절: 알로스테시스 직접 사상
     group_bias: float = 0.50         # (레거시) lam_lo=None 일 때만 λ = g·φ 로 사용
     lam_lo: float = -0.5             # λ 사상 하한 (v3.7: 결핍 시 경쟁적 태세)
-    lam_hi: float = 1.0              # λ 사상 상한 (v3.7: 잉여 시 완전 이타 — HR-HR 협력 잠금)
+    lam_hi: float = 1.0              # λ 사상 상한 (v3.7: 잉여 시 완전 이타)
+    tom_es_mode: str = "mirror"      # ToM es (v3.7.1): 'mirror'(정렬 기본) | 'analytic'(레거시)
     w_ig_r: float = 3.5              # −G_social 의 인식 가중 w_R (β 밖 등가값)
     w_ig_j: float = 3.5              # −G_social 의 인식 가중 w_θ (β 밖 등가값)
     e_source: str = "z"              # E_t 원천: 'z' (Z̃ 장기가치) | 'reward'
@@ -115,6 +116,7 @@ class Config:
                 "group_bias": self.group_bias,
                 "lam_lo": self.lam_lo,
                 "lam_hi": self.lam_hi,
+                "tom_es_mode": self.tom_es_mode,
                 "w_ig_r": self.w_ig_r,
                 "w_ig_j": self.w_ig_j,
                 "e_source": self.e_source,

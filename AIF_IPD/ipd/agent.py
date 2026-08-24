@@ -211,6 +211,21 @@ class EmpathicAgent:
                             for ss in range(4)]))
         return (a_s, a_o)
 
+    def _tom_mirror_es(self, lam_vec, f, g):
+        """거울 es_z 공급자 (v3.7.1) — OpponentInversion._pC 가 호출."""
+        if f == 0.0 or g == 0.0:
+            from AIF_IPD.core.constants import empathy_shift
+            return empathy_shift(lam_vec,
+                                 self.inversion.my_cooperation_rate)
+        my_a = 0 if f > 0 else 1
+        th_a = 0 if g > 0 else 1
+        m = joint_index(th_a, my_a)        # 상대 시점 상태 (거울)
+        a_s = (self.qrtd.value(m, 0, "self")
+               - self.qrtd.value(m, 1, "self"))
+        a_o = (self.qrtd.value(m, 0, "other")
+               - self.qrtd.value(m, 1, "other"))
+        return ((1.0 - lam_vec) * a_s + lam_vec * a_o) / self._es_scale
+
     def _regulate(self, observed_state: int, opp_action: int,
                   inferred: dict) -> dict:
         """λ 조절 훅. 기본은 조절 없음 — HalloRegAgent 가 오버라이드."""
@@ -540,6 +555,7 @@ class HalloRegAgent(EmpathicAgent):
                  lam_mode: str = "allostatic",
                  group_bias: float = 0.50,
                  lam_lo: float = -0.5, lam_hi: float = 1.0,
+                 tom_es_mode: str = "mirror",
                  allo_aff_gain: float = 0.0,
                  policy_mode: str = "lambda_only",
                  beta_g: float = 3.0, w_u: float = 70.0 / 3.0,
@@ -619,6 +635,16 @@ class HalloRegAgent(EmpathicAgent):
         self.e_source = str(e_source)
         self.w_ig_r = float(w_ig_r)
         self.w_ig_j = float(w_ig_j)
+        #: ToM es 모드 (v3.7.1): 'mirror'(기본) — 상대 우도의 es 를 내 Z̃ 의
+        #: 역할 교환으로 대리한다 (모형 정렬: ToM 이 행위자의 실제 생성과정과
+        #: 같은 족의 효용을 상정). 'analytic' 은 구식 해석적 empathy_shift
+        #: (레거시 — 인자를 명시해야 활성).
+        #:     es_j(λ_j; s) = [(1−λ_j)·A_self(m(s)) + λ_j·A_other(m(s))]/σ_ref
+        #:     m(s) = 거울 상태 (상대 시점: 행동쌍 역할 교환)
+        #: 이력 없음(f=0 또는 g=0)이면 해석적 형으로 후퇴한다.
+        self.tom_es_mode = str(tom_es_mode)
+        if self.tom_es_mode == "mirror":
+            self.inversion.es_provider = self._tom_mirror_es
         self._es_scale = max((1.0 - float(qrtd_gamma))
                              * float(PAYOFF_SELF.max() - PAYOFF_SELF.min()),
                              1e-6)

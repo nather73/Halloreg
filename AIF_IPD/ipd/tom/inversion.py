@@ -138,6 +138,12 @@ class OpponentInversion:
 
         # 내 협력률에 대한 상대의 믿음 p — empathy_shift 의 인자.
         self.my_cooperation_rate = 0.5
+        #: es 공급자 (v3.7.1): callable(lam_vec, f, g) -> shift 벡터.
+        #: None 이면 해석적 empathy_shift(λ_j, p) — 레거시 경로.
+        #: 기본 에이전트는 **거울 es_z** 공급자를 주입한다 (모형 정렬:
+        #: ToM 이 행위자의 실제 생성과정(학습된 Z̃ 기반 es)과 같은 족의
+        #: 효용을 상정하도록).
+        self.es_provider = None
 
         # 현재 사전 (SelfModel 주입 시 교체)
         self._prior = {ax: self._PRIOR[ax] for ax in THETA_AXES}
@@ -186,7 +192,11 @@ class OpponentInversion:
     def _pC(self, f: float, g: float) -> np.ndarray:
         """각 입자가 예측하는 상대 협력확률 (N,)."""
         th = self.theta
-        shift = empathy_shift(th["lambda_j"], self.my_cooperation_rate)
+        if self.es_provider is not None:
+            shift = self.es_provider(th["lambda_j"], f, g)
+        else:
+            shift = empathy_shift(th["lambda_j"],
+                                  self.my_cooperation_rate)
         logit = th["beta"] * (th["alpha"] + th["rho"] * f
                               + th["omega"] * g + th["eta"] * f * g
                               + shift)
