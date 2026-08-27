@@ -2,16 +2,20 @@
 AIF_IPD.ipd
 ===========
 
-IPD 환경·에이전트·시뮬레이션·집단/진화 분석 계층.
+IPD environment, agents, simulation, and population/evolution layer.
 
-  env             : IPD 환경과 고정전략 상대 (TFT/GTFT/WSLS/ALLC/ALLD)
-  agent           : EmpathicAgent(고정 λ) 와 HalloRegAgent(내생 λ)
-  sim             : 다이애드 루프와 병렬 실행기
-  payoff_schedule : 비정상 보수 레짐 카탈로그
-  population      : 혼합 집단의 정확한 분해식과 유형쌍 행렬 추정
-  evolution       : 복제자(RE) / 최적 복제자(ORE) 동역학
-  tom             : 조망수용 계층
-  metrics         : 통계 인프라
+  env             : IPD environment and fixed strategies
+                    (TFT/GTFT/WSLS/ALLC/ALLD)
+  agent           : EmpathicAgent (fixed lambda) and HalloRegAgent
+                    (endogenous lambda)
+  sim             : dyad loop and parallel runner
+  payoff_schedule : catalogue of non-stationary payoff regimes
+  population      : exact mixed-population decomposition and
+                    type-pair matrix estimation
+  evolution       : replicator (RE) / optimal replicator (ORE)
+                    dynamics
+  tom             : perspective-taking layer
+  metrics         : statistical infrastructure
 """
 
 from .agent import EmpathicAgent, HalloRegAgent

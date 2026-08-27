@@ -2,16 +2,20 @@
 experiments.common
 ==================
 
-모든 가설 실험이 공유하는 실행 설정·결과 등록·시각화 유틸.
+Execution configuration, result registry and plotting utilities
+shared by every hypothesis experiment.
 
-[확증(confirmatory) 대 탐색(exploratory)]
-가설마다 **사전에 지정한 주 검정**만 확증으로 등록하고, 나머지는 탐색으로 둔다.
-확증 가족에는 Holm 보정(FWER 통제), 탐색에는 BH-FDR 을 적용한다. 이렇게 해야
-"여러 지표를 돌려보고 유의한 것만 보고" 하는 것을 구조적으로 막을 수 있다.
+[Confirmatory vs exploratory]
+Only the **pre-specified primary tests** of each hypothesis are
+registered as confirmatory; everything else is exploratory. Holm
+(FWER control) applies to the confirmatory family, BH-FDR to the
+exploratory one — structurally preventing "run many metrics, report
+the significant ones".
 
-[검증 문화]
-`verdict` 는 p 값과 **방향성**을 모두 충족해야 '지지' 로 기록된다. 지지되지 않은
-경우 억지로 긍정 서술을 만들지 않고 그대로 '미지지' 로 남긴다.
+[Verification culture]
+A `verdict` records "supported" only when both the p value and the
+**direction** hold. Unsupported results stay unsupported — no forced
+positive narratives.
 """
 
 from __future__ import annotations
@@ -24,7 +28,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 import matplotlib
-matplotlib.use("Agg")                   # 헤드리스 환경에서 파일로만 출력
+matplotlib.use("Agg")                   # headless: file output only
 import matplotlib.pyplot as plt
 from matplotlib import font_manager
 
@@ -40,7 +44,7 @@ plt.rcParams.update({
     "font.size": 9, "axes.titlesize": 10, "legend.fontsize": 8,
 })
 
-#: 유형별 고정 색상 — 모든 그림에서 일관되게 쓴다.
+#: Fixed per-type colours, consistent across all figures.
 TYPE_COLORS = {
     "tft": "#4C72B0", "gtft": "#55A868", "wsls": "#C44E52",
     "allc": "#8172B2", "alld": "#937860", "halloreg": "#DA8BC3",
@@ -48,18 +52,18 @@ TYPE_COLORS = {
 }
 
 
-# ==================================================================== 설정
+# ==================================================================== Config
 @dataclass
 class Config:
-    """실험 전역 설정 (CLI 가 채운다)."""
-    seeds: int = 120                 # 기본 시드 수 (사양 고정값)
+    """Global experiment configuration (populated by the CLI)."""
+    seeds: int = 120                 # default seed count (per spec)
     rounds: int = 120
-    eval_from: int = 0               # 평가 창 시작 (0=전 구간; 예: 800R 중 600)                # 기본 라운드 수 (사양 고정값)
-    jobs: int = -1                   # 병렬 워커 (-1 → 코어수 − 1)
+    eval_from: int = 0               # evaluation-window start (0 = full span)
+    jobs: int = -1                   # parallel workers (-1 -> cores-1)
     results: Path = Path("results")
-    env_error: float = 0.05          # 환경 계층 실행오류 (모든 유형 대칭)
+    env_error: float = 0.05          # env execution error (symmetric)
     n_particles: int = 400
-    horizon: int = 6                     # 형질공간 rollout 지평
+    horizon: int = 6                     # trait-space rollout horizon
     policy_particles: int = 64
     prop_sd: float = 0.40
     policy_gamma: float = 8.0
@@ -69,37 +73,48 @@ class Config:
     payoff_access: str = "naive"
     qrtd_gamma: float = 0.9
     qrtd_lr: float = 0.20
-    w_cd: float = 0.5                # Empathy 의 정서–맥락 가중
-    lam_gain: float = 0.05           # λ 적분 이득 η
-    w_tonic: float = 0.10            # (v1.8.0 폐기 — 서명 호환)
-    lam_gain_down: float = 0.45      # 위협 방향 이완률 (비대칭)
-    aff_gain: float = 0.30           # 정서 이득 (라운드 단위 급변 허용)
-    policy_mode: str = "lambda_only" # 행위 선택: λ 단독 (기존 "traits" 보존)
-    lam_mode: str = "allostatic"     # λ 조절: 알로스테시스 직접 사상
-    group_bias: float = 0.50         # (레거시) lam_lo=None 일 때만 λ = g·φ 로 사용
-    lam_lo: float = -0.5             # λ 사상 하한 (v3.7: 결핍 시 경쟁적 태세)
-    lam_hi: float = 1.0              # λ 사상 상한 (v3.7: 잉여 시 완전 이타)
-    tom_es_mode: str = "mirror"      # ToM es (v3.7.1): 'mirror'(정렬 기본) | 'analytic'(레거시)
-    w_ig_r: float = 3.5              # −G_social 의 인식 가중 w_R (β 밖 등가값)
-    w_ig_j: float = 3.5              # −G_social 의 인식 가중 w_θ (β 밖 등가값)
-    e_source: str = "z"              # E_t 원천: 'z' (Z̃ 장기가치) | 'reward'
-    r_surv_fixed: object = None      # 생존 기준점 고정값 (None=학습 maximin)
-    allo_aff_gain: float = 0.0       # 알로스테시스 모드 정서 미세조절 이득
-    beta_g: float = 3.0              # 사회적 EFE 정밀도 β
-    w_u: float = 70.0 / 3.0          # 실용 가중 w_U (β·w_U = 70 유지)
-    plan_sweeps: int = 1             # 라운드당 모형 기반 계획 스윕 횟수
-    reanchor_at: int = 8             # Z̃ 재기준화 시점 (R̂ 관측 수)
-    plan_update: str = "conf"        # 계획 갱신: 'conf'(모형 신뢰도 Dyna) | 'replace' | 'dyna' | 'td'
-    n_step: int = 1                  # on-policy n-step SARSA 의 n (1 = 1-step)
-    plan_lr: float = 0.5             # plan_update='td' 전용 고정 학습률
-    bootstrap: str = "sarsa"         # 부트스트랩: 'sarsa' | 'greedy'
-    alpha_kappa: float = 0.0         # 사회사 협력편향 α ~ N(0, κ²)
-    sp_disposition: float = 0.50     # 보상적 λ_sp 의 성향 성분 m
-    quick: bool = False              # 스모크 모드
-    max_compositions: int = 0        # 0 이면 전수 열거
+    w_cd: float = 0.5                # Empathy affect-context weight
+    lam_gain: float = 0.05           # lambda integrator gain eta
+    w_tonic: float = 0.10            # retired v1.8.0 (signature compat)
+    lam_gain_down: float = 0.45      # threat-direction relaxation
+    aff_gain: float = 0.30           # affect gain (round-level jumps)
+    tom_es_mode: str = "mirror"      # ToM es: 'mirror' | 'analytic' (legacy)
+    w_ig_r: float = 5.0              # epistemic weight w_R of -G_social
+    w_ig_j: float = 5.0              # epistemic weight w_theta of -G_social
+    r_surv_fixed: object = None      # fixed survival ref (None = maximin)
+    beta_g: float = 3.0              # social-EFE precision beta
+    # ── Social-EFE weights (v3.8.2 sweep evidence) ────────────────
+    # Effective weights beta*(w_U, w_R, w_theta). An 800R sweep
+    # (halve/double/zero/untie each axis; verdict criteria fixed in
+    # advance: ALLD defence intact, HR-HR CC within +/-0.02, mixed
+    # payoff maximal) passed all 7 candidates within a 0.030 band —
+    # a **robust plateau**; the nominal best (+0.009) is within seed
+    # noise, so the configuration stands. w_R = w_theta is
+    # unit-consistent (path-A expected KL and IG_theta share nats,
+    # v3.7.2) and untying showed no gain. Epistemic weights stay > 0
+    # not for steady-state payoff (zero is equivalent there) but for
+    # measured **early function**: directed probing, 3x faster WSLS
+    # state coverage, H1 probe discrimination — functions invisible
+    # to dyad payoff. The w_U magnitude balances steady-state
+    # pragmatic dominance (~1-3% epistemic share) against early
+    # epistemic engagement (~15% in R1-5).
+    w_u: float = 40.0                # v3.9.0: effective beta*w_U = 120
+    #   [v3.9.0 battery] w_U=40, w_R=w_theta=5 (effective 15):
+    #   HR-HR 0.893(.017), ALLD 0.039/1.225, WSLS 0.741 (in band),
+    #   mixed 2.449, lambda-hat_j ladder preserved.
+    plan_sweeps: int = 1             # model-based planning sweeps/round
+    plan_update: str = "conf"        # 'conf' (model-confidence Dyna) | 'replace' | 'dyna' | 'td'
+    n_step: int = 1                  # n of on-policy n-step SARSA
+    plan_lr: float = 0.5             # fixed lr for plan_update='td'
+    bootstrap: str = "sarsa"         # bootstrap: 'sarsa' | 'greedy'
+    alpha_kappa: float = 0.0         # history bias alpha ~ N(0, kappa^2)
+    sp_disposition: float = 0.50     # dispositional part m of the setpoint
+    quick: bool = False              # smoke mode
+    max_compositions: int = 0        # 0 = full enumeration
 
     def halloreg_kwargs(self) -> dict:
-        """HalloRegAgent 생성 인자 (실험 전역에서 동일하게 쓴다)."""
+        """HalloRegAgent constructor kwargs (identical across all
+        experiments)."""
         return {"n_particles": self.n_particles, "planning_horizon": self.horizon,
                 "policy_particles": self.policy_particles,
                 "prop_sd": self.prop_sd, "policy_gamma": self.policy_gamma,
@@ -111,21 +126,13 @@ class Config:
                 "w_tonic": self.w_tonic,
                 "aff_gain": self.aff_gain,
                 "lam_gain_down": self.lam_gain_down,
-                "policy_mode": self.policy_mode,
-                "lam_mode": self.lam_mode,
-                "group_bias": self.group_bias,
-                "lam_lo": self.lam_lo,
-                "lam_hi": self.lam_hi,
                 "tom_es_mode": self.tom_es_mode,
                 "w_ig_r": self.w_ig_r,
                 "w_ig_j": self.w_ig_j,
-                "e_source": self.e_source,
                 "r_surv_fixed": self.r_surv_fixed,
-                "allo_aff_gain": self.allo_aff_gain,
                 "beta_g": self.beta_g,
                 "w_u": self.w_u,
                 "plan_sweeps": self.plan_sweeps,
-                "reanchor_at": self.reanchor_at,
                 "plan_update": self.plan_update,
                 "plan_lr": self.plan_lr,
                 "n_step": self.n_step,
@@ -134,7 +141,7 @@ class Config:
                 "sp_disposition": self.sp_disposition}
 
     def empathic_kwargs(self, lam: float) -> dict:
-        """고정 λ 대조군 생성 인자."""
+        """Fixed-lambda control constructor kwargs."""
         return {"lam": lam, "n_particles": self.n_particles,
                 "planning_horizon": self.horizon}
 
@@ -145,37 +152,41 @@ class Config:
         return d
 
 
-# ==================================================================== 결과등록
+# ==================================================================== Registry
 @dataclass
 class Registry:
-    """확증/탐색 검정 결과 누적기."""
+    """Accumulator of confirmatory/exploratory test results."""
     primary: List[dict] = field(default_factory=list)
     exploratory: List[dict] = field(default_factory=list)
 
     def confirm(self, hyp: str, label: str, p: float, direction_ok: bool,
                 effect: str = "", detail: Optional[dict] = None) -> None:
-        """확증 검정 등록. Holm 보정은 전 가설 종료 후 일괄 적용한다."""
+        """Register a confirmatory test; Holm is applied once after
+        all hypotheses finish."""
         self.primary.append({"hypothesis": hyp, "label": label,
                              "p_raw": float(p),
                              "direction_ok": bool(direction_ok),
                              "effect": effect, "detail": detail or {}})
-        LOGGER.info("  [확증][%s] %s — %s, 방향성립=%s (p_raw=%.4g)",
+        LOGGER.info("  [confirmatory][%s] %s — %s, direction_ok=%s (p_raw=%.4g)",
                     hyp, label, effect, direction_ok, p)
 
     def explore(self, hyp: str, label: str, p: float,
                 effect: str = "", detail: Optional[dict] = None) -> None:
-        """탐색 검정 등록. BH-FDR 은 전 가설 종료 후 일괄 적용한다."""
+        """Register an exploratory test; BH-FDR is applied once after
+        all hypotheses finish."""
         self.exploratory.append({"hypothesis": hyp, "label": label,
                                  "p_raw": float(p), "effect": effect,
                                  "detail": detail or {}})
-        LOGGER.info("  [탐색][%s] %s — %s (p_raw=%.4g)", hyp, label, effect, p)
+        LOGGER.info("  [exploratory][%s] %s — %s (p_raw=%.4g)", hyp, label, effect, p)
 
     def finalize(self, alpha: float = 0.05) -> dict:
         """
-        다중비교 보정 후 최종 판정표를 만든다.
+        Build the final verdict table after multiple-comparison
+        correction.
 
-        확증: Holm 보정 p < alpha **그리고** 방향성립 → 지지.
-        탐색: BH-FDR q < alpha → 유의(방향 판정은 별도로 하지 않는다).
+        Confirmatory: Holm-adjusted p < alpha **and** direction holds
+        -> supported. Exploratory: BH-FDR q < alpha -> significant
+        (no separate direction verdict).
         """
         if self.primary:
             adj = holm([r["p_raw"] for r in self.primary])
@@ -188,22 +199,24 @@ class Registry:
                 r["q_bh"] = a
                 r["significant"] = bool(a < alpha)
 
-        # 가설 단위 판정: 그 가설의 확증 검정이 **모두** 지지되면 지지.
+        # Per-hypothesis verdict: supported iff **all** its
+        # confirmatory tests are supported.
         by_hyp: Dict[str, dict] = {}
         for r in self.primary:
             h = by_hyp.setdefault(r["hypothesis"], {"n": 0, "n_ok": 0})
             h["n"] += 1
             h["n_ok"] += int(r["supported"])
         for h, d in by_hyp.items():
-            d["verdict"] = ("지지" if d["n_ok"] == d["n"]
-                            else ("부분지지" if d["n_ok"] > 0 else "미지지"))
+            d["verdict"] = ("supported" if d["n_ok"] == d["n"]
+                            else ("partial" if d["n_ok"] > 0
+                                  else "not supported"))
         return {"alpha": alpha, "primary": self.primary,
                 "exploratory": self.exploratory, "by_hypothesis": by_hyp}
 
 
-# ==================================================================== 직렬화
+# ==================================================================== Serialisation
 def _jsonable(o):
-    """numpy 타입을 포함한 객체를 JSON 직렬화 가능하게 변환."""
+    """Make objects (including numpy types) JSON-serialisable."""
     if isinstance(o, (np.integer,)):
         return int(o)
     if isinstance(o, (np.floating,)):
@@ -223,25 +236,25 @@ def _jsonable(o):
 
 
 def save_json(obj, path: Path) -> None:
-    """결과 dict 를 UTF-8 JSON 으로 저장 (한글 그대로)."""
+    """Save a result dict as UTF-8 JSON."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(_jsonable(obj), f, ensure_ascii=False, indent=2)
 
 
-# ==================================================================== 시각화
+# ==================================================================== Plotting
 def save_fig(fig, cfg: Config, name: str) -> Path:
-    """그림을 PNG 로 저장하고 닫는다."""
+    """Save a figure as PNG and close it."""
     path = cfg.figdir / f"{name}.png"
     fig.savefig(path)
     plt.close(fig)
-    LOGGER.info("  그림 저장: %s", path)
+    LOGGER.info("  figure saved: %s", path)
     return path
 
 
 def bar_with_ci(ax, labels, means, cis, colors=None, ylabel: str = "",
                 title: str = "", rotate: int = 0) -> None:
-    """부트스트랩 95% CI 오차막대가 있는 막대그림."""
+    """Bar chart with bootstrap 95% CI error bars."""
     x = np.arange(len(labels))
     lo = np.array([m - c[0] for m, c in zip(means, cis)])
     hi = np.array([c[1] - m for m, c in zip(means, cis)])
@@ -258,10 +271,10 @@ def bar_with_ci(ax, labels, means, cis, colors=None, ylabel: str = "",
 def band_plot(ax, traces: np.ndarray, color: str = "#4C72B0",
               label: str = "", q: tuple = (25, 75)) -> None:
     """
-    시드 궤적 집합의 중앙값 선 + 사분위 밴드.
-
-    평균 ± SD 대신 백분위 밴드를 쓰는 이유: λ·협력률처럼 유계이고 분포가
-    비대칭인 지표에서 SD 밴드는 정의역을 벗어나 오해를 부른다.
+    Median line + interquartile band over a set of seed
+    trajectories. Percentile bands are used instead of mean +/- SD:
+    for bounded, skewed metrics (lambda, cooperation rates) SD bands
+    leave the domain and mislead.
     """
     T = traces.shape[1]
     t = np.arange(T)
@@ -273,6 +286,7 @@ def band_plot(ax, traces: np.ndarray, color: str = "#4C72B0",
 
 
 def annotate_n(ax, n: int) -> None:
-    """표본 수를 그림 안에 명시 (재현성·해석 보조)."""
+    """Annotate the sample size inside the figure (reproducibility
+    aid)."""
     ax.text(0.99, 0.01, f"n={n}", transform=ax.transAxes,
             ha="right", va="bottom", fontsize=7, color="#555555")

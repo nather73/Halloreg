@@ -12,3 +12,6 @@ AIF_IPD/results/figures/
 # OS
 .DS_Store
 Thumbs.db
+results/
+__pycache__/
+*.pyc

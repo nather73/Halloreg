@@ -2,18 +2,22 @@
 ipd.metrics.stats
 =================
 
-가설검증 공통 통계 인프라.
+Shared statistical infrastructure for hypothesis testing.
 
-모든 가설이 이 모듈만 쓰도록 하여, 효과크기 보고·분포무가정 검정·다중비교 보정이
-구조적으로 강제되게 한다.
+Every hypothesis uses this module only, so effect-size reporting,
+distribution-free testing and multiple-comparison correction are
+enforced structurally.
 
-설계 원칙
----------
-* p 값은 항상 **순열/부트스트랩** 기반이다. 협력률·생존율처럼 유계이고 바닥/천장
-  효과가 흔한 지표에서 정규 근사는 신뢰할 수 없다.
-* 모든 함수는 순수 numpy 이며 자체 RNG(seed 인자)로 재현 가능하다.
-* 반환은 dict — JSON 직렬화와 로그 포맷이 같은 구조를 공유한다.
-* 확증(confirmatory) 가설군에는 Holm, 탐색(exploratory)에는 BH-FDR 을 적용한다.
+Design principles
+-----------------
+* p values are always **permutation/bootstrap** based: normal
+  approximations are unreliable for bounded metrics with common
+  floor/ceiling effects (cooperation rates, survival rates).
+* Every function is pure numpy with its own seeded RNG, hence
+  reproducible.
+* Returns are dicts — JSON serialisation and log formatting share
+  one structure.
+* Holm for the confirmatory family, BH-FDR for exploratory tests.
 """
 
 from __future__ import annotations
@@ -30,9 +34,10 @@ def _arr(x) -> np.ndarray:
     return np.asarray(x, dtype=float)
 
 
-# ================================================================ 효과크기
+# ================================================================ Effect sizes
 def hedges_g(a, b) -> float:
-    """두 독립 표본의 Hedges' g (소표본 편향 보정된 Cohen's d)."""
+    """Hedges' g of two independent samples (small-sample-corrected
+    Cohen's d)."""
     a, b = _arr(a), _arr(b)
     na, nb = len(a), len(b)
     va = a.var(ddof=1) if na > 1 else 0.0
@@ -41,12 +46,13 @@ def hedges_g(a, b) -> float:
     if sp2 <= 0:
         return 0.0
     d = (a.mean() - b.mean()) / np.sqrt(sp2)
-    J = 1.0 - 3.0 / (4.0 * (na + nb) - 9.0)      # 소표본 보정계수
+    J = 1.0 - 3.0 / (4.0 * (na + nb) - 9.0)      # small-sample factor
     return float(J * d)
 
 
 def effect_size(a, b, n_boot: int = _DEF_BOOT, seed: int = 0) -> Dict:
-    """Hedges' g 와 부트스트랩 95% CI (두 독립 표본)."""
+    """Hedges' g with a bootstrap 95% CI (two independent
+    samples)."""
     a, b = _arr(a), _arr(b)
     rng = np.random.default_rng(seed)
     ia = rng.integers(0, len(a), size=(n_boot, len(a)))
@@ -60,7 +66,8 @@ def effect_size(a, b, n_boot: int = _DEF_BOOT, seed: int = 0) -> Dict:
 
 
 def effect_size_paired(d, n_boot: int = _DEF_BOOT, seed: int = 0) -> Dict:
-    """짝지은 차분 d 의 표준화 효과크기 dz = mean(d)/sd(d) + 부트스트랩 CI."""
+    """Standardised paired effect size dz = mean(d)/sd(d) with a
+    bootstrap CI."""
     d = _arr(d)
     d = d[np.isfinite(d)]
     sd = d.std(ddof=1) if len(d) > 1 else 0.0
@@ -72,9 +79,9 @@ def effect_size_paired(d, n_boot: int = _DEF_BOOT, seed: int = 0) -> Dict:
     ok = sds > 0
     dzs = np.where(ok, boots.mean(axis=1) / np.where(ok, sds, 1.0), np.nan)
     dzs = dzs[np.isfinite(dzs)]
-    # 부트스트랩 재표집에서 표준편차가 우연히 0 에 가까워지면 dz 가 발산한다
-    # (표본이 작을수록 흔하다). CI 표기가 무의미해지지 않도록 유계로 자른다 —
-    # |dz| = 50 은 실질적으로 '완전 분리' 이므로 해석상 손실이 없다.
+    # Bootstrap resamples with near-zero SDs make dz diverge (common
+    # for small n); clip so CIs stay meaningful — |dz| = 50 already
+    # means "complete separation", so nothing interpretive is lost.
     dzs = np.clip(dzs, -50.0, 50.0)
     lo, hi = (np.percentile(dzs, [2.5, 97.5]) if dzs.size else (np.nan, np.nan))
     return {"dz": dz, "ci": [float(lo), float(hi)],
@@ -83,16 +90,18 @@ def effect_size_paired(d, n_boot: int = _DEF_BOOT, seed: int = 0) -> Dict:
             "n": int(len(d))}
 
 
-# ================================================================ 순열 검정
+# ================================================================ Permutation tests
 def perm_test(a, b, paired: bool = False, n_perm: int = _DEF_PERM,
               seed: int = 0, alternative: str = "two-sided") -> Dict:
     """
-    분포무가정 검정.
+    Distribution-free test.
 
-    paired=False : 두 표본을 합친 뒤 라벨을 무작위 재배정 (독립 두 표본).
-    paired=True  : 시드별 차분의 **부호를 무작위로 뒤집는다** (교환가능성 가정).
-                   짝지은 설계에서는 이쪽이 검정력이 훨씬 높다.
-    alternative ∈ {"two-sided", "greater", "less"}  — a 가 b 보다 크다/작다.
+    paired=False : pool both samples and randomly reassign labels
+                   (two independent samples).
+    paired=True  : randomly **flip the signs** of per-seed
+                   differences (exchangeability); far more powerful
+                   in paired designs.
+    alternative in {"two-sided", "greater", "less"} — a vs b.
     """
     a, b = _arr(a), _arr(b)
     rng = np.random.default_rng(seed)
@@ -101,8 +110,9 @@ def perm_test(a, b, paired: bool = False, n_perm: int = _DEF_PERM,
         d = a - b
         d = d[np.isfinite(d)]
         if len(d) == 0:
-            # 유효 표본이 전혀 없음 — 검정 불가. 빈 슬라이스 평균 경고를 내지
-            # 않고 명시적으로 '정보 없음'(p=1)을 반환한다.
+            # No valid samples — untestable. Return an explicit
+            # "no information" (p = 1) instead of an empty-slice
+            # warning.
             return {"observed": float("nan"), "p": 1.0, "n_perm": int(n_perm),
                     "alternative": alternative}
         obs = float(d.mean())
@@ -122,7 +132,8 @@ def perm_test(a, b, paired: bool = False, n_perm: int = _DEF_PERM,
             p = rng.permutation(pool)
             null[k] = p[:na].mean() - p[na:].mean()
 
-    # +1 보정(Phipson & Smyth): p 가 정확히 0 이 되지 않도록 관측치를 포함한다.
+    # +1 correction (Phipson & Smyth): include the observation so p
+    # is never exactly 0.
     if alternative == "greater":
         p = (np.sum(null >= obs) + 1) / (n_perm + 1)
     elif alternative == "less":
@@ -135,18 +146,19 @@ def perm_test(a, b, paired: bool = False, n_perm: int = _DEF_PERM,
 
 def one_sample_perm(x, mu0: float = 0.0, n_perm: int = _DEF_PERM,
                     seed: int = 0, alternative: str = "two-sided") -> Dict:
-    """단일표본 부호뒤집기 검정 (상수 mu0 대비)."""
+    """One-sample sign-flip test against the constant mu0."""
     x = _arr(x)
     x = x[np.isfinite(x)]
     return perm_test(x, np.full_like(x, mu0), paired=True,
                      n_perm=n_perm, seed=seed, alternative=alternative)
 
 
-# ================================================================ 다중비교
+# ================================================================ Multiple comparisons
 def holm(pvals: Sequence[float]) -> List[float]:
     """
-    Holm-Bonferroni 단계적 보정 (가족오류율 FWER 통제). **확증 가설군**에 쓴다.
-    반환: 입력 순서에 대응하는 보정된 p 값.
+    Holm-Bonferroni step-down correction (FWER control) for the
+    **confirmatory family**. Returns adjusted p values in input
+    order.
     """
     p = np.asarray(pvals, dtype=float)
     m = len(p)
@@ -155,14 +167,14 @@ def holm(pvals: Sequence[float]) -> List[float]:
     running = 0.0
     for rank, i in enumerate(order):
         val = (m - rank) * p[i]
-        running = max(running, val)          # 단조성 강제
+        running = max(running, val)          # enforce monotonicity
         adj[i] = min(running, 1.0)
     return [float(v) for v in adj]
 
 
 def bh_fdr(pvals: Sequence[float]) -> List[float]:
     """
-    Benjamini-Hochberg FDR 보정. **탐색 가설군**에 쓴다.
+    Benjamini-Hochberg FDR correction for **exploratory tests**.
     """
     p = np.asarray(pvals, dtype=float)
     m = len(p)
@@ -172,15 +184,15 @@ def bh_fdr(pvals: Sequence[float]) -> List[float]:
     for rank in range(m - 1, -1, -1):
         i = order[rank]
         val = m * p[i] / (rank + 1)
-        running = min(running, val)          # 역방향 단조성
+        running = min(running, val)          # reverse monotonicity
         adj[i] = min(running, 1.0)
     return [float(v) for v in adj]
 
 
-# ================================================================ 부트스트랩
+# ================================================================ Bootstrap
 def boot_ci(x, stat: Callable = np.mean, n_boot: int = _DEF_BOOT,
             seed: int = 0) -> Dict:
-    """임의 통계량의 부트스트랩 백분위 95% CI."""
+    """Bootstrap percentile 95% CI of an arbitrary statistic."""
     x = _arr(x)
     x = x[np.isfinite(x)]
     rng = np.random.default_rng(seed)
@@ -192,7 +204,8 @@ def boot_ci(x, stat: Callable = np.mean, n_boot: int = _DEF_BOOT,
 
 
 def boot_mean_ci(x, n_boot: int = _DEF_BOOT, seed: int = 0) -> Dict:
-    """평균의 부트스트랩 CI (막대그림 오차막대용). 벡터화 경로."""
+    """Bootstrap CI of the mean (bar-chart error bars); vectorised
+    path."""
     x = _arr(x)
     x = x[np.isfinite(x)]
     if len(x) == 0:
@@ -205,7 +218,8 @@ def boot_mean_ci(x, n_boot: int = _DEF_BOOT, seed: int = 0) -> Dict:
 
 
 def wilson_ci(k: int, n: int, z: float = 1.96) -> Dict:
-    """이항 비율의 Wilson 95% CI (정확도가 정규 근사보다 훨씬 낫다)."""
+    """Wilson 95% CI for a binomial proportion (far more accurate
+    than the normal approximation)."""
     if n == 0:
         return {"p": np.nan, "ci": [np.nan, np.nan], "k": 0, "n": 0}
     p = k / n
@@ -219,8 +233,9 @@ def wilson_ci(k: int, n: int, z: float = 1.96) -> Dict:
 
 def corr_boot(x, y, n_boot: int = _DEF_BOOT, seed: int = 0) -> Dict:
     """
-    Pearson 상관계수와 부트스트랩 CI + 순열 p 값.
-    파라미터 복원(H6)·λ 복원(H1A)의 주 지표.
+    Pearson correlation with a bootstrap CI and a permutation p —
+    the primary metric of parameter recovery (H6) and lambda recovery
+    (H1A).
     """
     x, y = _arr(x), _arr(y)
     ok = np.isfinite(x) & np.isfinite(y)
@@ -238,7 +253,7 @@ def corr_boot(x, y, n_boot: int = _DEF_BOOT, seed: int = 0) -> Dict:
             rs.append(np.corrcoef(xa, ya)[0, 1])
     rs = np.asarray(rs)
     lo, hi = (np.percentile(rs, [2.5, 97.5]) if rs.size else (np.nan, np.nan))
-    # 순열 검정: y 를 무작위 재배열해 영분포 생성
+    # Permutation test: shuffle y to build the null
     null = np.array([np.corrcoef(x, rng.permutation(y))[0, 1]
                      for _ in range(1000)])
     p = (np.sum(np.abs(null) >= abs(r)) + 1) / (1000 + 1)
@@ -246,7 +261,8 @@ def corr_boot(x, y, n_boot: int = _DEF_BOOT, seed: int = 0) -> Dict:
 
 
 def slope_boot(x, y, n_boot: int = _DEF_BOOT, seed: int = 0) -> Dict:
-    """단순 선형회귀 기울기와 부트스트랩 CI (용량-반응 분석용)."""
+    """Simple linear-regression slope with a bootstrap CI (dose-
+    response analyses)."""
     x, y = _arr(x), _arr(y)
     ok = np.isfinite(x) & np.isfinite(y)
     x, y = x[ok], y[ok]
@@ -264,16 +280,16 @@ def slope_boot(x, y, n_boot: int = _DEF_BOOT, seed: int = 0) -> Dict:
     return {"slope": b, "ci": [float(lo), float(hi)], "n": n}
 
 
-# ================================================================ 포맷
+# ================================================================ Formatting
 def fmt_es(es: Dict, key: str = "g") -> str:
-    """효과크기 dict → 로그 문자열."""
+    """Effect-size dict -> log string."""
     v = es.get(key, np.nan)
     ci = es.get("ci", [np.nan, np.nan])
     return f"{key}={v:.3f} [{ci[0]:.3f}, {ci[1]:.3f}]"
 
 
 def fmt_p(p: float) -> str:
-    """p 값 → 로그 문자열 (매우 작으면 상한 표기)."""
+    """p value -> log string (upper-bound notation when tiny)."""
     if not np.isfinite(p):
         return "p=NA"
     return "p<1e-4" if p < 1e-4 else f"p={p:.4g}"

@@ -2,79 +2,102 @@
 experiments.h2_protection
 =========================
 
-**H2 — 착취자로부터 HalloReg 는 자신의 보수를 잘 보호할 수 있는가?**
-**H2A — HalloReg 는 착취자와 noisy TFT 를 구분할 수 있는가?**
+**H2 — can HalloReg protect its own payoff against exploiters?**
+**H2A — can HalloReg tell an exploiter from a noisy TFT?**
 
-────────────────────────────────────────────────────────────────────────
-H2 설계 — 자기보호
-────────────────────────────────────────────────────────────────────────
-주 상대: ALLD (의도적 착취자, 실행잡음 0).
+H2 design — self-protection
+---------------------------
+Main opponent: ALLD (deliberate exploiter, zero execution noise).
+Two families of controls:
 
-대조군을 두 종류로 둔다.
+  (1) **Fixed-lambda empathic agents** (lambda in {0.0, 0.4, 0.8}) —
+      the control that exhibits the original paper's limitation
+      directly: higher lambda weights the partner's welfare, so the
+      agent keeps cooperating with an exploiter and loses payoff.
+      lambda = 0.4 is the reference setting of Albarracin et al. and
+      serves as the **confirmatory** control; 0.0 and 0.8 are
+      exploratory.
 
-  (1) **고정 λ 공감 에이전트** (λ ∈ {0.0, 0.4, 0.8})
-      원 논문의 한계를 그대로 보여주는 대조. λ 가 높을수록 상대 후생에 가중을
-      두므로 착취자에게 계속 협력해 보수를 잃는다. λ=0.4 는 Albarracin et al.
-      의 기준 설정이므로 **확증 대조**로, λ=0.0 과 λ=0.8 은 탐색으로 둔다.
+  (2) **Fixed strategies** (TFT, GTFT, WSLS, ALLC) — the standard
+      benchmark against ALLD, with ALLC as the **floor condition**.
 
-  (2) **고정전략** (TFT, GTFT, WSLS, ALLC)
-      ALLD 를 상대로 한 표준 벤치마크. 이 중 ALLC 는 **바닥 조건**이다.
+[The key contrast — dual-context worst case]
+Because a higher lambda is more exploitable, fixing lambda low is
+advantageous in context E — but only if one already knew the partner
+was an exploiter and tuned lambda accordingly. So every agent is
+exposed to **both contexts**,
 
-[핵심 대조 — 이중 맥락 최악값(dual-context worst case)]
-λ 가 높을수록 착취자에게 취약해지므로, λ 를 낮게 고정하면 맥락 E 에서는 유리하다.
-그러나 그 유리함은 **상대가 착취자라는 것을 미리 알고 λ 를 맞춰 두었을 때만**
-의미가 있다. 따라서 각 에이전트를 **두 맥락**에 노출한다.
+    context E : ALLD (exploiter)          — self-protection needed
+    context C : GTFT (generous cooperator) — mutual cooperation needed
 
-    맥락 E : ALLD (착취자)        — 자기보호가 필요
-    맥락 C : GTFT (관대한 협력자) — 상호협력 구축이 필요
+and the comparison is on the **worst-context payoff**
+min{mu_E, mu_C}.
 
-그리고 각 에이전트의 **최악 맥락 보수** min{ μ_E, μ_C } 를 비교한다.
+[Choice of confirmatory controls — fixed in advance, with reasons]
+The confirmatory controls are the empathic agents of Albarracin et
+al. (lambda = 0.4, 0.8) and the fixed strategies. lambda = 0.0 is
+**exploratory**, not confirmatory, because:
 
-[확증 대조군의 선정 — 사전에 고정한 결정과 그 근거]
-확증 검정의 대조는 **Albarracin et al. 의 공감 에이전트**(λ = 0.4, 0.8)와
-고정전략이다. λ = 0.0 조건은 확증이 아니라 **탐색**으로 둔다. 이유:
+  - lambda = 0.0 is a purely self-interested active-inference agent
+    with no empathy weighting — a **different model**, not the
+    empathic model the original paper proposed, hence an
+    inappropriate control for this hypothesis.
+  - More importantly, lambda = 0.0 is **optimal by definition** in
+    the exploiter context (the only force sustaining cooperation is
+    removed). Taking a control that is optimal by construction as the
+    confirmatory bar would fail every adaptive model.
 
-  · λ = 0.0 은 '공감 가중이 0 인 순수 자기이익 능동추론 에이전트' 로,
-    원 논문이 제안한 공감 모형이 아니라 **다른 모형**이다. 본 가설
-    ("HalloReg 는 착취자로부터 보수를 보호하는가")의 대조로 적절하지 않다.
-  · 더 중요하게, λ = 0.0 은 착취자 맥락에서 **정의상 최적**이다(공감항이 없으므로
-    배신을 억제할 유일한 힘이 사라진다). 사후에 최적으로 판명된 대조를 확증
-    기준으로 삼으면 어떤 적응 모형도 통과할 수 없다.
+**So that this decision cannot hide an unfavourable result**, the
+lambda = 0.0 control is always **reported explicitly** as an
+exploratory result. In this implementation the lambda = 0.0 agent in
+fact achieves high cooperation in context C as well, because of
+**reciprocity propagation inside the rollout** (the planner uses
+rho-hat to compute that cooperating now is returned next round). In
+other words the instrumental value of cooperation is carried by the
+EFE, not by lambda, and lambda retains its construct meaning as the
+weight placed on the partner's welfare as such. This is by design,
+not a defect — but it forbids any overclaim of the form "cooperation
+is impossible without empathy".
 
-**단, 이 결정이 불리한 결과를 감추는 데 쓰이지 않도록** λ = 0.0 대조는 반드시
-탐색 결과로 **명시 보고**한다. 실제로 본 구현에서는 λ = 0.0 에이전트가 맥락 C
-에서도 높은 협력을 달성하는데, 이는 **rollout 안의 호혜성 전파**(planner 가 ρ̂ 로
-"내가 협력하면 다음 라운드에 되돌아온다"를 계산) 때문이다. 즉 이 모형에서
-협력의 도구적 가치는 λ 가 아니라 EFE 가 담당하며, λ 는 '상대 후생 자체에 두는
-가중' 이라는 구성개념을 유지한다. 이 사실은 결함이 아니라 설계 의도이지만,
-"공감 없이는 협력이 불가능하다" 는 식의 과잉 주장을 금지한다.
+  - Confirmatory H2-1 : context-E payoff — HalloReg > fixed
+                        lambda = 0.4 (the original paper's setting).
+  - Confirmatory H2-2 : context-E payoff — HalloReg > ALLC (floor).
+  - Confirmatory H2-3 : dual-context worst case — HalloReg > fixed
+                        lambda = 0.4.
+  - Confirmatory H2-4 : dual-context worst case — HalloReg > fixed
+                        lambda = 0.8.
+  - Exploratory       : the **lambda = 0.0 control**, context-wise
+                        divergence of the lambda trajectory, the
+                        fixed-strategy benchmarks.
 
-  · 확증 H2-1 : 맥락 E 보수 — HalloReg > 고정 λ=0.4 (원 논문 기준 설정).
-  · 확증 H2-2 : 맥락 E 보수 — HalloReg > ALLC (바닥 조건).
-  · 확증 H2-3 : 이중 맥락 최악값 — HalloReg > 고정 λ=0.4.
-  · 확증 H2-4 : 이중 맥락 최악값 — HalloReg > 고정 λ=0.8.
-  · 탐색      : **λ=0.0 대조**, λ 궤적의 맥락별 분기, 고정전략 벤치마크.
+H2A design — exploiter vs noisy TFT
+-----------------------------------
+Both opponents defect often; they differ in the *cause*:
 
-────────────────────────────────────────────────────────────────────────
-H2A 설계 — 착취자 vs noisy TFT 구분
-────────────────────────────────────────────────────────────────────────
-두 상대는 **둘 다 배신을 자주 낸다**. 차이는 배신의 *원인* 이다.
+  - ALLD      : the cause is a trait (very low alpha); defection is
+                deterministic, so beta-hat is high.
+  - noisy TFT : the cause is execution noise (error = 0.20);
+                defection is stochastic, so beta-hat is low.
 
-  · ALLD        : 형질(α 매우 낮음)이 원인. 배신이 결정론적 → β̂ 높음.
-  · noisy TFT   : 실행잡음(error=0.20)이 원인. 배신이 확률적 → β̂ 낮음.
+For this distinction to hold, the inference must **separate the alpha
+axis (trait) from the beta axis (precision)**, so the index has two
+levels:
 
-이 구분이 성립하려면 추론기가 **α 축(형질)과 β 축(정밀도)을 분리**해야 한다.
-그래서 판별 지표를 두 층위로 둔다.
+  (i)  **Representational** : discrimination in theta-hat space,
+       classifying (alpha-hat, beta-hat) with a half-split
+       cross-validation. Accuracy > 0.5 means the distinction exists
+       at the level of representation.
+  (ii) **Behavioural** : the difference in final lambda and in
+       cooperation rate. A distinction confined to representation
+       without behavioural consequence has no functional meaning:
+       lambda should recover against a noisy TFT and stay suppressed
+       against ALLD.
 
-  (i)  **표상 수준** : θ̂ 공간에서의 판별. 두 조건의 (α̂, β̂) 를 시드 반분
-       교차검증으로 분류한다. 정확도 > 0.5 이면 표상 수준에서 구분된 것이다.
-  (ii) **행동 수준** : λ 최종값과 협력률의 차이. 구분이 표상에만 머무르고
-       행동으로 이어지지 않으면 기능적 의미가 없다. noisy TFT 에서는 λ 가
-       회복되어야 하고, ALLD 에서는 억제되어야 한다.
-
-  · 확증 H2A-1 : θ̂ 판별 정확도 > 0.5.
-  · 확증 H2A-2 : λ_final(noisy TFT) > λ_final(ALLD)  — 행동 수준 구분.
-  · 탐색       : β̂ 차이, α̂ 차이, 후반 협력률 차이.
+  - Confirmatory H2A-1 : theta-hat discrimination accuracy > 0.5.
+  - Confirmatory H2A-2 : lambda_final(noisy TFT) >
+                         lambda_final(ALLD) — behavioural level.
+  - Exploratory        : beta-hat, alpha-hat and late cooperation
+                         differences.
 """
 
 from __future__ import annotations
@@ -94,31 +117,34 @@ from .h1_intent import DiagGaussianClassifier
 
 LOGGER = get_logger("HalloReg.H2")
 
-#: 고정 λ 대조군의 λ 격자
+#: Lambda grid of the fixed-lambda controls
 FIXED_LAMS = (0.0, 0.4, 0.8)
-#: 확증 대조로 삼는 기준 λ (Albarracin et al. 의 기준 설정)
+#: The reference lambda used as the confirmatory control
+#: (the setting of Albarracin et al.)
 REFERENCE_LAM = 0.4
-#: 고정전략 벤치마크
+#: Fixed-strategy benchmarks
 BENCH = ("tft", "gtft", "wsls", "allc")
-#: 이중 맥락 — E(착취) / C(협력)
+#: Dual contexts — E (exploitation) / C (cooperation)
 CONTEXTS = {"E": {"kind": "alld", "error": 0.0},
             "C": {"kind": "gtft", "error": 0.0}}
-CONTEXT_LABEL = {"E": "맥락 E — 착취자(ALLD)", "C": "맥락 C — 협력자(GTFT)"}
-#: 한글 표기
+CONTEXT_LABEL = {"E": "context E — exploiter (ALLD)",
+                 "C": "context C — cooperator (GTFT)"}
+#: Display labels
 COND_LABEL = {"halloreg": "HalloReg", "tft": "TFT", "gtft": "GTFT",
               "wsls": "WSLS", "allc": "ALLC"}
 
 
 def _cond_label(c: str) -> str:
-    """조건 키 → 표시 이름."""
+    """Condition key -> display name."""
     if c.startswith("fixed_lam"):
-        return "고정 λ=" + c.replace("fixed_lam", "")
+        return "fixed lambda=" + c.replace("fixed_lam", "")
     return COND_LABEL.get(c, c)
 
 
 # ==================================================================== H2
 def run_protection(cfg: Config, reg: Registry) -> dict:
-    """H2 — 착취자 상대 자기보호 + 이중 맥락 최악값."""
+    """H2 — self-protection against exploiters and the dual-context
+    worst case."""
     hk = cfg.halloreg_kwargs()
     ek = {"n_particles": cfg.n_particles, "planning_horizon": cfg.horizon}
 
@@ -141,12 +167,13 @@ def run_protection(cfg: Config, reg: Registry) -> dict:
                     "agent": a, "opponent": o,
                     "env_err_agent": cfg.env_error,
                     "env_err_opponent": cfg.env_error,
-                    # 공통난수(CRN): 시드가 같으면 조건 간 잡음 실현이 동일 →
-                    # 조건 차이가 잡음 우연이 아니라 정책 차이에서만 온다.
+                    # Common random numbers: identical noise
+                    # realisations across conditions at the same seed, so
+                    # differences come only from policy, not luck.
                     "noise_seed": 700_000 + sd * 101 + gi * 7})
 
     res = run_many(specs, n_rounds=cfg.rounds, n_jobs=cfg.jobs,
-                   desc="H2 이중맥락 다이애드")
+                   desc="H2 dual-context dyads")
 
     names = [c for c, _ in conditions]
     payoff = {g: {} for g in CONTEXTS}
@@ -167,25 +194,28 @@ def run_protection(cfg: Config, reg: Registry) -> dict:
 
     ref = f"fixed_lam{REFERENCE_LAM:.1f}"
 
-    # ---- 확증 H2-1: 맥락 E 에서 기준 λ 대조 대비 ----
+    # ---- Confirmatory H2-1: context E vs the reference control ----
     t1 = perm_test(payoff["E"]["halloreg"], payoff["E"][ref], paired=True,
                    alternative="greater")
     e1 = effect_size_paired(payoff["E"]["halloreg"] - payoff["E"][ref])
-    reg.confirm("H2", f"착취자 상대 보수: HalloReg > 고정 λ={REFERENCE_LAM}",
+    reg.confirm("H2", f"payoff vs exploiter: HalloReg > fixed "
+                f"lambda={REFERENCE_LAM}",
                 t1["p"], direction_ok=bool(t1["observed"] > 0),
                 effect=f"Δ={t1['observed']:+.3f}, {fmt_es(e1, 'dz')}")
 
-    # ---- 확증 H2-2: 바닥 조건 ----
+    # ---- Confirmatory H2-2: floor condition ----
     t2 = perm_test(payoff["E"]["halloreg"], payoff["E"]["allc"], paired=True,
                    alternative="greater")
     e2 = effect_size_paired(payoff["E"]["halloreg"] - payoff["E"]["allc"])
-    reg.confirm("H2", "착취자 상대 보수: HalloReg > ALLC (바닥 조건)", t2["p"],
+    reg.confirm("H2", "payoff vs exploiter: HalloReg > ALLC (floor)",
+                t2["p"],
                 direction_ok=bool(t2["observed"] > 0),
                 effect=f"Δ={t2['observed']:+.3f}, {fmt_es(e2, 'dz')}")
 
-    # ---- 확증 H2-3/H2-4: 이중 맥락 최악값 — 공감 대조군(λ>0) 대비 ----
-    # λ=0.0 은 공감 모형이 아니라 순수 자기이익 모형이므로 탐색으로 분리한다
-    # (모듈 문서의 '확증 대조군 선정' 참조).
+    # ---- Confirmatory H2-3/H2-4: dual-context worst case, against
+    # the empathic controls (lambda > 0). lambda = 0.0 is a purely
+    # self-interested model, not an empathic one, so it is separated
+    # out as exploratory (see the module docstring).
     worst = {c: np.minimum(payoff["E"][c], payoff["C"][c]) for c in names}
     for lam in FIXED_LAMS:
         key = f"fixed_lam{lam:.1f}"
@@ -193,39 +223,44 @@ def run_protection(cfg: Config, reg: Registry) -> dict:
                        alternative="greater")
         e3 = effect_size_paired(worst["halloreg"] - worst[key])
         if lam > 0.0:
-            reg.confirm("H2", f"이중맥락 최악값: HalloReg > 고정 λ={lam}", t3["p"],
+            reg.confirm("H2", f"dual-context worst case: HalloReg > "
+                        f"fixed lambda={lam}", t3["p"],
                         direction_ok=bool(t3["observed"] > 0),
                         effect=f"Δ={t3['observed']:+.3f}, {fmt_es(e3, 'dz')}")
         else:
-            reg.explore("H2", f"이중맥락 최악값: HalloReg vs 고정 λ={lam} "
-                              f"(순수 자기이익 모형 — 착취자 맥락 정의상 최적)",
+            reg.explore("H2", f"dual-context worst case: HalloReg vs "
+                              f"fixed lambda={lam} (purely self-interested "
+                              f"model — optimal by definition vs an "
+                              f"exploiter)",
                         t3["p"],
                         effect=f"Δ={t3['observed']:+.3f}, {fmt_es(e3, 'dz')}")
-    # 맥락 E 에서의 λ=0 대조도 명시 보고 (감추지 않는다)
+    # The lambda = 0 control in context E is reported explicitly too
+    # (nothing is hidden).
     t0 = perm_test(payoff["E"]["halloreg"], payoff["E"]["fixed_lam0.0"],
                    paired=True)
-    reg.explore("H2", "착취자 상대 보수: HalloReg vs 고정 λ=0.0 "
-                      "(공감 없는 상한 기준)", t0["p"],
+    reg.explore("H2", "payoff vs exploiter: HalloReg vs fixed "
+                      "lambda=0.0 (empathy-free ceiling)", t0["p"],
                 effect=f"Δ={t0['observed']:+.3f}")
 
-    # ---- 탐색: 고정전략 벤치마크 (두 맥락) ----
+    # ---- Exploratory: fixed-strategy benchmarks in both contexts ----
     for gkey in CONTEXTS:
         for b in BENCH:
             tb = perm_test(payoff[gkey]["halloreg"], payoff[gkey][b],
                            paired=True)
-            reg.explore("H2", f"[{CONTEXT_LABEL[gkey]}] 보수: HalloReg vs "
-                              f"{COND_LABEL[b]}", tb["p"],
+            reg.explore("H2", f"[{CONTEXT_LABEL[gkey]}] payoff: HalloReg "
+                              f"vs {COND_LABEL[b]}", tb["p"],
                         effect=f"Δ={tb['observed']:+.3f}")
 
-    # ---- 탐색: λ 하강/상승 (초기 1/4 대비 후기 1/4) ----
+    # ---- Exploratory: lambda fall/rise (first vs last quarter) ----
     q = max(cfg.rounds // 4, 1)
     for gkey, direction in (("E", "greater"), ("C", "less")):
         tr = lam_traces[(gkey, "halloreg")]
         drop = tr[:, :q].mean(axis=1) - tr[:, -q:].mean(axis=1)
         td = one_sample_perm(drop, 0.0, alternative=direction)
         cd = boot_mean_ci(drop)
-        arrow = "하강" if gkey == "E" else "상승"
-        reg.explore("H2", f"[{CONTEXT_LABEL[gkey]}] λ {arrow} (초기−후기)",
+        arrow = "fall" if gkey == "E" else "rise"
+        reg.explore("H2", f"[{CONTEXT_LABEL[gkey]}] lambda {arrow} "
+                          f"(early - late)",
                     td["p"],
                     effect=f"Δλ={cd['mean']:+.3f} "
                            f"[{cd['ci'][0]:+.3f}, {cd['ci'][1]:+.3f}]")
@@ -236,7 +271,8 @@ def run_protection(cfg: Config, reg: Registry) -> dict:
 
 # ==================================================================== H2A
 def run_discrimination(cfg: Config, reg: Registry) -> dict:
-    """H2A — 의도적 착취자 vs 잡음 있는 협력자 구분."""
+    """H2A — telling a deliberate exploiter from a noisy
+    cooperator."""
     hk = cfg.halloreg_kwargs()
     conds = [("exploiter", {"type": "strategy", "kind": "alld", "error": 0.0}),
              ("noisy_tft", {"type": "strategy", "kind": "tft", "error": 0.20})]
@@ -249,21 +285,23 @@ def run_discrimination(cfg: Config, reg: Registry) -> dict:
             specs.append({
                 "agent": {"type": "halloreg", "seed": 10_000 + sd * 37, **hk},
                 "opponent": o,
-                # 환경 잡음은 0 으로 둔다. 여기서 구분해야 할 잡음은
-                # **상대 내부의 실행잡음**이므로, 환경 잡음이 겹치면 두 조건 모두
-                # 잡음을 갖게 되어 대조가 흐려진다.
+                # Environment noise is 0: the noise to be discriminated
+                # is the opponent's **internal execution noise**, and
+                # adding environment noise would give both conditions
+                # noise and blur the contrast.
                 "env_err_agent": 0.0, "env_err_opponent": 0.0,
                 "noise_seed": 710_000 + sd * 103})
 
     res = run_many(specs, n_rounds=cfg.rounds, n_jobs=cfg.jobs,
-                   desc="H2A 판별 다이애드")
+                   desc="H2A discrimination dyads")
 
     feats = ("alpha", "beta", "rho", "lambda_j")
     X = {c: np.zeros((cfg.seeds, len(feats))) for c, _ in conds}
     lam_final = {c: np.zeros(cfg.seeds) for c, _ in conds}
     coop_late = {c: np.zeros(cfg.seeds) for c, _ in conds}
     lam_traces = {c: np.zeros((cfg.seeds, cfg.rounds)) for c, _ in conds}
-    # eval_from 이 지정되면 '학습 후' 창을 그것으로 (기본: 후반부).
+    # If eval_from is set it defines the 'post-learning' window
+    # (default: the second half).
     half = (int(cfg.eval_from) if getattr(cfg, "eval_from", 0) > 0
             else cfg.rounds // 2)
 
@@ -278,7 +316,8 @@ def run_discrimination(cfg: Config, reg: Registry) -> dict:
             coop_late[cname][sd] = float(
                 np.mean(r["hist"]["my_act"][half:] == 0))
 
-    # ---- 확증 H2A-1: θ̂ 판별 정확도 > 0.5 (시드 반분 교차검증) ----
+    # ---- Confirmatory H2A-1: theta-hat accuracy > 0.5
+    # (half-split cross-validation) ----
     n_cal = cfg.seeds // 2
     names = [c for c, _ in conds]
     Xc = np.vstack([X[c][:n_cal] for c in names])
@@ -295,28 +334,32 @@ def run_discrimination(cfg: Config, reg: Registry) -> dict:
     rng = np.random.default_rng(21)
     null = np.array([np.mean(rng.permutation(pred) == yt) for _ in range(5000)])
     p_acc = (np.sum(null >= acc) + 1) / (5000 + 1)
-    reg.confirm("H2A", "θ̂ 판별 정확도 > 우연(0.5)", p_acc,
+    reg.confirm("H2A", "theta-hat discrimination accuracy > chance "
+                "(0.5)", p_acc,
                 direction_ok=bool(acc > 0.5),
                 effect=f"acc={acc:.3f} (n={len(yt)})",
                 detail={"accuracy": acc})
 
-    # ---- 확증 H2A-2: 행동 수준 구분 (λ_final) ----
+    # ---- Confirmatory H2A-2: behavioural discrimination (final
+    # lambda) ----
     t2 = perm_test(lam_final["noisy_tft"], lam_final["exploiter"],
                    paired=True, alternative="greater")
     e2 = effect_size_paired(lam_final["noisy_tft"] - lam_final["exploiter"])
-    reg.confirm("H2A", "λ_final: noisy TFT > 착취자", t2["p"],
+    reg.confirm("H2A", "lambda_final: noisy TFT > exploiter", t2["p"],
                 direction_ok=bool(t2["observed"] > 0),
                 effect=f"Δλ={t2['observed']:+.3f}, {fmt_es(e2, 'dz')}")
 
-    # ---- 탐색: 축별 차이 및 후반 협력률 ----
+    # ---- Exploratory: per-axis differences and late cooperation ----
     for d, ax in enumerate(feats):
         tt = perm_test(X["noisy_tft"][:, d], X["exploiter"][:, d], paired=True)
         ee = effect_size(X["noisy_tft"][:, d], X["exploiter"][:, d])
-        reg.explore("H2A", f"θ̂ 축 {ax}: noisy TFT vs 착취자", tt["p"],
+        reg.explore("H2A", f"theta-hat axis {ax}: noisy TFT vs "
+                    f"exploiter", tt["p"],
                     effect=f"Δ={tt['observed']:+.3f}, {fmt_es(ee)}")
     tc = perm_test(coop_late["noisy_tft"], coop_late["exploiter"], paired=True,
                    alternative="greater")
-    reg.explore("H2A", "후반 협력률: noisy TFT > 착취자", tc["p"],
+    reg.explore("H2A", "late cooperation rate: noisy TFT > exploiter",
+                tc["p"],
                 effect=f"Δ={tc['observed']:+.3f}")
 
     return {"features": list(feats), "theta": X, "lam_final": lam_final,
@@ -324,9 +367,10 @@ def run_discrimination(cfg: Config, reg: Registry) -> dict:
             "accuracy": acc, "conditions": names}
 
 
-# ==================================================================== 실행
+# =================================================================== Run
 def run(cfg: Config, reg: Registry) -> dict:
-    LOGGER.info("[H2/H2A] 착취자 방어와 잡음-의도 판별")
+    LOGGER.info("[H2/H2A] defence against exploiters and "
+                "noise-intent discrimination")
     a = run_protection(cfg, reg)
     b = run_discrimination(cfg, reg)
     out = {"protection": a, "discrimination": b}
@@ -335,7 +379,7 @@ def run(cfg: Config, reg: Registry) -> dict:
     return out
 
 
-# ==================================================================== 시각화
+# ============================================================== Figures
 def _plot(cfg: Config, a: dict, b: dict) -> None:
     import matplotlib.pyplot as plt
     from .common import annotate_n, band_plot, bar_with_ci
@@ -349,11 +393,12 @@ def _plot(cfg: Config, a: dict, b: dict) -> None:
               else ("#8C8C8C" if c.startswith("fixed") else "#4C72B0")
               for c in conds]
 
-    # (a) 맥락별 평균보수
+    # (a) mean payoff per context
     ax = fig.add_subplot(gs[0, 0])
     x = np.arange(len(conds)); w = 0.38
-    for off, gkey, col, lab in ((-w / 2, "E", "#937860", "맥락 E — 착취자"),
-                                (+w / 2, "C", "#55A868", "맥락 C — 협력자")):
+    for off, gkey, col, lab in (
+            (-w / 2, "E", "#937860", "context E — exploiter"),
+            (+w / 2, "C", "#55A868", "context C — cooperator")):
         vals = [a["payoff"][gkey][c].mean() for c in conds]
         errs = [boot_mean_ci(a["payoff"][gkey][c])["ci"] for c in conds]
         lo = [v - e[0] for v, e in zip(vals, errs)]
@@ -362,59 +407,63 @@ def _plot(cfg: Config, a: dict, b: dict) -> None:
                label=lab, alpha=0.9)
     ax.set_xticks(x); ax.set_xticklabels(labels, rotation=40, ha="right",
                                          fontsize=7)
-    ax.set_ylabel("라운드당 평균보수")
-    ax.set_title("(a) H2 — 맥락별 보수")
+    ax.set_ylabel("mean payoff per round")
+    ax.set_title("(a) H2 — payoff by context")
     ax.legend(fontsize=7); annotate_n(ax, cfg.seeds)
 
-    # (b) 이중 맥락 최악값 — 핵심 대조
+    # (b) dual-context worst case — the key contrast
     ax = fig.add_subplot(gs[0, 1])
     means = [a["worst"][c].mean() for c in conds]
     cis = [boot_mean_ci(a["worst"][c])["ci"] for c in conds]
     bar_with_ci(ax, labels, means, cis, colors=colors,
-                ylabel="min{맥락 E, 맥락 C} 보수", rotate=40)
-    ax.set_title("(b) 이중 맥락 최악값\n"
-                 "어떤 고정 λ 도 두 맥락을 동시에 만족시키지 못한다")
+                ylabel="min{context E, context C} payoff", rotate=40)
+    ax.set_title("(b) dual-context worst case\n"
+                 "no fixed lambda satisfies both contexts at once")
     annotate_n(ax, cfg.seeds)
 
-    # (c) 맥락 E 의 λ 궤적 (HalloReg vs 고정 λ)
+    # (c) lambda trajectories by context (HalloReg vs fixed lambda)
     ax = fig.add_subplot(gs[0, 2])
     band_plot(ax, a["lam_traces"][("E", "halloreg")], color="#937860",
-              label="HalloReg — 맥락 E")
+              label="HalloReg — context E")
     band_plot(ax, a["lam_traces"][("C", "halloreg")], color="#55A868",
-              label="HalloReg — 맥락 C")
+              label="HalloReg — context C")
     for lam in FIXED_LAMS:
         ax.axhline(lam, color="#BBBBBB", ls=":", lw=1)
-    ax.text(1, FIXED_LAMS[-1] + 0.02, "고정 λ 대조 수준", fontsize=6.5,
+    ax.text(1, FIXED_LAMS[-1] + 0.02, "fixed-lambda control levels",
+            fontsize=6.5,
             color="#888888")
-    ax.set_xlabel("라운드"); ax.set_ylabel("공감 가중 λ")
+    ax.set_xlabel("round"); ax.set_ylabel("empathy weight lambda")
     ax.set_ylim(-0.03, 1.03)
-    ax.set_title("(c) λ 의 맥락 의존적 분기")
+    ax.set_title("(c) context-dependent divergence of lambda")
     ax.legend(fontsize=7); annotate_n(ax, cfg.seeds)
 
-    # (d) H2A — θ̂ 공간 산점 (α̂ × β̂)
+    # (d) H2A — theta-hat scatter (alpha-hat x beta-hat)
     ax = fig.add_subplot(gs[1, 0])
     fi_a = b["features"].index("alpha")
     fi_b = b["features"].index("beta")
-    for c, col, lab in (("exploiter", "#937860", "의도적 착취자(ALLD)"),
-                        ("noisy_tft", "#55A868", "잡음 TFT (err=0.20)")):
+    for c, col, lab in (
+            ("exploiter", "#937860", "deliberate exploiter (ALLD)"),
+            ("noisy_tft", "#55A868", "noisy TFT (err=0.20)")):
         ax.scatter(b["theta"][c][:, fi_a], b["theta"][c][:, fi_b],
                    s=14, alpha=0.55, color=col, label=lab)
-    ax.set_xlabel("α̂ (협력편향)"); ax.set_ylabel("β̂ (행동정밀도)")
-    ax.set_title(f"(d) H2A — θ̂ 표상 수준 판별\n정확도={b['accuracy']:.3f}")
+    ax.set_xlabel("alpha-hat (cooperation bias)")
+    ax.set_ylabel("beta-hat (action precision)")
+    ax.set_title(f"(d) H2A — representational discrimination\n"
+                 f"accuracy={b['accuracy']:.3f}")
     ax.legend(fontsize=7); annotate_n(ax, cfg.seeds)
 
-    # (e) λ 궤적 비교
+    # (e) lambda trajectory comparison
     ax = fig.add_subplot(gs[1, 1])
     band_plot(ax, b["lam_traces"]["exploiter"], color="#937860",
-              label="착취자 상대")
+              label="vs exploiter")
     band_plot(ax, b["lam_traces"]["noisy_tft"], color="#55A868",
-              label="잡음 TFT 상대")
-    ax.set_xlabel("라운드"); ax.set_ylabel("공감 가중 λ")
+              label="vs noisy TFT")
+    ax.set_xlabel("round"); ax.set_ylabel("empathy weight lambda")
     ax.set_ylim(-0.03, 1.03)
-    ax.set_title("(e) 행동 수준 판별 — λ 궤적의 분기")
+    ax.set_title("(e) behavioural discrimination — lambda divergence")
     ax.legend(fontsize=7); annotate_n(ax, cfg.seeds)
 
-    # (f) 최종 λ 와 후반 협력률
+    # (f) final lambda and late cooperation rate
     ax = fig.add_subplot(gs[1, 2])
     x = np.arange(2)
     w = 0.36
@@ -426,15 +475,17 @@ def _plot(cfg: Config, a: dict, b: dict) -> None:
           for c in ("exploiter", "noisy_tft")]
     ax.bar(x - w / 2, lm, w, yerr=[[m - c[0] for m, c in zip(lm, lc)],
                                    [c[1] - m for m, c in zip(lm, lc)]],
-           capsize=3, color="#DA8BC3", label="최종 λ", alpha=0.9)
+           capsize=3, color="#DA8BC3", label="final lambda", alpha=0.9)
     ax.bar(x + w / 2, cm, w, yerr=[[m - c[0] for m, c in zip(cm, cc)],
                                    [c[1] - m for m, c in zip(cm, cc)]],
-           capsize=3, color="#4C72B0", label="후반 협력률", alpha=0.9)
-    ax.set_xticks(x); ax.set_xticklabels(["착취자", "잡음 TFT"])
-    ax.set_ylim(0, 1.05); ax.set_ylabel("값")
-    ax.set_title("(f) 판별의 행동적 귀결")
+           capsize=3, color="#4C72B0", label="late cooperation",
+           alpha=0.9)
+    ax.set_xticks(x); ax.set_xticklabels(["exploiter", "noisy TFT"])
+    ax.set_ylim(0, 1.05); ax.set_ylabel("value")
+    ax.set_title("(f) behavioural consequence of the discrimination")
     ax.legend(fontsize=7)
 
-    fig.suptitle("H2 / H2A — 착취자로부터의 자기보호와 잡음-의도 판별",
+    fig.suptitle("H2 / H2A — self-protection against exploiters and "
+                 "noise-intent discrimination",
                  fontsize=12, y=0.98)
     save_fig(fig, cfg, "H2_protection_discrimination")

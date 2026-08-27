@@ -2,56 +2,70 @@
 experiments.h3_h4_population
 ============================
 
-**H3  — 정상 보수구조의 혼합 집단에서 HalloReg 는 다른 고정전략 대비 높은 보상을 얻는가?**
-**H3A — 같은 조건에서 집단 상호협력률 상승에 유의하게 더 많이 기여하는가?**
-**H4  — 비정상 보수구조에서 H3 와 같은가?**
-**H4A — 비정상 보수구조에서 H3A 와 같은가?**
+**H3  — in a mixed population under a stationary payoff structure,
+does HalloReg earn more than the fixed strategies?**
+**H3A — under the same conditions, does it contribute significantly
+more to raising the population's mutual cooperation rate?**
+**H4  — the same as H3 under non-stationary payoffs.**
+**H4A — the same as H3A under non-stationary payoffs.**
 
-집단 구성: {TFT=a, GTFT=b, WSLS=c, ALLC=d, ALLD=e, HalloReg=f}, 총합 30.
-"최대한 많은 조합을 시뮬레이션한다" → `ipd.population` 의 정확한 분해식으로
-**모든** 조합(C(35,5) = 324,632개, 각 유형 최소 1명 조건에서는 C(29,5) = 118,755개)
-을 평가한다. 근사가 아니라 항등식임은 population.py 의 문서를 참조.
+Population composition: {TFT, GTFT, WSLS, ALLC, ALLD, HalloReg}
+summing to 30. "Simulate as many combinations as possible" is
+realised by the exact decomposition in `ipd.population`, which
+evaluates **every** composition (C(29,5) = 118,755 with at least one
+of each type). That this is an identity rather than an approximation
+is documented in population.py.
 
-────────────────────────────────────────────────────────────────────────
-지표 1 — 보상 (H3 / H4)
-────────────────────────────────────────────────────────────────────────
-조합 n 에서 유형 i 의 라운드당 평균보수 μ_i(n). HalloReg 의 우위를 다음으로 본다.
+Index 1 — payoff (H3 / H4)
+--------------------------
+With mu_i(n) the per-round mean payoff of type i in composition n,
+HalloReg's advantage is
 
-    Δ_i(n) = μ_HalloReg(n) − μ_i(n),   i ∈ {TFT, GTFT, WSLS, ALLC, ALLD}
+    Delta_i(n) = mu_HalloReg(n) - mu_i(n),
+    i in {TFT, GTFT, WSLS, ALLC, ALLD}
 
-**중요 — ALLD 비교의 해석적 함정.** ALLD 는 협력자가 많은 조합에서 착취로 높은
-보수를 얻는다. 그러나 이는 '강건한 성과' 가 아니라 타인의 보수를 이전받은
-결과다. 따라서 ALLD 와의 비교는 확증이 아니라 **탐색**으로만 등록하고,
-확증 검정은 협력 계열 4종(TFT/GTFT/WSLS/ALLC) 에 대해서만 수행한다.
-이 사전 결정은 결과를 보기 전에 고정한다.
+**Important — the interpretive trap of the ALLD comparison.** ALLD
+earns well in cooperator-rich compositions, but by transferring
+others' payoff to itself, not by robust performance. The comparison
+against ALLD is therefore registered as **exploratory only**, and the
+confirmatory tests cover the four cooperative strategies
+(TFT/GTFT/WSLS/ALLC). This decision is fixed before seeing results.
 
-    · 확증 : 협력 계열 4종 각각에 대해 Δ_i > 0.
-      검정 단위는 **시드**다 — 조합은 서로 독립이 아니므로(같은 Π 에서 파생)
-      조합을 replicate 로 쓰면 p 값이 인공적으로 작아진다. 시드별로 독립
-      추정된 Π_s 로 전 조합 평균 Δ̄_i(s) 를 만들고, 그 시드 벡터에 부호뒤집기
-      순열검정을 적용한다.
+    - Confirmatory: Delta_i > 0 for each of the four cooperative
+      rivals. The unit of testing is the **seed**: compositions are
+      not independent (all derive from the same Pi), so using them as
+      replicates would shrink p-values artificially. Per seed, an
+      independently estimated Pi_s yields the all-composition mean
+      Delta-bar_i(s), and a sign-flip permutation test is applied to
+      that seed vector.
 
-────────────────────────────────────────────────────────────────────────
-지표 2 — 협력 기여 (H3A / H4A)
-────────────────────────────────────────────────────────────────────────
-"집단 내 상호협력률 상승에 **더 많이 기여**" 는 개체 하나의 **한계 기여도**로
-조작화한다. 조합 n 에서 HalloReg 개체 하나를 유형 i 로 치환했을 때의 CC율 변화:
+Index 2 — cooperation contribution (H3A / H4A)
+----------------------------------------------
+"Contributing more to the population's mutual cooperation" is
+operationalised as a single individual's **marginal contribution**:
+the change in CC rate when one HalloReg individual in composition n
+is replaced by type i,
 
-    Δ^CC_i(n) = CC(n) − CC(n − e_HalloReg + e_i)
+    Delta^CC_i(n) = CC(n) - CC(n - e_HalloReg + e_i)
 
-Δ^CC_i > 0 이면 그 자리에 HalloReg 가 있는 편이 유형 i 가 있는 것보다 집단
-협력을 더 끌어올린다는 뜻이다. 치환 설계를 쓰는 이유는, 단순히 "HalloReg 가
-많은 조합의 CC 가 높다" 는 상관은 조합 크기·구성 교란에 취약하기 때문이다.
-치환은 집단 크기 30 을 고정한 채 한 자리만 바꾸므로 그 교란이 제거된다.
+A positive value means having HalloReg in that slot raises population
+cooperation more than type i would. The substitution design is used
+because the simple correlation "compositions with more HalloReg have
+higher CC" is vulnerable to size and composition confounds;
+substitution holds the population at 30 and changes exactly one slot,
+removing them.
 
-    · 확증 : 협력 계열 4종 각각에 대해 Δ^CC_i > 0 (시드 단위 검정).
-    · 탐색 : ALLD 치환, 조합 공간에서의 용량-반응(HalloReg 수 vs CC율) 기울기.
+    - Confirmatory: Delta^CC_i > 0 for each of the four cooperative
+      rivals (seed-level test).
+    - Exploratory: the ALLD substitution, and the dose-response slope
+      (number of HalloReg vs CC rate) across composition space.
 
-────────────────────────────────────────────────────────────────────────
-H4 / H4A — 비정상 보수
-────────────────────────────────────────────────────────────────────────
-동일한 절차를 5개 비정상 레짐(blocks / oscillate / aba / drift / shock) 각각에서
-반복하고, 레짐 전체를 통합한 검정을 확증으로 둔다. 레짐별 결과는 탐색이다.
+H4 / H4A — non-stationary payoffs
+---------------------------------
+The same procedure is repeated in each of five non-stationary regimes
+(blocks / oscillate / aba / drift / shock); the pooled test across
+regimes is confirmatory and the per-regime results are
+exploratory.
 """
 
 from __future__ import annotations
@@ -76,28 +90,31 @@ from .common import Config, Registry, TYPE_COLORS, save_fig, save_json
 LOGGER = get_logger("HalloReg.H3H4")
 
 HR = ALL_TYPES.index("halloreg")
-#: 확증 비교 대상 — 협력 계열 4종 (ALLD 는 탐색으로만)
+#: Confirmatory comparison set — the four cooperative strategies
+#: (ALLD is exploratory only)
 COOP_RIVALS = ("tft", "gtft", "wsls", "allc")
 TOTAL_AGENTS = 30
 
 
-# ==================================================================== 핵심 계산
+# ======================================================= Core computation
 def analyze_regime(pair: dict, comps: np.ndarray) -> dict:
     """
-    한 레짐의 유형쌍 행렬로부터 조합 전체의 보수·협력 지표를 계산한다.
+    Compute payoff and cooperation indices over all compositions from
+    one regime's type-pair matrices.
 
-    시드별 Π_s / CCm_s 를 각각 쓰므로, 반환되는 배열은 (seeds,) 벡터다 —
-    통계검정의 replicate 단위가 시드가 되도록 하기 위함이다.
+    Each seed's Pi_s / CCm_s is used separately, so the returned
+    arrays are (seeds,) vectors — making the seed the replicate unit
+    of the statistical tests.
     """
     names = pair["names"]
     S = pair["Pi_raw"].shape[2]
     k = len(names)
 
-    # (seeds,) — 각 시드의 전 조합 평균 보수차 Δ_i
+    # (seeds,) — each seed's all-composition mean payoff gap
     d_pay = {n: np.zeros(S) for n in names}
-    # (seeds,) — 각 시드의 전 조합 평균 치환 CC 기여 Δ^CC_i
+    # (seeds,) — each seed's mean substitution CC contribution
     d_cc = {n: np.zeros(S) for n in names}
-    # 용량-반응 기울기 (HalloReg 수 → CC율)
+    # Dose-response slope (number of HalloReg -> CC rate)
     dose = np.zeros(S)
 
     for s in range(S):
@@ -114,7 +131,8 @@ def analyze_regime(pair: dict, comps: np.ndarray) -> dict:
         sl = np.polyfit(comps[:, HR].astype(float), cc, 1)[0]
         dose[s] = float(sl)
 
-    # 대표값(전 시드 평균 Π)에서의 조합 수준 지표 — 시각화용
+    # Composition-level indices at the representative (seed-mean Pi)
+    # — for the figures
     mu_mean = type_payoffs(pair["Pi"], comps)
     cc_mean = population_cc(pair["CCm"], comps)
 
@@ -125,7 +143,8 @@ def analyze_regime(pair: dict, comps: np.ndarray) -> dict:
 
 def _confirm_block(reg: Registry, hyp: str, tag: str,
                    deltas: Dict[str, np.ndarray], unit: str) -> None:
-    """협력 계열 4종에 대한 확증 검정 + ALLD 탐색 검정을 등록."""
+    """Register the confirmatory tests for the four cooperative
+    rivals plus the exploratory ALLD test."""
     for rival in COOP_RIVALS:
         d = deltas[rival]
         t = one_sample_perm(d, 0.0, alternative="greater")
@@ -139,26 +158,30 @@ def _confirm_block(reg: Registry, hyp: str, tag: str,
     d = deltas["alld"]
     t = one_sample_perm(d, 0.0, alternative="greater")
     ci = boot_mean_ci(d)
-    reg.explore(hyp, f"{tag} vs ALLD (착취 이전 효과로 해석 주의)", t["p"],
+    reg.explore(hyp, f"{tag} vs ALLD (interpret with care: payoff "
+                     f"transfer through exploitation)", t["p"],
                 effect=f"Δ{unit}={ci['mean']:+.4f}")
 
 
-# ==================================================================== 실행
+# =================================================================== Run
 def _prepare_comps(cfg: Config) -> np.ndarray:
     """
-    조합 열거. 각 유형 최소 1명을 요구한다 — 유형 i 가 0명인 조합에서는
-    μ_i 와 치환 대비가 정의되지 않기 때문이다.
+    Enumerate compositions, requiring at least one of each type: with
+    zero individuals of type i, neither mu_i nor the substitution
+    contrast is defined.
     """
     comps = enumerate_compositions(TOTAL_AGENTS, len(ALL_TYPES), min_each=1)
     if cfg.max_compositions and len(comps) > cfg.max_compositions:
-        LOGGER.info("  조합 부분표집: %d → %d", len(comps), cfg.max_compositions)
+        LOGGER.info("  composition subsampling: %d -> %d",
+                    len(comps), cfg.max_compositions)
         comps = subsample_compositions(comps, cfg.max_compositions, seed=7)
     return comps
 
 
 def run_stationary(cfg: Config, reg: Registry, comps: np.ndarray) -> dict:
-    """H3 / H3A — 정상 보수구조."""
-    LOGGER.info("[H3/H3A] 정상 보수 — 조합 %d개, 유형쌍 %d개 추정",
+    """H3 / H3A — stationary payoff structure."""
+    LOGGER.info("[H3/H3A] stationary payoffs — %d compositions, "
+                "%d type pairs estimated",
                 len(comps), len(ALL_TYPES) * (len(ALL_TYPES) + 1) // 2)
     specs = default_type_specs(cfg.halloreg_kwargs())
     pair = estimate_pair_matrices(specs, cfg.rounds, cfg.seeds, cfg.jobs,
@@ -167,39 +190,44 @@ def run_stationary(cfg: Config, reg: Registry, comps: np.ndarray) -> dict:
                                   seed_offset=0)
     an = analyze_regime(pair, comps)
 
-    _confirm_block(reg, "H3", "보수", an["delta_payoff"], "보수")
-    _confirm_block(reg, "H3A", "CC 한계기여", an["delta_cc"], "CC")
+    _confirm_block(reg, "H3", "payoff", an["delta_payoff"], "payoff")
+    _confirm_block(reg, "H3A", "marginal CC contribution", an["delta_cc"],
+                   "CC")
 
-    # 탐색: 용량-반응 기울기
+    # Exploratory: dose-response slope
     t = one_sample_perm(an["dose_slope"], 0.0, alternative="greater")
     ci = boot_mean_ci(an["dose_slope"])
-    reg.explore("H3A", "용량-반응: HalloReg 수 → 집단 CC율 기울기 > 0", t["p"],
-                effect=f"기울기={ci['mean']:+.5f}/명")
+    reg.explore("H3A", "dose-response: slope of population CC rate on "
+                "the number of HalloReg > 0", t["p"],
+                effect=f"slope={ci['mean']:+.5f}/individual")
 
-    # ---- 해석적 분해식의 직접 검증 ----
+    # ---- Direct verification of the analytic decomposition ----
     check = _verify_decomposition(cfg, specs, pair, comps, regime=None)
-    reg.explore("H3", "해석적 분해식 vs 직접 라운드로빈 (검증)",
-                1.0, effect=f"최대 |오차| CC={check['max_abs_cc_err']:.4f}, "
-                            f"보수={check['max_abs_pay_err']:.4f}")
+    reg.explore("H3", "analytic decomposition vs direct round robin "
+                "(verification)",
+                1.0, effect=f"max |error| CC={check['max_abs_cc_err']:.4f}, "
+                            f"payoff={check['max_abs_pay_err']:.4f}")
 
     return {"pair": pair, "analysis": an, "verify": check}
 
 
 def run_nonstationary(cfg: Config, reg: Registry, comps: np.ndarray) -> dict:
-    """H4 / H4A — 비정상 보수구조 (5개 레짐)."""
+    """H4 / H4A — non-stationary payoff structures (5 regimes)."""
     regimes = NONSTATIONARY_REGIMES
     specs = default_type_specs(cfg.halloreg_kwargs())
     per_regime = {}
 
     for ri, rg in enumerate(regimes):
-        LOGGER.info("[H4/H4A] 레짐 '%s' (%d/%d)", rg, ri + 1, len(regimes))
+        LOGGER.info("[H4/H4A] regime '%s' (%d/%d)", rg, ri + 1,
+                    len(regimes))
         pair = estimate_pair_matrices(specs, cfg.rounds, cfg.seeds, cfg.jobs,
                                   eval_from=getattr(cfg, "eval_from", 0),
                                       regime=rg, env_error=cfg.env_error,
                                       seed_offset=1000 * (ri + 1))
         per_regime[rg] = {"pair": pair, "analysis": analyze_regime(pair, comps)}
 
-    # ---- 확증: 레짐 통합 (시드 × 레짐을 replicate 로) ----
+    # ---- Confirmatory: pooled across regimes (seed x regime as
+    # replicates) ----
     pooled_pay = {n: np.concatenate(
         [per_regime[rg]["analysis"]["delta_payoff"][n] for rg in regimes])
         for n in ALL_TYPES}
@@ -207,23 +235,26 @@ def run_nonstationary(cfg: Config, reg: Registry, comps: np.ndarray) -> dict:
         [per_regime[rg]["analysis"]["delta_cc"][n] for rg in regimes])
         for n in ALL_TYPES}
 
-    _confirm_block(reg, "H4", "보수(비정상 통합)", pooled_pay, "보수")
-    _confirm_block(reg, "H4A", "CC 한계기여(비정상 통합)", pooled_cc, "CC")
+    _confirm_block(reg, "H4", "payoff (non-stationary, pooled)",
+                   pooled_pay, "payoff")
+    _confirm_block(reg, "H4A", "marginal CC contribution "
+                   "(non-stationary, pooled)", pooled_cc, "CC")
 
-    # ---- 탐색: 레짐별 ----
+    # ---- Exploratory: per regime ----
     for rg in regimes:
         an = per_regime[rg]["analysis"]
         for rival in COOP_RIVALS:
             t = one_sample_perm(an["delta_payoff"][rival], 0.0,
                                 alternative="greater")
             ci = boot_mean_ci(an["delta_payoff"][rival])
-            reg.explore("H4", f"[{REGIME_LABEL_KO[rg]}] 보수 vs "
+            reg.explore("H4", f"[{REGIME_LABEL_KO[rg]}] payoff vs "
                               f"{TYPE_LABEL_KO[rival]}", t["p"],
                         effect=f"Δ={ci['mean']:+.4f}")
         t = one_sample_perm(an["dose_slope"], 0.0, alternative="greater")
         ci = boot_mean_ci(an["dose_slope"])
-        reg.explore("H4A", f"[{REGIME_LABEL_KO[rg]}] 용량-반응 기울기", t["p"],
-                    effect=f"기울기={ci['mean']:+.5f}/명")
+        reg.explore("H4A", f"[{REGIME_LABEL_KO[rg]}] dose-response slope",
+                    t["p"],
+                    effect=f"slope={ci['mean']:+.5f}/individual")
 
     return {"regimes": regimes, "per_regime": per_regime,
             "pooled_payoff": pooled_pay, "pooled_cc": pooled_cc}
@@ -233,10 +264,13 @@ def _verify_decomposition(cfg: Config, specs: dict, pair: dict,
                           comps: np.ndarray, regime: Optional[str],
                           n_check: int = 3) -> dict:
     """
-    해석적 분해식이 실제 라운드로빈과 일치하는지 직접 검증한다.
+    Verify directly that the analytic decomposition matches an actual
+    round robin.
 
-    무작위로 뽑은 몇 개 조합에 대해 30명 라운드로빈(435 다이애드)을 실행하고,
-    분해식 예측과 대조한다. 계산이 무거우므로 조합 수와 시드를 최소로 둔다.
+    For a few randomly drawn compositions, run the full 30-agent round
+    robin (435 dyads) and compare against the decomposition's
+    prediction. This is expensive, so composition count and seeds are
+    kept minimal.
     """
     rng = np.random.default_rng(3)
     idx = rng.choice(len(comps), size=min(n_check, len(comps)), replace=False)
@@ -257,7 +291,8 @@ def _verify_decomposition(cfg: Config, specs: dict, pair: dict,
             "payoff_analytic": {n: float(pred_mu[i2])
                                 for i2, n in enumerate(pair["names"])},
         })
-        LOGGER.info("  검증 %d: CC 직접=%.4f 해석=%.4f (차=%+.4f)",
+        LOGGER.info("  check %d: CC direct=%.4f analytic=%.4f "
+                    "(diff=%+.4f)",
                     j + 1, direct["cc_rate"], pred_cc,
                     direct["cc_rate"] - pred_cc)
     max_cc = max(abs(r["cc_err"]) for r in rows)
@@ -270,7 +305,8 @@ def _verify_decomposition(cfg: Config, specs: dict, pair: dict,
 
 def run(cfg: Config, reg: Registry) -> dict:
     comps = _prepare_comps(cfg)
-    LOGGER.info("[H3~H4A] 조합 공간 크기 = %d (총 %d명, 유형별 최소 1명)",
+    LOGGER.info("[H3-H4A] composition space size = %d "
+                "(%d agents, at least one per type)",
                 len(comps), TOTAL_AGENTS)
     stat = run_stationary(cfg, reg, comps)
     nons = run_nonstationary(cfg, reg, comps)
@@ -297,13 +333,16 @@ def run(cfg: Config, reg: Registry) -> dict:
 
 def _summarize(an: dict) -> dict:
     """
-    JSON 직렬화용 요약.
+    Summary for JSON serialisation.
 
-    `mu_by_comp` / `cc_by_comp` 는 **조합 수만큼 긴 배열**이다(전수 열거 시
-    118,755행). 그대로 저장하면 레짐마다 수백 MB 가 되어 결과 파일이 쓸모없어
-    지므로, 조합 수준 원자료는 그림에만 쓰고 JSON 에는 분포 요약만 남긴다.
-    시드 수준 벡터(delta_payoff / delta_cc / dose_slope)는 통계검정의 replicate
-    단위라 그대로 보존한다.
+    `mu_by_comp` / `cc_by_comp` have **one row per composition**
+    (118,755 under full enumeration). Storing them verbatim would make
+    each regime hundreds of megabytes and render the result file
+    useless, so composition-level raw data is used only in the figures
+    and only distributional summaries are written to JSON. The
+    seed-level vectors (delta_payoff / delta_cc / dose_slope) are the
+    replicate units of the statistical tests and are preserved as
+    is.
     """
     out = {k: v for k, v in an.items()
            if k not in ("mu_by_comp", "cc_by_comp")}
@@ -323,7 +362,7 @@ def _summarize(an: dict) -> dict:
     return out
 
 
-# ==================================================================== 시각화
+# ============================================================== Figures
 def _plot_stationary(cfg: Config, res: dict, comps: np.ndarray) -> None:
     import matplotlib.pyplot as plt
     from .common import annotate_n, bar_with_ci
@@ -336,26 +375,27 @@ def _plot_stationary(cfg: Config, res: dict, comps: np.ndarray) -> None:
     fig = plt.figure(figsize=(13, 8))
     gs = fig.add_gridspec(2, 3, hspace=0.45, wspace=0.32)
 
-    # (a) 보수행렬 Π
+    # (a) payoff matrix Pi
     ax = fig.add_subplot(gs[0, 0])
     im = ax.imshow(pair["Pi"], cmap="viridis")
     ax.set_xticks(range(len(labels))); ax.set_xticklabels(labels, rotation=45,
                                                           ha="right")
     ax.set_yticks(range(len(labels))); ax.set_yticklabels(labels)
-    ax.set_title("(a) 유형쌍 보수행렬 Π\n(행 유형의 라운드당 보수)")
+    ax.set_title("(a) type-pair payoff matrix Pi\n"
+                 "(per-round payoff of the row type)")
     for i in range(len(labels)):
         for j in range(len(labels)):
             ax.text(j, i, f"{pair['Pi'][i, j]:.2f}", ha="center", va="center",
                     fontsize=6.5, color="white")
     ax.grid(False); fig.colorbar(im, ax=ax, fraction=0.045)
 
-    # (b) 상호협력행렬 CCm
+    # (b) mutual cooperation matrix CCm
     ax = fig.add_subplot(gs[0, 1])
     im = ax.imshow(pair["CCm"], cmap="Blues", vmin=0, vmax=1)
     ax.set_xticks(range(len(labels))); ax.set_xticklabels(labels, rotation=45,
                                                           ha="right")
     ax.set_yticks(range(len(labels))); ax.set_yticklabels(labels)
-    ax.set_title("(b) 유형쌍 상호협력률 CCm")
+    ax.set_title("(b) type-pair mutual cooperation rate CCm")
     for i in range(len(labels)):
         for j in range(len(labels)):
             v = pair["CCm"][i, j]
@@ -363,27 +403,30 @@ def _plot_stationary(cfg: Config, res: dict, comps: np.ndarray) -> None:
                     color="white" if v > 0.55 else "black")
     ax.grid(False); fig.colorbar(im, ax=ax, fraction=0.045)
 
-    # (c) H3 — 보수 우위
+    # (c) H3 — payoff advantage
     ax = fig.add_subplot(gs[0, 2])
     means = [an["delta_payoff"][r].mean() for r in rivals]
     cis = [boot_mean_ci(an["delta_payoff"][r])["ci"] for r in rivals]
     cols = ["#4C72B0" if r in COOP_RIVALS else "#937860" for r in rivals]
     bar_with_ci(ax, rlabels, means, cis, colors=cols,
-                ylabel="Δ 라운드당 보수", rotate=30)
+                ylabel="delta per-round payoff", rotate=30)
     ax.axhline(0, color="crimson", ls="--", lw=1.1)
-    ax.set_title(f"(c) H3 — HalloReg − 상대유형 보수\n"
-                 f"(전 조합 {an['n_comps']:,}개 평균, 시드 n={cfg.seeds})")
+    ax.set_title(f"(c) H3 — HalloReg minus rival payoff\n"
+                 f"(mean over {an['n_comps']:,} compositions, "
+                 f"n={cfg.seeds} seeds)")
 
-    # (d) H3A — CC 한계기여
+    # (d) H3A — marginal CC contribution
     ax = fig.add_subplot(gs[1, 0])
     means = [an["delta_cc"][r].mean() for r in rivals]
     cis = [boot_mean_ci(an["delta_cc"][r])["ci"] for r in rivals]
     bar_with_ci(ax, rlabels, means, cis, colors=cols,
-                ylabel="Δ 집단 CC율 (치환 1명당)", rotate=30)
+                ylabel="delta population CC rate (per substitution)",
+                rotate=30)
     ax.axhline(0, color="crimson", ls="--", lw=1.1)
-    ax.set_title("(d) H3A — 치환 한계기여\nCC(n) − CC(HalloReg 1명 → 해당유형)")
+    ax.set_title("(d) H3A — substitution contribution\n"
+                 "CC(n) - CC(one HalloReg replaced by the rival)")
 
-    # (e) 용량-반응: HalloReg 수 vs CC율
+    # (e) dose-response: number of HalloReg vs CC rate
     ax = fig.add_subplot(gs[1, 1])
     nh = comps[:, HR]
     cc = an["cc_by_comp"]
@@ -392,12 +435,13 @@ def _plot_stationary(cfg: Config, res: dict, comps: np.ndarray) -> None:
     ax.boxplot([binned[v - 1] for v in xs], positions=xs, widths=0.6,
                showfliers=False, patch_artist=True,
                boxprops=dict(facecolor="#DA8BC3", alpha=0.7))
-    ax.set_xlabel("집단 내 HalloReg 개체 수"); ax.set_ylabel("집단 CC율")
-    ax.set_title(f"(e) 용량-반응 (기울기 "
-                 f"{an['dose_slope'].mean():+.5f}/명)")
+    ax.set_xlabel("number of HalloReg in the population")
+    ax.set_ylabel("population CC rate")
+    ax.set_title(f"(e) dose-response (slope "
+                 f"{an['dose_slope'].mean():+.5f}/individual)")
     ax.set_xticks(xs[::4]); ax.set_xticklabels([str(v) for v in xs[::4]])
 
-    # (f) 유형별 평균보수의 조합 분포
+    # (f) distribution of per-type mean payoff across compositions
     ax = fig.add_subplot(gs[1, 2])
     data = [an["mu_by_comp"][:, i] for i in range(len(ALL_TYPES))]
     bp = ax.boxplot(data, tick_labels=labels, patch_artist=True, widths=0.6,
@@ -405,10 +449,12 @@ def _plot_stationary(cfg: Config, res: dict, comps: np.ndarray) -> None:
     for patch, t in zip(bp["boxes"], ALL_TYPES):
         patch.set_facecolor(TYPE_COLORS[t]); patch.set_alpha(0.8)
     ax.set_xticklabels(labels, rotation=35, ha="right")
-    ax.set_ylabel("라운드당 평균보수")
-    ax.set_title("(f) 전 조합에 걸친 유형별 보수 분포")
+    ax.set_ylabel("mean payoff per round")
+    ax.set_title("(f) payoff distribution by type across all "
+                 "compositions")
 
-    fig.suptitle("H3 / H3A — 정상 보수구조 혼합 집단 (30명, 전 조합 해석적 평가)",
+    fig.suptitle("H3 / H3A — mixed population under stationary payoffs "
+                 "(30 agents, all compositions evaluated analytically)",
                  fontsize=12, y=0.98)
     save_fig(fig, cfg, "H3_stationary_population")
 
@@ -427,36 +473,39 @@ def _plot_nonstationary(cfg: Config, res: dict) -> None:
     gs = fig.add_gridspec(3, 3, hspace=0.55, wspace=0.32,
                           height_ratios=[0.75, 1, 1])
 
-    # (a) 레짐별 CI 궤적
+    # (a) CI trajectory per regime
     ax = fig.add_subplot(gs[0, :])
     for rg in regimes:
         ax.plot(regime_trace(rg, cfg.rounds), lw=1.3, label=REGIME_LABEL_KO[rg])
-    ax.axhline(0.4, color="#888888", ls=":", lw=1, label="기본 PD (CI=0.4)")
+    ax.axhline(0.4, color="#888888", ls=":", lw=1,
+               label="default PD (CI=0.4)")
     ax.axhline(0.0, color="crimson", ls="--", lw=0.9)
-    ax.set_xlabel("라운드"); ax.set_ylabel("협력지수 CI")
-    ax.set_title("(a) 비정상 보수 레짐 — CI = (R−P)/(T−S) 궤적\n"
-                 "CI<0 교착 · CI=0.4 기본 PD · CI≥1 조화")
+    ax.set_xlabel("round"); ax.set_ylabel("cooperation index CI")
+    ax.set_title("(a) non-stationary payoff regimes — "
+                 "CI = (R-P)/(T-S) trajectories\n"
+                 "CI<0 deadlock | CI=0.4 default PD | CI>=1 harmony")
     ax.legend(ncol=3, fontsize=7)
 
-    # (b) H4 — 통합 보수 우위
+    # (b) H4 — pooled payoff advantage
     ax = fig.add_subplot(gs[1, 0])
     means = [res["pooled_payoff"][r].mean() for r in rivals]
     cis = [boot_mean_ci(res["pooled_payoff"][r])["ci"] for r in rivals]
     bar_with_ci(ax, rlabels, means, cis, colors=cols,
-                ylabel="Δ 라운드당 보수", rotate=30)
+                ylabel="delta per-round payoff", rotate=30)
     ax.axhline(0, color="crimson", ls="--", lw=1.1)
-    ax.set_title("(b) H4 — 비정상 통합 보수 우위")
+    ax.set_title("(b) H4 — pooled payoff advantage, non-stationary")
 
-    # (c) H4A — 통합 CC 기여
+    # (c) H4A — pooled CC contribution
     ax = fig.add_subplot(gs[1, 1])
     means = [res["pooled_cc"][r].mean() for r in rivals]
     cis = [boot_mean_ci(res["pooled_cc"][r])["ci"] for r in rivals]
     bar_with_ci(ax, rlabels, means, cis, colors=cols,
-                ylabel="Δ 집단 CC율", rotate=30)
+                ylabel="delta population CC rate", rotate=30)
     ax.axhline(0, color="crimson", ls="--", lw=1.1)
-    ax.set_title("(c) H4A — 비정상 통합 CC 한계기여")
+    ax.set_title("(c) H4A — pooled marginal CC contribution, "
+                 "non-stationary")
 
-    # (d) 레짐 × 상대유형 보수 우위 히트맵
+    # (d) regime x rival payoff-advantage heatmap
     ax = fig.add_subplot(gs[1, 2])
     M = np.array([[res["per_regime"][rg]["analysis"]["delta_payoff"][r].mean()
                    for r in rivals] for rg in regimes])
@@ -470,10 +519,10 @@ def _plot_nonstationary(cfg: Config, res: dict) -> None:
         for j in range(len(rivals)):
             ax.text(j, i, f"{M[i, j]:+.2f}", ha="center", va="center",
                     fontsize=6.5)
-    ax.set_title("(d) 레짐별 보수 우위 Δ")
+    ax.set_title("(d) payoff advantage by regime")
     ax.grid(False); fig.colorbar(im, ax=ax, fraction=0.045)
 
-    # (e) 레짐 × 상대유형 CC 기여 히트맵
+    # (e) regime x rival CC-contribution heatmap
     ax = fig.add_subplot(gs[2, 0])
     M = np.array([[res["per_regime"][rg]["analysis"]["delta_cc"][r].mean()
                    for r in rivals] for rg in regimes])
@@ -487,21 +536,22 @@ def _plot_nonstationary(cfg: Config, res: dict) -> None:
         for j in range(len(rivals)):
             ax.text(j, i, f"{M[i, j]:+.3f}", ha="center", va="center",
                     fontsize=6)
-    ax.set_title("(e) 레짐별 CC 한계기여 Δ")
+    ax.set_title("(e) marginal CC contribution by regime")
     ax.grid(False); fig.colorbar(im, ax=ax, fraction=0.045)
 
-    # (f) 레짐별 용량-반응 기울기
+    # (f) dose-response slope by regime
     ax = fig.add_subplot(gs[2, 1])
     means = [res["per_regime"][rg]["analysis"]["dose_slope"].mean()
              for rg in regimes]
     cis = [boot_mean_ci(res["per_regime"][rg]["analysis"]["dose_slope"])["ci"]
            for rg in regimes]
     bar_with_ci(ax, [REGIME_LABEL_KO[r] for r in regimes], means, cis,
-                colors="#55A868", ylabel="CC율 기울기 (/명)", rotate=35)
+                colors="#55A868", ylabel="CC-rate slope (/individual)",
+                rotate=35)
     ax.axhline(0, color="crimson", ls="--", lw=1.1)
-    ax.set_title("(f) 레짐별 용량-반응 기울기")
+    ax.set_title("(f) dose-response slope by regime")
 
-    # (g) 레짐별 유형 보수 (전 조합 평균)
+    # (g) per-type payoff by regime (mean over compositions)
     ax = fig.add_subplot(gs[2, 2])
     x = np.arange(len(regimes))
     w = 0.13
@@ -513,9 +563,10 @@ def _plot_nonstationary(cfg: Config, res: dict) -> None:
     ax.set_xticks(x)
     ax.set_xticklabels([REGIME_LABEL_KO[r] for r in regimes], rotation=35,
                        ha="right", fontsize=7)
-    ax.set_ylabel("라운드당 평균보수")
-    ax.set_title("(g) 레짐 × 유형 평균보수")
+    ax.set_ylabel("mean payoff per round")
+    ax.set_title("(g) regime x type mean payoff")
     ax.legend(ncol=2, fontsize=6)
 
-    fig.suptitle("H4 / H4A — 비정상 보수구조 혼합 집단", fontsize=12, y=0.985)
+    fig.suptitle("H4 / H4A — mixed population under non-stationary "
+                 "payoffs", fontsize=12, y=0.985)
     save_fig(fig, cfg, "H4_nonstationary_population")

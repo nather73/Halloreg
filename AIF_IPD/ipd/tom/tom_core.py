@@ -2,32 +2,40 @@
 ipd.tom.tom_core
 ================
 
-Theory-of-Mind 핵심: 상대 행동 예측 q(a_j | h_t) 과 **재귀적 social EFE**.
+Theory-of-Mind core: opponent prediction q(a_j | h_t) and the
+**recursive social EFE**.
 
 Albarracin et al. (2026) eq. (4):
 
-    G_social(a_i) = (1 − λ)·G_self(a_i) + λ·E_{q(a_j)}[ G_other(a_j) ] + G_epistemic
+    G_social(a_i) = (1-lam)*G_self(a_i)
+                    + lam*E_{q(a_j)}[G_other(a_j)] + G_epistemic
 
-본 판의 최종형:
+Final form used here:
 
-    G_social(a_i) = (1 − λ)·( prag_self(a_i)  − IG_self(a_i) )
-                   +    λ ·( prag_other(a_i) − IG_other(a_i) )
+    G_social(a_i) = (1-lam)*(prag_self(a_i)  - IG_self(a_i))
+                    +  lam *(prag_other(a_i) - IG_other(a_i))
 
-  · prag_self  : 내 보수 기준 기대효용의 **비용형**(−E[U]). 작을수록 선호.
-  · prag_other : 상대 보수 기준 기대효용의 비용형 (조망수용 — C 만 교체).
-  · IG_self    : 내가 상대에 대해 얻는 기대 정보이득 (θ̂ 필터).
-  · IG_other   : 내 행동이 **상대가 나에 대해 갖는 믿음**을 얼마나 좁히는가
-                 (자기-사영 필터 θ̂_self). λ 로 가중되므로, 공감이 클수록
-                 "상대가 나를 이해하도록 돕는" 행동에 가치가 생긴다.
-  · 가중은 (1 − λ), λ 뿐이다. 별도의 인식항 가중을 두지 않아, λ 가 자·타
-    분기의 유일한 볼록결합 계수라는 구성개념이 훼손되지 않는다.
+  - prag_self  : cost form (-E[U]) of expected utility under my
+                 payoffs; smaller is preferred.
+  - prag_other : the same under the opponent's payoffs (perspective
+                 taking — only the preference C is swapped).
+  - IG_self    : my expected information gain about the opponent.
+  - IG_other   : how much my action narrows **the opponent's belief
+                 about me** (self-projection filter). Weighted by
+                 lambda: the more empathic, the more value in actions
+                 that help the opponent understand me.
+  - The only weights are (1-lam) and lam — no separate epistemic
+    weight, so lambda remains the sole convex coefficient between the
+    self and other branches.
 
-[재귀성 두 가지]
- (R1) depth-2 조망수용: 상대가 '나'를 어떻게 볼지를 자기-사영 필터로 계산해
-      상대 모형의 `believed_my_policy` 에 직접 주입한다. 손으로 섞는 혼합계수
-      없이 재귀 깊이가 자연 내장된다.
- (R2) 재귀적 인식가치: 상대가 나를 학습하며 얻는 정보이득(IG_other)도 λ 가중으로
-      포함한다. 원 논문은 상대의 실용가치만 포함했다.
+[Two recursions]
+ (R1) depth-2 perspective taking: how the opponent sees "me" is
+      computed by the self-projection filter and injected directly
+      into the opponent model's believed_my_policy — recursion depth
+      is built in without hand-mixed coefficients.
+ (R2) recursive epistemic value: the opponent's information gain about
+      me (IG_other) is included with lambda weighting; the original
+      paper included only the opponent's pragmatic value.
 """
 
 from __future__ import annotations
@@ -45,28 +53,32 @@ from .inversion import OpponentInversion, ObservationContext
 # --------------------------------------------------------------- static ToM
 class TheoryOfMind:
     """
-    상대를 '나와 구조적으로 동형인 합리적 행위자'로 보는 정적(static) ToM.
+    Static ToM: the opponent as a rational agent structurally
+    isomorphic to me.
 
-    상대의 행동선택:  q(a_j) ∝ exp( β_j · negEFE_j(a_j) )
-    상대의 negEFE_j 는 상대 보수 하의 기대가치이며, 상대가 믿는 내 정책 π_i 에
-    대해 기댓값을 취한다.
+        q(a_j) ~ exp(beta_j * negEFE_j(a_j))
 
-    입자필터가 아직 데이터를 못 본 초기 라운드의 **사전 예측**을 담당한다.
+    negEFE_j is the expected value under the opponent's payoffs,
+    marginalised over the policy they believe I follow. It provides
+    the **prior prediction** for the early rounds before the particle
+    filter has seen data.
     """
 
     def __init__(self, beta_other: float = 4.0):
         self.beta_other = float(beta_other)
-        # 상대가 믿는 내 (C, D) 확률. 기본은 무정보.
+        # The (C, D) policy the opponent believes I follow.
         self._believed_my_policy = np.array([0.5, 0.5])
 
     def update_my_policy_belief(self, my_coop_rate: float) -> None:
-        """내 실현 협력률로 '상대가 믿는 내 정책' 을 갱신."""
+        """Update the believed policy with my realised cooperation
+        rate."""
         p = float(np.clip(my_coop_rate, 0.0, 1.0))
         self._believed_my_policy = np.array([p, 1.0 - p])
 
     def opponent_efe(self, believed_my_policy: Optional[np.ndarray] = None
                      ) -> np.ndarray:
-        """상대의 각 행동에 대한 negEFE (상대 보수 관점). shape (2,) = [C, D]."""
+        """negEFE of each opponent action under their payoffs,
+        shape (2,) = [C, D]."""
         pi = (self._believed_my_policy if believed_my_policy is None
               else believed_my_policy)
         negG = np.zeros(2)
@@ -81,7 +93,8 @@ class TheoryOfMind:
     def predict_opponent_action(self,
                                 believed_my_policy: Optional[np.ndarray] = None
                                 ) -> np.ndarray:
-        """정적 ToM 상대 행동 분포 q(a_j) = softmax(β_j · negEFE_j)."""
+        """Static-ToM action distribution
+        q(a_j) = softmax(beta_j * negEFE_j)."""
         return softmax(self.opponent_efe(believed_my_policy),
                        temperature=1.0 / self.beta_other)
 
@@ -89,12 +102,13 @@ class TheoryOfMind:
 # --------------------------------------------------------------- gated ToM
 class GatedToM:
     """
-    신뢰도 게이팅된 ToM: 정적 사전과 학습된 사후(입자필터)를 필터 신뢰도 r 로
-    부드럽게 보간한다.
+    Reliability-gated ToM: smoothly interpolates the static prior and
+    the learned posterior (particle filter) by the filter reliability r,
 
-        q_gated = r · q_learned + (1 − r) · q_static
+        q_gated = r * q_learned + (1 - r) * q_static,
 
-    데이터가 없을 때는 구조적 사전에, 쌓일수록 관측된 개인 특성에 의존한다.
+    relying on structure when data are absent and on observed
+    individual traits as they accumulate.
     """
 
     def __init__(self, tom: TheoryOfMind, inversion: OpponentInversion):
@@ -112,24 +126,25 @@ class GatedToM:
 # --------------------------------------------------------------- social EFE
 @dataclass
 class SocialEFEResult:
-    """한 라운드 social EFE 계산 결과."""
-    G_social: np.ndarray          # (2,) 내 각 행동의 social EFE (작을수록 선호)
-    q_response: np.ndarray        # (2,) 상대 행동 예측
+    """Result of one social-EFE computation."""
+    G_social: np.ndarray          # (2,) social EFE per action (lower = preferred)
+    q_response: np.ndarray        # (2,) opponent action prediction
     info: dict
 
 
 class RecursiveSocialEFE:
     """
-    재귀적 social EFE 계산기.
+    Recursive social-EFE calculator.
 
     Parameters
     ----------
     gated_tom : GatedToM
-    inversion : OpponentInversion            — 상대 θ̂ 필터
-    self_inversion : OpponentInversion|None  — 자기-사영 θ̂_self 필터
-    empathy_factor : float                   — λ 초깃값(에이전트가 매 라운드 갱신)
-    beta_self : float                        — 내 행동선택 정밀도
-    recursive_depth : int                    — 2 면 depth-2 조망수용 활성
+    inversion : OpponentInversion            — opponent theta filter
+    self_inversion : OpponentInversion|None  — self-projection filter
+    empathy_factor : float                   — initial lambda (updated
+                                               each round by the agent)
+    beta_self : float                        — my action precision
+    recursive_depth : int                    — 2 enables depth-2
     """
 
     def __init__(self, gated_tom: GatedToM, inversion: OpponentInversion,
@@ -144,17 +159,19 @@ class RecursiveSocialEFE:
         self.recursive_depth = int(recursive_depth)
         self.my_coop_rate = 0.5
 
-    # ------------------------------------------------- 상대 예측 (depth-2)
+    # ------------------------------------------------- Prediction (depth-2)
     def opponent_prediction(self, ctx: Optional[ObservationContext]
                             ) -> np.ndarray:
         """
-        상대 행동 예측 q(a_j).
+        Opponent prediction q(a_j).
 
-        depth ≥ 2 이면 '상대가 믿는 내 정책'을 자기-사영 필터의 예측 협력확률로
-        구성해 정적 ToM 에 주입한다. 이때 자기-사영 필터의 관점에서:
-            f_me = 상대가 본 나의 호혜 자극 = 상대 자신의 직전 행동
-            g_me = 나 자신의 직전 행동
-        (즉 focal 필터와 f/g 의 역할이 정확히 뒤바뀐다.)
+        At depth >= 2 the "policy the opponent believes I follow" is
+        built from the self-projection filter's predicted cooperation
+        and injected into the static ToM. From that filter's viewpoint
+            f_me = the reciprocity stimulus the opponent saw from me
+                   = their own last action,
+            g_me = my own last action
+        (f/g roles exactly swapped vs the focal filter).
         """
         r = self.inversion.reliability()
         q_learned = self.inversion.predict_action(ctx)
@@ -175,20 +192,20 @@ class RecursiveSocialEFE:
         q = r * q_learned + (1.0 - r) * q_static_cond
         return q / q.sum()
 
-    # ------------------------------------------------- 스텝 항 분해
+    # ------------------------------------------------- Step terms
     def step_terms(self, ctx: Optional[ObservationContext],
                    q: np.ndarray) -> dict:
         """
-        상대 예측 q 하에서 내 각 행동의 social EFE 구성항.
-        플래너의 rollout 스텝과 단일스텝 경로가 **같은 항 구성**을 쓰도록 일원화.
+        Social-EFE components of my actions under prediction q,
+        shared by the single-step path and any rollout step.
         """
         pc = float(q[COOP])
 
-        # --- 실용가치: 내 관점 (비용형) ---
-        prag = efe_terms(pc, PAYOFF_SELF)["pragmatic"]     # (2,) 기대효용
+        # --- Pragmatic value, my viewpoint (cost form) ---
+        prag = efe_terms(pc, PAYOFF_SELF)["pragmatic"]     # (2,) E[U]
         prag_self = -prag
 
-        # --- 실용가치: 상대 관점 (조망수용, 비용형) ---
+        # --- Pragmatic value, their viewpoint (perspective) ---
         prag_other = np.zeros(2)
         for a_i in (COOP, DEFECT):
             val = 0.0
@@ -197,16 +214,21 @@ class RecursiveSocialEFE:
                 val += q[a_j] * other_payoff
             prag_other[a_i] = -val
 
-        # --- 인식가치: 내가 상대를 알아가는 이득 ---
-        # 내가 C 를 두면 다음 라운드 호혜신호 f_next = +1, D 면 −1.
-        g_next = (0.0 if ctx is None or ctx.their_last_action is None
-                  else 1.0 - 2.0 * float(ctx.their_last_action))
+        # --- Epistemic value: my gain about the opponent ---
+        # Playing C makes next round's reciprocity signal f' = +1,
+        # D makes it -1; the exact IG (v3.7.5) marginalises their
+        # simultaneous move given the current context (f_now = my
+        # last, g_now = their last).
+        f_now = (0.0 if ctx is None or ctx.my_last_action is None
+                 else 1.0 - 2.0 * float(ctx.my_last_action))
+        g_now = (0.0 if ctx is None or ctx.their_last_action is None
+                 else 1.0 - 2.0 * float(ctx.their_last_action))
         IG_self = np.array([
-            self.inversion.expected_infogain(+1.0, g_next),
-            self.inversion.expected_infogain(-1.0, g_next),
+            self.inversion.expected_infogain_exact(+1.0, f_now, g_now),
+            self.inversion.expected_infogain_exact(-1.0, f_now, g_now),
         ])
 
-        # --- 인식가치: 상대가 나를 알아가는 이득 (λ 로 가중됨) ---
+        # --- Epistemic value: their gain about me (lambda-weighted) ---
         IG_other = np.zeros(2)
         if self.self_inversion is not None:
             f_me = (0.0 if ctx is None or ctx.their_last_action is None
@@ -221,7 +243,7 @@ class RecursiveSocialEFE:
                 "IG_self": IG_self, "IG_other": IG_other,
                 "pragmatic_utility": prag, "pc": pc}
 
-    # ------------------------------------------------- 단일스텝 계산
+    # ------------------------------------------------- Single step
     def compute(self, ctx: Optional[ObservationContext],
                 lam: Optional[float] = None) -> SocialEFEResult:
         lam = self.lam if lam is None else float(lam)
@@ -236,8 +258,9 @@ class RecursiveSocialEFE:
             G_social=G_social, q_response=q,
             info={"pc": t["pc"], "lam": lam,
                   "reliability": self.inversion.reliability(),
-                  # 선택 행동의 기대보수 — 진단용 (RPE 는 CoreAffect 가 기저
-                  # 기대보상 분포로부터 별도 계산하므로 여기 값은 쓰지 않는다).
+                  # Expected payoff of the chosen action —
+                  # diagnostic only (RPE is computed separately by
+                  # CoreAffect from the baseline reward distribution).
                   "pragmatic_utility": t["pragmatic_utility"],
                   "IG_self": t["IG_self"], "IG_other": t["IG_other"]})
 
@@ -245,7 +268,7 @@ class RecursiveSocialEFE:
                       lam: Optional[float] = None,
                       rng: Optional[np.random.Generator] = None
                       ) -> Tuple[int, SocialEFEResult]:
-        """softmax(−G_social) 에서 행동을 표집."""
+        """Sample an action from softmax(-G_social)."""
         res = self.compute(ctx, lam)
         q_pi = softmax(-res.G_social, temperature=1.0 / self.beta_self)
         rng = rng or np.random.default_rng()

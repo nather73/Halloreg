@@ -1,12 +1,13 @@
 """
-ipd.tom — 조망수용(Theory of Mind) 계층.
+ipd.tom — the perspective-taking (Theory of Mind) layer.
 
-  inversion   : 상대 특성 θ_j 입자필터 (OpponentInversion)
-  tom_core    : 정적/게이팅 ToM 과 재귀적 social EFE
-  self_policy : **형질공간 정책** — 자기 형질 (ρ, ω, η) 의 SMC 선택
+  inversion   : particle filter over opponent traits theta_j
+  tom_core    : static/gated ToM and the recursive social EFE
+  self_policy : trait-space policy — SMC over self traits (legacy)
 
-행동수준 계획기(planner)는 폐기되었다. focal 도 상대와 같은 형질공간에 표상
-되므로, 계획은 행동 분기가 아니라 형질 후보 평가로 이루어진다.
+The action-level planner was retired: the focal agent is represented
+in the same trait space as the opponent, so planning evaluates trait
+candidates rather than branching over actions.
 """
 
 from .inversion import OpponentInversion, ObservationContext, THETA_AXES

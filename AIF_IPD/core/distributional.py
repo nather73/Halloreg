@@ -2,18 +2,22 @@
 core.distributional
 ===================
 
-**분위수 격자 유틸리티.**
+**Quantile-grid utilities.**
 
-v1.5.0 에서 `QuantileCode`(보상의 주변분포)는 폐기되었다. 정서의 두 축이 모두
-QRTD 의 상황가치 Z(s,a) 에 근거하게 되면서(§core.core_affect), 주변분포가 맡던
-역할이 사라졌기 때문이다.
+`QuantileCode` (the marginal reward distribution) was retired in
+v1.5.0: once both affect axes were grounded in the QRTD situational
+values Z(s,a) (see core.core_affect), the marginal had no remaining
+role.
 
-  · valence : 현재 상대의 기대 보상 분포(중앙값)가, SelfModel 이 보유한 **다른
-              타인들의 기대 보상 분포**(거리반비례 가중 평균)에서 차지하는 순위.
-              — 시간에 대한 자기비교가 아니라 **사회적 모집단에 대한 횡단비교**.
-  · arousal : Z(s,a) 믿음의 갱신량 (W₁ 이동).
+  - valence : the rank of the current partner's expected-reward
+              distribution (median) within the distance-weighted
+              population of **other partners** held by SelfModel — a
+              cross-sectional social comparison, not a self-comparison
+              over time.
+  - arousal : the update magnitude of Z(s,a) beliefs (W1 shift).
 
-남은 것은 격자 정의뿐이며, `core.qrtd` 와 `core.self_model` 이 공유한다.
+What remains is the grid definition, shared by core.qrtd and
+core.self_model.
 """
 
 from __future__ import annotations
@@ -23,27 +27,28 @@ import numpy as np
 
 def midpoint_taus(n: int) -> tuple:
     """
-    **중점 분위수 격자** τ_i = (2i + 1) / (2n),  i = 0 … n−1.
+    **Midpoint quantile grid** tau_i = (2i + 1) / (2n), i = 0..n-1.
 
-    (1) 기대값이 단순 평균이 된다 (중점법 적분).
-    (2) n 이 홀수면 정확히 τ = 0.5 매듭이 존재한다 — valence 부호 항등성의 근거.
-        → 채널 수는 홀수여야 한다.
+    (1) The expectation reduces to a plain mean (midpoint rule).
+    (2) Odd n places a knot exactly at tau = 0.5 — the basis of the
+        valence sign identity. Hence the channel count must be odd.
     """
     if n % 2 == 0:
-        raise ValueError("채널 수는 홀수여야 합니다 (τ=0.5 매듭 보장)")
+        raise ValueError("channel count must be odd (guarantees a tau=0.5 knot)")
     return tuple((2 * i + 1) / (2.0 * n) for i in range(n))
 
 
-#: 기본 격자 — 21채널. 11번째(i=10)가 정확히 0.5.
+#: Default grid — 21 channels; the 11th (i = 10) is exactly 0.5.
 DEFAULT_TAUS = midpoint_taus(21)
 
 
 def vector_cdf(values: np.ndarray, taus: np.ndarray, x: float) -> float:
     """
-    분위수 벡터가 표상하는 분포에서 x 의 누적확률 F̂(x) ∈ (0, 1).
-
-    격자 내부는 선형보간, 격자 밖은 지수꼬리(감쇠길이 = 분포 폭 — "놀람의
-    단위는 경험의 폭"). 열린구간을 유지해 valence 가 경계에 붙지 않게 한다.
+    Cumulative probability F-hat(x) in (0, 1) of the distribution
+    represented by a quantile vector. Linear interpolation inside the
+    grid, exponential tails outside (decay length = distribution width
+    — "the unit of surprise is the width of experience"); the open
+    interval keeps valence off the boundary.
     """
     v = np.asarray(values, dtype=float)
     t = np.asarray(taus, dtype=float)

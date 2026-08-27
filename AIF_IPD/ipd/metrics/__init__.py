@@ -2,7 +2,8 @@
 AIF_IPD.ipd.metrics
 ===================
 
-가설검증용 통계 인프라 (순열검정·효과크기·다중비교 보정).
+Statistical infrastructure for hypothesis testing (permutation
+tests, effect sizes, multiple-comparison corrections).
 """
 
 from .stats import (
