@@ -608,9 +608,22 @@ def run(cfg: Config) -> dict:
            "val_traces": val_traces, "aro_traces": aro_traces,
            "n_probe": n_probe}
     _plot(cfg, out)
+    # Seed bands of the lambda trace per probe partner (v3.9.7): the
+    # full (seeds x rounds) array is too large for the results file, so
+    # only the mean and the 25/75 percentiles are stored — enough for
+    # the paper figures, which are produced from the experiment results
+    # rather than from a separate simulation pass.
+    lam_by_partner = {
+        k: {"mean": np.nanmean(lam_traces[k], axis=0).tolist(),
+            "lo": np.nanpercentile(lam_traces[k], 25, axis=0).tolist(),
+            "hi": np.nanpercentile(lam_traces[k], 75, axis=0).tolist()}
+        for k in PROBE_TYPES}
     save_json({"checks": checks, "n_pass": n_pass, "n_total": len(checks),
                "theta_by_partner": theta_by_partner,
-               "reward_by_partner": reward_by_partner},
+               "reward_by_partner": reward_by_partner,
+               "lam_by_partner": lam_by_partner,
+               "probe_types": list(PROBE_TYPES),
+               "n_probe": int(n_probe), "rounds": int(cfg.rounds)},
               cfg.results / "ARCH.json")
     return out
 

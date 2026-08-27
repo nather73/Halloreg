@@ -12,6 +12,8 @@ Per-hypothesis experiment modules.
                       recovery
   h2_protection     : H2/H2A — exploiter defence and noise-vs-intent
                       discrimination
+  h2b_counterfactual: H2B — regulated lambda vs lambda fixed at 0/1
+                      (onset, withdrawal, withdrawal decomposition)
   h3_h4_population  : H3/H3A/H4/H4A — stationary/non-stationary
                       mixed populations
   h5_evolution      : H5  — survival under RE/ORE evolutionary

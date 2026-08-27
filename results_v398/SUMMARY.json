@@ -1,0 +1,1840 @@
+{
+  "config": {
+    "seeds": 120,
+    "rounds": 800,
+    "particles": 600,
+    "horizon": 6,
+    "w_cd": 0.5,
+    "lam_gain": 0.05,
+    "env_error": 0.05,
+    "experiments": [
+      "ARCH",
+      "H1",
+      "H1A",
+      "H2",
+      "H2B",
+      "H3",
+      "H4",
+      "H5",
+      "H6"
+    ],
+    "elapsed_min": 113.2151554663976
+  },
+  "architecture": {
+    "n_pass": 17,
+    "n_total": 19,
+    "checks": [
+      {
+        "id": "V1",
+        "name": "SelfModel accumulates memory (theta and value distribution per identity)",
+        "passed": true,
+        "detail": "5 memory entries / 5 encounters"
+      },
+      {
+        "id": "V1b",
+        "name": "remembered alpha-hat reflects the cooperativeness ordering (ALLC > ALLD)",
+        "passed": true,
+        "detail": "ALLC=+2.27 | GTFT=+0.53 | TFT=+0.48 | WSLS=-2.05 | ALLD=-2.99"
+      },
+      {
+        "id": "V2",
+        "name": "lambda increases monotonically in the survival surplus rate phi",
+        "passed": true,
+        "detail": "Spearman(phi, lambda) = +0.546 (threshold 0.3)"
+      },
+      {
+        "id": "V3",
+        "name": "arousal is monotone increasing in the distributional shift W1 (rho ~ +1)",
+        "passed": true,
+        "detail": "mean rho = 1.000000 (n=150 dyads)"
+      },
+      {
+        "id": "V4",
+        "name": "lambda mapping matches its numerical reconstruction (tolerance 1e-9)",
+        "passed": true,
+        "detail": "max deviation = 0.000e+00"
+      },
+      {
+        "id": "V5",
+        "name": "the reference trajectory is independent of the current partner (no self-chasing)",
+        "passed": true,
+        "detail": "max reference gap, ALLC vs ALLD partner = 0.000e+00 (terminal reference 2.072)"
+      },
+      {
+        "id": "V5b",
+        "name": "valence diverges by condition: ALLC > 0 > ALLD (social fitness)",
+        "passed": false,
+        "detail": "terminal mean valence: ALLC=-0.031 vs ALLD=-0.072"
+      },
+      {
+        "id": "V5c",
+        "name": "early-learning valence is near neutral (scale alignment)",
+        "passed": false,
+        "detail": "ALLC=-0.111 | GTFT=-0.133 | TFT=-0.233 | WSLS=-0.222 | ALLD=+0.611 (3R after the first update, w0=1)"
+      },
+      {
+        "id": "V6",
+        "name": "directional divergence of lambda (lambda vs ALLC > lambda vs ALLD)",
+        "passed": true,
+        "detail": "ALLC=0.662 | GTFT=0.457 | TFT=0.307 | WSLS=0.333 | ALLD=0.017"
+      },
+      {
+        "id": "V7",
+        "name": "lambda diverges under purely affective drive",
+        "passed": true,
+        "detail": "λ_final: ALLC=0.662 vs ALLD=0.017 (gap 0.646)"
+      },
+      {
+        "id": "V8",
+        "name": "the setpoint is weighted by social distance (the closer relationship dominates)",
+        "passed": true,
+        "detail": "lam0: close cooperator=0.526 vs close exploiter=0.274 | distance: close=0.452 < far=0.968"
+      },
+      {
+        "id": "V8b",
+        "name": "a memoryless individual has a neutral setpoint (lam0 = 0.40)",
+        "passed": true,
+        "detail": "lam0(no memory) = 0.400000"
+      },
+      {
+        "id": "V9",
+        "name": "the seeded history loads others across several distance bands",
+        "passed": true,
+        "detail": "mean distance range [0.292, 0.910], 5 relationships"
+      },
+      {
+        "id": "V9b",
+        "name": "the seeded history creates individual differences in lam0 (SD > 0.01)",
+        "passed": true,
+        "detail": "λ₀ = 0.427 ± 0.043 [0.327, 0.510]"
+      },
+      {
+        "id": "V9c",
+        "name": "history cooperativeness -> lam0 increases monotonically (causality of the setpoint)",
+        "passed": true,
+        "detail": "0.252 → 0.314 → 0.386 → 0.452 → 0.544  (history cooperation rate 0.2 -> 0.8)"
+      },
+      {
+        "id": "V9d",
+        "name": "per-person marginal contribution is inverse to distance (one close > one distant)",
+        "passed": true,
+        "detail": "delta-lam0: close (d=0.29)=+0.0881 vs far (d=0.91)=+0.0139"
+      },
+      {
+        "id": "V13",
+        "name": "self-trait memory: the stance is restored on re-encounter",
+        "passed": true,
+        "detail": "stored rho=+0.23 omega=-0.02 eta=+0.02 -> restored rho=+0.23 omega=-0.02 eta=+0.02 (max deviation 0.000)"
+      },
+      {
+        "id": "V14",
+        "name": "QRTD: the learned s-hat(lam, p) converges to the analytic solution (error < 0.15)",
+        "passed": true,
+        "detail": "max |s-hat - s| = 0.0807, learned payoffs = [2.98, 0.04, 4.92, 1.01] (true [3.0, 0.0, 5.0, 1.0])"
+      },
+      {
+        "id": "V15",
+        "name": "the cooperative relationship survives without the payoff matrix (naive)",
+        "passed": true,
+        "detail": "per-round payoff vs TFT: oracle=2.782 vs naive=2.782 (retention 100.0%)"
+      }
+    ]
+  },
+  "verdicts": {
+    "alpha": 0.05,
+    "primary": [
+      {
+        "hypothesis": "H1",
+        "label": "[on-policy (natural interaction)] balanced accuracy > chance (1/6)",
+        "p_raw": 0.0004997501249375312,
+        "direction_ok": true,
+        "effect": "BA=0.822 (chance=0.167)",
+        "detail": {
+          "balanced_accuracy": 0.8222222222222223
+        },
+        "p_holm": 0.00849575212393803,
+        "supported": true
+      },
+      {
+        "hypothesis": "H1",
+        "label": "[probe (focal noise eps=0.2)] balanced accuracy > chance (1/6)",
+        "p_raw": 0.0004997501249375312,
+        "direction_ok": true,
+        "effect": "BA=0.889 (chance=0.167)",
+        "detail": {
+          "balanced_accuracy": 0.888888888888889
+        },
+        "p_holm": 0.00849575212393803,
+        "supported": true
+      },
+      {
+        "hypothesis": "H1",
+        "label": "minimum per-type recall: probe > on-policy (effect of active sampling)",
+        "p_raw": 0.49975012493753124,
+        "direction_ok": true,
+        "effect": "min recall 0.617 (HalloReg) → 0.633 (Δ=+0.017)",
+        "detail": {},
+        "p_holm": 1.0,
+        "supported": false
+      },
+      {
+        "hypothesis": "H1A",
+        "label": "trait-switch tracking: corr(predicted cooperation, true phase) > 0",
+        "p_raw": 9.999000099990002e-05,
+        "direction_ok": true,
+        "effect": "r̄=0.628 [0.614, 0.643]",
+        "detail": {
+          "mean_r": 0.6283114477970057,
+          "ci": [
+            0.6141278001419008,
+            0.6426171551831287
+          ]
+        },
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H1A",
+        "label": "static lambda recovery: corr(lambda_j-hat, lambda_true) > 0",
+        "p_raw": 0.000999000999000999,
+        "direction_ok": true,
+        "effect": "r=0.729 [0.696, 0.760]",
+        "detail": {
+          "r": 0.7287366102649919,
+          "ci": [
+            0.6964973120643342,
+            0.759839947301186
+          ],
+          "p": 0.000999000999000999,
+          "n": 720
+        },
+        "p_holm": 0.014985014985014984,
+        "supported": true
+      },
+      {
+        "hypothesis": "H1A",
+        "label": "dynamic lambda tracking: within-seed corr(lambda_j-hat(t), lambda_true(t)) > 0",
+        "p_raw": 9.999000099990002e-05,
+        "direction_ok": true,
+        "effect": "r̄=0.441 [0.418, 0.463]",
+        "detail": {
+          "mean_r": 0.4405478246507106,
+          "ci": [
+            0.41832694456882635,
+            0.46343843992766365
+          ]
+        },
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H2",
+        "label": "payoff vs exploiter: HalloReg > fixed lambda=0.4",
+        "p_raw": 9.999000099990002e-05,
+        "direction_ok": true,
+        "effect": "Δ=+0.865, dz=26.081 [16.915, 50.000]",
+        "detail": {},
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H2",
+        "label": "payoff vs exploiter: HalloReg > ALLC (floor)",
+        "p_raw": 9.999000099990002e-05,
+        "direction_ok": true,
+        "effect": "Δ=+0.892, dz=27.767 [17.992, 50.000]",
+        "detail": {},
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H2",
+        "label": "dual-context worst case: HalloReg > fixed lambda=0.4",
+        "p_raw": 9.999000099990002e-05,
+        "direction_ok": true,
+        "effect": "Δ=+0.865, dz=26.081 [16.915, 50.000]",
+        "detail": {},
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H2",
+        "label": "dual-context worst case: HalloReg > fixed lambda=0.8",
+        "p_raw": 9.999000099990002e-05,
+        "direction_ok": true,
+        "effect": "Δ=+0.891, dz=27.657 [17.945, 50.000]",
+        "detail": {},
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H2A",
+        "label": "theta-hat discrimination accuracy > chance (0.5)",
+        "p_raw": 0.0001999600079984003,
+        "direction_ok": true,
+        "effect": "acc=1.000 (n=120)",
+        "detail": {
+          "accuracy": 1.0
+        },
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H2A",
+        "label": "lambda_final: noisy TFT > exploiter",
+        "p_raw": 9.999000099990002e-05,
+        "direction_ok": true,
+        "effect": "Δλ=+0.263, dz=4.027 [3.325, 5.039]",
+        "detail": {},
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "onset: CC rate vs GTFT, regulated > lambda=0",
+        "p_raw": 9.999000099990002e-05,
+        "direction_ok": true,
+        "effect": "Δ=+0.681, dz=16.167 [14.527, 18.515]",
+        "detail": {},
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "withdrawal: payoff vs ALLD, regulated > lambda=1",
+        "p_raw": 9.999000099990002e-05,
+        "direction_ok": true,
+        "effect": "Δ=+0.945, dz=26.236 [23.632, 29.966]",
+        "detail": {},
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "dual-context worst case: regulated > lambda=0 fixed",
+        "p_raw": 0.9842015798420158,
+        "direction_ok": false,
+        "effect": "Δ=-0.001, dz=-0.189 [-0.303, -0.049]",
+        "detail": {},
+        "p_holm": 1.0,
+        "supported": false
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "dual-context worst case: regulated > lambda=1 fixed",
+        "p_raw": 9.999000099990002e-05,
+        "direction_ok": true,
+        "effect": "Δ=+0.945, dz=26.236 [23.632, 29.966]",
+        "detail": {},
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H3",
+        "label": "payoff vs TFT",
+        "p_raw": 9.999000099990002e-05,
+        "direction_ok": true,
+        "effect": "Δpayoff=+0.0807 [+0.0716, +0.0899], dz=1.556 [1.312, 1.866]",
+        "detail": {},
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H3",
+        "label": "payoff vs GTFT",
+        "p_raw": 9.999000099990002e-05,
+        "direction_ok": true,
+        "effect": "Δpayoff=+0.0596 [+0.0526, +0.0666], dz=1.540 [1.334, 1.798]",
+        "detail": {},
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H3",
+        "label": "payoff vs WSLS",
+        "p_raw": 1.0,
+        "direction_ok": false,
+        "effect": "Δpayoff=-0.0547 [-0.0659, -0.0439], dz=-0.888 [-1.102, -0.706]",
+        "detail": {},
+        "p_holm": 1.0,
+        "supported": false
+      },
+      {
+        "hypothesis": "H3",
+        "label": "payoff vs ALLC",
+        "p_raw": 9.999000099990002e-05,
+        "direction_ok": true,
+        "effect": "Δpayoff=+0.3042 [+0.2905, +0.3185], dz=3.847 [3.439, 4.431]",
+        "detail": {},
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H3A",
+        "label": "marginal CC contribution vs TFT",
+        "p_raw": 9.999000099990002e-05,
+        "direction_ok": true,
+        "effect": "ΔCC=+0.0157 [+0.0153, +0.0161], dz=6.637 [5.813, 7.717]",
+        "detail": {},
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H3A",
+        "label": "marginal CC contribution vs GTFT",
+        "p_raw": 9.999000099990002e-05,
+        "direction_ok": true,
+        "effect": "ΔCC=+0.0064 [+0.0060, +0.0067], dz=3.486 [3.153, 3.923]",
+        "detail": {},
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H3A",
+        "label": "marginal CC contribution vs WSLS",
+        "p_raw": 9.999000099990002e-05,
+        "direction_ok": true,
+        "effect": "ΔCC=+0.0166 [+0.0162, +0.0171], dz=6.677 [5.968, 7.650]",
+        "detail": {},
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H3A",
+        "label": "marginal CC contribution vs ALLC",
+        "p_raw": 9.999000099990002e-05,
+        "direction_ok": true,
+        "effect": "ΔCC=+0.0019 [+0.0015, +0.0022], dz=1.041 [0.833, 1.282]",
+        "detail": {},
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H4",
+        "label": "payoff (non-stationary, pooled) vs TFT",
+        "p_raw": 9.999000099990002e-05,
+        "direction_ok": true,
+        "effect": "Δpayoff=+0.2193 [+0.2091, +0.2294], dz=1.738 [1.644, 1.847]",
+        "detail": {},
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H4",
+        "label": "payoff (non-stationary, pooled) vs GTFT",
+        "p_raw": 9.999000099990002e-05,
+        "direction_ok": true,
+        "effect": "Δpayoff=+0.1100 [+0.1026, +0.1176], dz=1.184 [1.090, 1.291]",
+        "detail": {},
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H4",
+        "label": "payoff (non-stationary, pooled) vs WSLS",
+        "p_raw": 9.999000099990002e-05,
+        "direction_ok": true,
+        "effect": "Δpayoff=+0.0958 [+0.0854, +0.1062], dz=0.715 [0.635, 0.796]",
+        "detail": {},
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H4",
+        "label": "payoff (non-stationary, pooled) vs ALLC",
+        "p_raw": 9.999000099990002e-05,
+        "direction_ok": true,
+        "effect": "Δpayoff=+0.3619 [+0.3513, +0.3724], dz=2.762 [2.598, 2.953]",
+        "detail": {},
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H4A",
+        "label": "marginal CC contribution (non-stationary, pooled) vs TFT",
+        "p_raw": 9.999000099990002e-05,
+        "direction_ok": true,
+        "effect": "ΔCC=+0.0128 [+0.0126, +0.0131], dz=4.696 [4.420, 5.011]",
+        "detail": {},
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H4A",
+        "label": "marginal CC contribution (non-stationary, pooled) vs GTFT",
+        "p_raw": 9.999000099990002e-05,
+        "direction_ok": true,
+        "effect": "ΔCC=+0.0025 [+0.0023, +0.0028], dz=0.925 [0.838, 1.015]",
+        "detail": {},
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H4A",
+        "label": "marginal CC contribution (non-stationary, pooled) vs WSLS",
+        "p_raw": 9.999000099990002e-05,
+        "direction_ok": true,
+        "effect": "ΔCC=+0.0135 [+0.0132, +0.0137], dz=4.321 [4.081, 4.590]",
+        "detail": {},
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H4A",
+        "label": "marginal CC contribution (non-stationary, pooled) vs ALLC",
+        "p_raw": 1.0,
+        "direction_ok": false,
+        "effect": "ΔCC=-0.0014 [-0.0016, -0.0012], dz=-0.528 [-0.615, -0.444]",
+        "detail": {},
+        "p_holm": 1.0,
+        "supported": false
+      },
+      {
+        "hypothesis": "H5",
+        "label": "RE survival basin: HalloReg > all-type mean",
+        "p_raw": 0.012098790120987902,
+        "direction_ok": true,
+        "effect": "Δ=+0.0564 [+0.0096, +0.1062], dz=0.208 [0.039, 0.375]; HalloReg=0.289",
+        "detail": {
+          "halloreg": 0.28860555555555556,
+          "all_type_mean": 0.23225555555555555
+        },
+        "p_holm": 0.10888911108889111,
+        "supported": false
+      },
+      {
+        "hypothesis": "H5",
+        "label": "ORE survival basin: HalloReg > all-type mean",
+        "p_raw": 9.999000099990002e-05,
+        "direction_ok": true,
+        "effect": "Δ=+0.1635 [+0.1569, +0.1702], dz=4.291 [3.879, 4.849]; HalloReg=0.992",
+        "detail": {
+          "halloreg": 0.9918222222222222,
+          "all_type_mean": 0.8282888888888889
+        },
+        "p_holm": 0.004399560043995601,
+        "supported": true
+      },
+      {
+        "hypothesis": "H6",
+        "label": "recovery (fixed) alpha (cooperation bias): r > 0",
+        "p_raw": 0.000999000999000999,
+        "direction_ok": true,
+        "effect": "r=0.495 [0.362, 0.611]",
+        "detail": {},
+        "p_holm": 0.014985014985014984,
+        "supported": true
+      },
+      {
+        "hypothesis": "H6",
+        "label": "recovery (fixed) rho (reciprocity): r > 0",
+        "p_raw": 0.000999000999000999,
+        "direction_ok": true,
+        "effect": "r=0.878 [0.830, 0.917]",
+        "detail": {},
+        "p_holm": 0.014985014985014984,
+        "supported": true
+      },
+      {
+        "hypothesis": "H6",
+        "label": "recovery (fixed) omega (inertia): r > 0",
+        "p_raw": 0.000999000999000999,
+        "direction_ok": true,
+        "effect": "r=0.793 [0.724, 0.851]",
+        "detail": {},
+        "p_holm": 0.014985014985014984,
+        "supported": true
+      },
+      {
+        "hypothesis": "H6",
+        "label": "recovery (fixed) eta (outcome contingency): r > 0",
+        "p_raw": 0.000999000999000999,
+        "direction_ok": true,
+        "effect": "r=0.771 [0.695, 0.832]",
+        "detail": {},
+        "p_holm": 0.014985014985014984,
+        "supported": true
+      },
+      {
+        "hypothesis": "H6",
+        "label": "recovery (fixed) beta (precision): r > 0",
+        "p_raw": 0.000999000999000999,
+        "direction_ok": true,
+        "effect": "r=0.580 [0.454, 0.690]",
+        "detail": {},
+        "p_holm": 0.014985014985014984,
+        "supported": true
+      },
+      {
+        "hypothesis": "H6",
+        "label": "lambda_j recovery: varied (payoff modulation) > fixed — identifiability diagnosis",
+        "p_raw": 0.0003332222592469177,
+        "direction_ok": true,
+        "effect": "Δr=+0.562 (fixed r=0.358 → varied r=0.920)",
+        "detail": {},
+        "p_holm": 0.005998000666444518,
+        "supported": true
+      },
+      {
+        "hypothesis": "H6",
+        "label": "projection fidelity alpha (cooperation bias): corr(theta_self, theta_partner) > 0",
+        "p_raw": 0.8551448551448552,
+        "direction_ok": false,
+        "effect": "r=-0.019 [-0.159, 0.127]",
+        "detail": {},
+        "p_holm": 1.0,
+        "supported": false
+      },
+      {
+        "hypothesis": "H6",
+        "label": "projection fidelity rho (reciprocity): corr(theta_self, theta_partner) > 0",
+        "p_raw": 0.04095904095904096,
+        "direction_ok": true,
+        "effect": "r=0.188 [0.027, 0.351]",
+        "detail": {},
+        "p_holm": 0.3276723276723277,
+        "supported": false
+      },
+      {
+        "hypothesis": "H6",
+        "label": "projection fidelity beta (precision): corr(theta_self, theta_partner) > 0",
+        "p_raw": 0.7012987012987013,
+        "direction_ok": true,
+        "effect": "r=0.033 [-0.137, 0.225]",
+        "detail": {},
+        "p_holm": 1.0,
+        "supported": false
+      },
+      {
+        "hypothesis": "H6",
+        "label": "projection fidelity lambda_j (their empathy): corr(theta_self, theta_partner) > 0",
+        "p_raw": 0.9170829170829171,
+        "direction_ok": false,
+        "effect": "r=-0.011 [-0.175, 0.151]",
+        "detail": {},
+        "p_holm": 1.0,
+        "supported": false
+      }
+    ],
+    "exploratory": [
+      {
+        "hypothesis": "H1",
+        "label": "[on_policy] TFT recall > chance",
+        "p_raw": 2.108360471134766e-32,
+        "effect": "recall=0.867 [0.758, 0.931]",
+        "detail": {},
+        "q_bh": 3.3997312597048102e-31,
+        "significant": true
+      },
+      {
+        "hypothesis": "H1",
+        "label": "[on_policy] GTFT recall > chance",
+        "p_raw": 3.5805731915332296e-28,
+        "effect": "recall=0.817 [0.701, 0.894]",
+        "detail": {},
+        "q_bh": 5.1321549078642964e-27,
+        "significant": true
+      },
+      {
+        "hypothesis": "H1",
+        "label": "[on_policy] WSLS recall > chance",
+        "p_raw": 2.0460911503224948e-47,
+        "effect": "recall=1.000 [0.940, 1.000]",
+        "detail": {},
+        "q_bh": 4.399095973193364e-46,
+        "significant": true
+      },
+      {
+        "hypothesis": "H1",
+        "label": "[on_policy] ALLC recall > chance",
+        "p_raw": 7.774397340338432e-16,
+        "effect": "recall=0.633 [0.507, 0.744]",
+        "detail": {},
+        "q_bh": 8.357477140863815e-15,
+        "significant": true
+      },
+      {
+        "hypothesis": "H1",
+        "label": "[on_policy] ALLD recall > chance",
+        "p_raw": 2.0460911503224948e-47,
+        "effect": "recall=1.000 [0.940, 1.000]",
+        "detail": {},
+        "q_bh": 4.399095973193364e-46,
+        "significant": true
+      },
+      {
+        "hypothesis": "H1",
+        "label": "[on_policy] HalloReg recall > chance",
+        "p_raw": 6.481428013577848e-15,
+        "effect": "recall=0.617 [0.490, 0.729]",
+        "detail": {},
+        "q_bh": 6.431570875011865e-14,
+        "significant": true
+      },
+      {
+        "hypothesis": "H1",
+        "label": "[probe] TFT recall > chance",
+        "p_raw": 2.0460911503224948e-47,
+        "effect": "recall=1.000 [0.940, 1.000]",
+        "detail": {},
+        "q_bh": 4.399095973193364e-46,
+        "significant": true
+      },
+      {
+        "hypothesis": "H1",
+        "label": "[probe] GTFT recall > chance",
+        "p_raw": 6.15873436247071e-45,
+        "effect": "recall=0.983 [0.911, 0.997]",
+        "detail": {},
+        "q_bh": 1.1349667610838878e-43,
+        "significant": true
+      },
+      {
+        "hypothesis": "H1",
+        "label": "[probe] WSLS recall > chance",
+        "p_raw": 2.0460911503224948e-47,
+        "effect": "recall=1.000 [0.940, 1.000]",
+        "detail": {},
+        "q_bh": 4.399095973193364e-46,
+        "significant": true
+      },
+      {
+        "hypothesis": "H1",
+        "label": "[probe] ALLC recall > chance",
+        "p_raw": 6.547307826358901e-21,
+        "effect": "recall=0.717 [0.592, 0.815]",
+        "detail": {},
+        "q_bh": 8.446027096002982e-20,
+        "significant": true
+      },
+      {
+        "hypothesis": "H1",
+        "label": "[probe] ALLD recall > chance",
+        "p_raw": 2.0460911503224948e-47,
+        "effect": "recall=1.000 [0.940, 1.000]",
+        "detail": {},
+        "q_bh": 4.399095973193364e-46,
+        "significant": true
+      },
+      {
+        "hypothesis": "H1",
+        "label": "[probe] HalloReg recall > chance",
+        "p_raw": 7.774397340338432e-16,
+        "effect": "recall=0.633 [0.507, 0.744]",
+        "detail": {},
+        "q_bh": 8.357477140863815e-15,
+        "significant": true
+      },
+      {
+        "hypothesis": "H1A",
+        "label": "scenario recip_expl_recon tracking correlation",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "r̄=0.574",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H1A",
+        "label": "scenario coop_trap tracking correlation",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "r̄=0.798",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H1A",
+        "label": "scenario wsls_flip tracking correlation",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "r̄=0.513",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2",
+        "label": "dual-context worst case: HalloReg vs fixed lambda=0.0 (purely self-interested model — optimal by definition vs an exploiter)",
+        "p_raw": 1.0,
+        "effect": "Δ=-0.032, dz=-1.241 [-3.423, -0.841]",
+        "detail": {},
+        "q_bh": 1.0,
+        "significant": false
+      },
+      {
+        "hypothesis": "H2",
+        "label": "payoff vs exploiter: HalloReg vs fixed lambda=0.0 (empathy-free ceiling)",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=-0.032",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2",
+        "label": "[context E — exploiter (ALLD)] payoff: HalloReg vs TFT",
+        "p_raw": 0.001999800019998,
+        "effect": "Δ=-0.005",
+        "detail": {},
+        "q_bh": 0.0026323898222422653,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2",
+        "label": "[context E — exploiter (ALLD)] payoff: HalloReg vs GTFT",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.265",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2",
+        "label": "[context E — exploiter (ALLD)] payoff: HalloReg vs WSLS",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.419",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2",
+        "label": "[context E — exploiter (ALLD)] payoff: HalloReg vs ALLC",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.892",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2",
+        "label": "[context C — cooperator (GTFT)] payoff: HalloReg vs TFT",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.018",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2",
+        "label": "[context C — cooperator (GTFT)] payoff: HalloReg vs GTFT",
+        "p_raw": 0.42375762423757624,
+        "effect": "Δ=+0.001",
+        "detail": {},
+        "q_bh": 0.4969521229695212,
+        "significant": false
+      },
+      {
+        "hypothesis": "H2",
+        "label": "[context C — cooperator (GTFT)] payoff: HalloReg vs WSLS",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.098",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2",
+        "label": "[context C — cooperator (GTFT)] payoff: HalloReg vs ALLC",
+        "p_raw": 0.0007999200079992001,
+        "effect": "Δ=-0.002",
+        "detail": {},
+        "q_bh": 0.0010862071687568085,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2",
+        "label": "[context E — exploiter (ALLD)] lambda fall (early - late)",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δλ=+0.152 [+0.145, +0.158]",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2",
+        "label": "[context C — cooperator (GTFT)] lambda rise (early - late)",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δλ=-0.040 [-0.054, -0.025]",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2A",
+        "label": "theta-hat axis alpha: noisy TFT vs exploiter",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+1.740, g=1.639 [1.374, 1.946]",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2A",
+        "label": "theta-hat axis beta: noisy TFT vs exploiter",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=-3.599, g=-10.477 [-13.666, -8.701]",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2A",
+        "label": "theta-hat axis rho: noisy TFT vs exploiter",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+2.169, g=5.398 [4.956, 5.980]",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2A",
+        "label": "theta-hat axis lambda_j: noisy TFT vs exploiter",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.156, g=1.551 [1.330, 1.817]",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2A",
+        "label": "late cooperation rate: noisy TFT > exploiter",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.924",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "[TFT] CC rate: regulated vs lambda=0 fixed",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.250",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "[TFT] payoff: regulated vs lambda=0 fixed",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.102",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "[TFT] CC rate: regulated vs lambda=1 fixed",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=-0.004",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "[TFT] payoff: regulated vs lambda=1 fixed",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=-0.005",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "[GTFT] CC rate: regulated vs lambda=0 fixed",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.681",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "[GTFT] payoff: regulated vs lambda=0 fixed",
+        "p_raw": 0.00029997000299970003,
+        "effect": "Δ=+0.030",
+        "detail": {},
+        "q_bh": 0.00041166096156341814,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "[GTFT] CC rate: regulated vs lambda=1 fixed",
+        "p_raw": 0.03569643035696431,
+        "effect": "Δ=-0.002",
+        "detail": {},
+        "q_bh": 0.04427730303892688,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "[GTFT] payoff: regulated vs lambda=1 fixed",
+        "p_raw": 0.5727427257274272,
+        "effect": "Δ=+0.001",
+        "detail": {},
+        "q_bh": 0.6424679271203314,
+        "significant": false
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "[WSLS] CC rate: regulated vs lambda=0 fixed",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.673",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "[WSLS] payoff: regulated vs lambda=0 fixed",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=-0.506",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "[WSLS] CC rate: regulated vs lambda=1 fixed",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.372",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "[WSLS] payoff: regulated vs lambda=1 fixed",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+1.171",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "[HalloReg] CC rate: regulated vs lambda=0 fixed",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.900",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "[HalloReg] payoff: regulated vs lambda=0 fixed",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+1.780",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "[HalloReg] CC rate: regulated vs lambda=1 fixed",
+        "p_raw": 1.0,
+        "effect": "Δ=+0.000",
+        "detail": {},
+        "q_bh": 1.0,
+        "significant": false
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "[HalloReg] payoff: regulated vs lambda=1 fixed",
+        "p_raw": 1.0,
+        "effect": "Δ=+0.000",
+        "detail": {},
+        "q_bh": 1.0,
+        "significant": false
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "[ALLD] CC rate: regulated vs lambda=0 fixed",
+        "p_raw": 0.49745025497450257,
+        "effect": "Δ=+0.000",
+        "detail": {},
+        "q_bh": 0.5629042358922002,
+        "significant": false
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "[ALLD] payoff: regulated vs lambda=0 fixed",
+        "p_raw": 0.0334966503349665,
+        "effect": "Δ=-0.001",
+        "detail": {},
+        "q_bh": 0.04195211546806484,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "[ALLD] CC rate: regulated vs lambda=1 fixed",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=-0.045",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "[ALLD] payoff: regulated vs lambda=1 fixed",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.945",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "[TFT] rounds to sustained CC: regulated < lambda=0 (lambda=0 never: 7/120)",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δt=-81.4R",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "[GTFT] rounds to sustained CC: regulated < lambda=0 (lambda=0 never: 107/120)",
+        "p_raw": 0.007699230076992301,
+        "effect": "Δt=-226.8R",
+        "detail": {},
+        "q_bh": 0.0098336700983367,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "[WSLS] rounds to sustained CC: regulated < lambda=0 (lambda=0 never: 111/120)",
+        "p_raw": 0.9538046195380462,
+        "effect": "Δt=+22.0R",
+        "detail": {},
+        "q_bh": 1.0,
+        "significant": false
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "[HalloReg] rounds to sustained CC: regulated < lambda=0 (lambda=0 never: 115/120)",
+        "p_raw": 1.0,
+        "effect": "Δt=+7.2R",
+        "detail": {},
+        "q_bh": 1.0,
+        "significant": false
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "withdrawal vs ALLD: share of lambda drop carried by lambda* (vs phi), test against 1/2",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "frac(λ*)=0.26 [0.25, 0.27], n=120",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "withdrawal vs ALLD reproduced by lambda* alone (phi held): 0/120 seeds",
+        "p_raw": 1.0,
+        "effect": "mean late lambda=0.713",
+        "detail": {},
+        "q_bh": 1.0,
+        "significant": false
+      },
+      {
+        "hypothesis": "H2B",
+        "label": "withdrawal vs ALLD reproduced by phi alone (lambda* held): 92/120 seeds",
+        "p_raw": 0.0,
+        "effect": "mean late lambda=0.164",
+        "detail": {},
+        "q_bh": 0.0,
+        "significant": true
+      },
+      {
+        "hypothesis": "H3",
+        "label": "payoff vs ALLD (interpret with care: payoff transfer through exploitation)",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δpayoff=+0.1994",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H3A",
+        "label": "marginal CC contribution vs ALLD (interpret with care: payoff transfer through exploitation)",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "ΔCC=+0.0455",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H3A",
+        "label": "dose-response: slope of population CC rate on the number of HalloReg > 0",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "slope=+0.01620/individual",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H3",
+        "label": "analytic decomposition vs direct round robin (verification)",
+        "p_raw": 1.0,
+        "effect": "max |error| CC=0.0023, payoff=0.0448",
+        "detail": {},
+        "q_bh": 1.0,
+        "significant": false
+      },
+      {
+        "hypothesis": "H4",
+        "label": "payoff (non-stationary, pooled) vs ALLD (interpret with care: payoff transfer through exploitation)",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δpayoff=+0.6015",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H4A",
+        "label": "marginal CC contribution (non-stationary, pooled) vs ALLD (interpret with care: payoff transfer through exploitation)",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "ΔCC=+0.0413",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H4",
+        "label": "[block switches] payoff vs TFT",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.2921",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H4",
+        "label": "[block switches] payoff vs GTFT",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.1605",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H4",
+        "label": "[block switches] payoff vs WSLS",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.1655",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H4",
+        "label": "[block switches] payoff vs ALLC",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.3915",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H4A",
+        "label": "[block switches] dose-response slope",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "slope=+0.01296/individual",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H4",
+        "label": "[sinusoidal] payoff vs TFT",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.1753",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H4",
+        "label": "[sinusoidal] payoff vs GTFT",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.0752",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H4",
+        "label": "[sinusoidal] payoff vs WSLS",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.0797",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H4",
+        "label": "[sinusoidal] payoff vs ALLC",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.2929",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H4A",
+        "label": "[sinusoidal] dose-response slope",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "slope=+0.01596/individual",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H4",
+        "label": "[A-B-A return] payoff vs TFT",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.3404",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H4",
+        "label": "[A-B-A return] payoff vs GTFT",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.1350",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H4",
+        "label": "[A-B-A return] payoff vs WSLS",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.2083",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H4",
+        "label": "[A-B-A return] payoff vs ALLC",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.3570",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H4A",
+        "label": "[A-B-A return] dose-response slope",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "slope=+0.01338/individual",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H4",
+        "label": "[linear drift] payoff vs TFT",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.1809",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H4",
+        "label": "[linear drift] payoff vs GTFT",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.0654",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H4",
+        "label": "[linear drift] payoff vs WSLS",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.0669",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H4",
+        "label": "[linear drift] payoff vs ALLC",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.3250",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H4A",
+        "label": "[linear drift] dose-response slope",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "slope=+0.01259/individual",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H4",
+        "label": "[acute shock] payoff vs TFT",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.1080",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H4",
+        "label": "[acute shock] payoff vs GTFT",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.1142",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H4",
+        "label": "[acute shock] payoff vs WSLS",
+        "p_raw": 1.0,
+        "effect": "Δ=-0.0411",
+        "detail": {},
+        "q_bh": 1.0,
+        "significant": false
+      },
+      {
+        "hypothesis": "H4",
+        "label": "[acute shock] payoff vs ALLC",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.4430",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H4A",
+        "label": "[acute shock] dose-response slope",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "slope=+0.01321/individual",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H5",
+        "label": "[block switches] RE survival rate",
+        "p_raw": 0.45695430456954306,
+        "effect": "HalloReg=0.225 vs mean=0.218",
+        "detail": {},
+        "q_bh": 0.5310550026078473,
+        "significant": false
+      },
+      {
+        "hypothesis": "H5",
+        "label": "[block switches] ORE survival rate",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "HalloReg=0.999 vs mean=0.813",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H5",
+        "label": "[sinusoidal] RE survival rate",
+        "p_raw": 0.9318068193180682,
+        "effect": "HalloReg=0.168 vs mean=0.235",
+        "detail": {},
+        "q_bh": 1.0,
+        "significant": false
+      },
+      {
+        "hypothesis": "H5",
+        "label": "[sinusoidal] ORE survival rate",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "HalloReg=0.997 vs mean=0.830",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H5",
+        "label": "[A-B-A return] RE survival rate",
+        "p_raw": 0.0382961703829617,
+        "effect": "HalloReg=0.347 vs mean=0.235",
+        "detail": {},
+        "q_bh": 0.046605716786811885,
+        "significant": true
+      },
+      {
+        "hypothesis": "H5",
+        "label": "[A-B-A return] ORE survival rate",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "HalloReg=0.994 vs mean=0.783",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H5",
+        "label": "[linear drift] RE survival rate",
+        "p_raw": 0.46935306469353066,
+        "effect": "HalloReg=0.232 vs mean=0.229",
+        "detail": {},
+        "q_bh": 0.5405941548702272,
+        "significant": false
+      },
+      {
+        "hypothesis": "H5",
+        "label": "[linear drift] ORE survival rate",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "HalloReg=0.973 vs mean=0.837",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H5",
+        "label": "[acute shock] RE survival rate",
+        "p_raw": 0.00029997000299970003,
+        "effect": "HalloReg=0.470 vs mean=0.245",
+        "detail": {},
+        "q_bh": 0.00041166096156341814,
+        "significant": true
+      },
+      {
+        "hypothesis": "H5",
+        "label": "[acute shock] ORE survival rate",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "HalloReg=0.996 vs mean=0.878",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H5",
+        "label": "ORE survival rate: HalloReg vs TFT",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.1403",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H5",
+        "label": "ORE survival rate: HalloReg vs GTFT",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.0189",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H5",
+        "label": "ORE survival rate: HalloReg vs WSLS",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.1902",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H5",
+        "label": "ORE survival rate: HalloReg vs ALLC",
+        "p_raw": 0.9715028497150285,
+        "effect": "Δ=-0.0035",
+        "detail": {},
+        "q_bh": 1.0,
+        "significant": false
+      },
+      {
+        "hypothesis": "H5",
+        "label": "ORE survival rate: HalloReg vs ALLD",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "Δ=+0.6353",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H5",
+        "label": "terminal CC rate: ORE > RE (group-level selection promotes cooperation)",
+        "p_raw": 0.9237076292370763,
+        "effect": "Δ=-0.0190",
+        "detail": {},
+        "q_bh": 1.0,
+        "significant": false
+      },
+      {
+        "hypothesis": "H6",
+        "label": "recovery (fixed) lambda_j (their empathy) (collinear with alpha — failure predicted)",
+        "p_raw": 0.000999000999000999,
+        "effect": "r=0.358",
+        "detail": {},
+        "q_bh": 0.0013424075924075923,
+        "significant": true
+      },
+      {
+        "hypothesis": "H6",
+        "label": "recovery (fixed) alpha (cooperation bias) bias != 0",
+        "p_raw": 0.4012598740125987,
+        "effect": "bias=+0.112, RMSE=1.455",
+        "detail": {},
+        "q_bh": 0.4748855389690388,
+        "significant": false
+      },
+      {
+        "hypothesis": "H6",
+        "label": "recovery (fixed) rho (reciprocity) bias != 0",
+        "p_raw": 0.0370962903709629,
+        "effect": "bias=+0.126, RMSE=0.672",
+        "detail": {},
+        "q_bh": 0.04557544245575442,
+        "significant": true
+      },
+      {
+        "hypothesis": "H6",
+        "label": "recovery (fixed) omega (inertia) bias != 0",
+        "p_raw": 0.1606839316068393,
+        "effect": "bias=-0.078, RMSE=0.609",
+        "detail": {},
+        "q_bh": 0.19192802941928028,
+        "significant": false
+      },
+      {
+        "hypothesis": "H6",
+        "label": "recovery (fixed) eta (outcome contingency) bias != 0",
+        "p_raw": 0.49625037496250374,
+        "effect": "bias=-0.040, RMSE=0.628",
+        "detail": {},
+        "q_bh": 0.5629042358922002,
+        "significant": false
+      },
+      {
+        "hypothesis": "H6",
+        "label": "recovery (fixed) beta (precision) bias != 0",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "bias=-0.749, RMSE=1.414",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H6",
+        "label": "recovery (fixed) lambda_j (their empathy) bias != 0",
+        "p_raw": 0.09909009099090091,
+        "effect": "bias=+0.042, RMSE=0.278",
+        "detail": {},
+        "q_bh": 0.11946375455912352,
+        "significant": false
+      },
+      {
+        "hypothesis": "H6",
+        "label": "recovery (varied) alpha (cooperation bias) bias != 0",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "bias=+0.328, RMSE=0.770",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H6",
+        "label": "recovery (varied) rho (reciprocity) bias != 0",
+        "p_raw": 0.006799320067993201,
+        "effect": "bias=+0.146, RMSE=0.591",
+        "detail": {},
+        "q_bh": 0.008771122887711228,
+        "significant": true
+      },
+      {
+        "hypothesis": "H6",
+        "label": "recovery (varied) omega (inertia) bias != 0",
+        "p_raw": 0.0136986301369863,
+        "effect": "bias=-0.100, RMSE=0.445",
+        "detail": {},
+        "q_bh": 0.01732473811442385,
+        "significant": true
+      },
+      {
+        "hypothesis": "H6",
+        "label": "recovery (varied) eta (outcome contingency) bias != 0",
+        "p_raw": 0.6918308169183082,
+        "effect": "bias=-0.017, RMSE=0.486",
+        "detail": {},
+        "q_bh": 0.7627878237817244,
+        "significant": false
+      },
+      {
+        "hypothesis": "H6",
+        "label": "recovery (varied) beta (precision) bias != 0",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "bias=-0.583, RMSE=1.220",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H6",
+        "label": "recovery (varied) lambda_j (their empathy) bias != 0",
+        "p_raw": 0.7151284871512849,
+        "effect": "bias=+0.004, RMSE=0.114",
+        "detail": {},
+        "q_bh": 0.781793007139964,
+        "significant": false
+      },
+      {
+        "hypothesis": "H6",
+        "label": "projection fidelity omega (inertia): corr(theta_self, theta_partner) > 0 (weakly identified from own behaviour alone)",
+        "p_raw": 0.6273726273726273,
+        "effect": "r=0.046",
+        "detail": {},
+        "q_bh": 0.6976816287161114,
+        "significant": false
+      },
+      {
+        "hypothesis": "H6",
+        "label": "projection fidelity eta (outcome contingency): corr(theta_self, theta_partner) > 0 (weakly identified from own behaviour alone)",
+        "p_raw": 0.001998001998001998,
+        "effect": "r=0.274",
+        "detail": {},
+        "q_bh": 0.0026323898222422653,
+        "significant": true
+      },
+      {
+        "hypothesis": "H6",
+        "label": "projection bias alpha (cooperation bias) != 0",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "bias=+0.983, RMSE=1.966",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H6",
+        "label": "projection bias rho (reciprocity) != 0",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "bias=+0.392, RMSE=0.964",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H6",
+        "label": "projection bias omega (inertia) != 0",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "bias=+0.372, RMSE=0.927",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H6",
+        "label": "projection bias eta (outcome contingency) != 0",
+        "p_raw": 0.004999500049995001,
+        "effect": "bias=+0.183, RMSE=0.707",
+        "detail": {},
+        "q_bh": 0.006514500065145002,
+        "significant": true
+      },
+      {
+        "hypothesis": "H6",
+        "label": "projection bias beta (precision) != 0",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "bias=+1.482, RMSE=1.941",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H6",
+        "label": "projection bias lambda_j (their empathy) != 0",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "bias=+0.145, RMSE=0.220",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H6",
+        "label": "self-projection predictive AUC > 0.5 (much round-level variation is policy sampling noise — near 0.5 predicted)",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "AUC=0.903 [0.896, 0.909]",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      },
+      {
+        "hypothesis": "H6",
+        "label": "self-projection Brier skill score > 0 (vs the base-rate forecast)",
+        "p_raw": 9.999000099990002e-05,
+        "effect": "skill=+0.043 [+0.024, +0.062]",
+        "detail": {},
+        "q_bh": 0.0001402033709672511,
+        "significant": true
+      }
+    ],
+    "by_hypothesis": {
+      "H1": {
+        "n": 3,
+        "n_ok": 2,
+        "verdict": "partial"
+      },
+      "H1A": {
+        "n": 3,
+        "n_ok": 3,
+        "verdict": "supported"
+      },
+      "H2": {
+        "n": 4,
+        "n_ok": 4,
+        "verdict": "supported"
+      },
+      "H2A": {
+        "n": 2,
+        "n_ok": 2,
+        "verdict": "supported"
+      },
+      "H2B": {
+        "n": 4,
+        "n_ok": 3,
+        "verdict": "partial"
+      },
+      "H3": {
+        "n": 4,
+        "n_ok": 3,
+        "verdict": "partial"
+      },
+      "H3A": {
+        "n": 4,
+        "n_ok": 4,
+        "verdict": "supported"
+      },
+      "H4": {
+        "n": 4,
+        "n_ok": 4,
+        "verdict": "supported"
+      },
+      "H4A": {
+        "n": 4,
+        "n_ok": 3,
+        "verdict": "partial"
+      },
+      "H5": {
+        "n": 2,
+        "n_ok": 1,
+        "verdict": "partial"
+      },
+      "H6": {
+        "n": 10,
+        "n_ok": 6,
+        "verdict": "partial"
+      }
+    }
+  }
+}

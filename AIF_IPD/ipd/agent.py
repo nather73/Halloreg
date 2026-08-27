@@ -160,6 +160,7 @@ class EmpathicAgent:
         #: applied once a' is observed.
         self._pending = []
         self._shift_used = float("nan")
+        self._g_prag = self._g_epi_r = self._g_epi_j = float("nan")
         self._shift_oracle = float("nan")
 
         self.my_last = COOP                 # my previous action (init: C)
@@ -394,6 +395,11 @@ class EmpathicAgent:
             # constant) is folded into w_U, so w_U carries units of
             # 1/reward and the effective raw-es slope is beta_g * w_U.
             shift_i = self.w_u * raw_es
+            # v3.9.6 audit channels: the three -G_social components
+            # (before beta_g), logged as g_prag / g_epi_r / g_epi_j.
+            self._g_prag = float(shift_i)
+            self._g_epi_r = 0.0
+            self._g_epi_j = 0.0
             # **Epistemic terms** (v3.1) — the EFE epistemic value is
             # added to the intercept. For a 2-action problem,
             # softmax(-G) is exactly the sigmoid of the logit
@@ -406,9 +412,11 @@ class EmpathicAgent:
             # contracts — exploration switches itself off with no
             # schedule.
             if self.w_ig_r > 0.0 and ig_r is not None:
-                shift_i += self.w_ig_r * float(ig_r[COOP] - ig_r[DEFECT])
+                self._g_epi_r = self.w_ig_r * float(ig_r[COOP] - ig_r[DEFECT])
+                shift_i += self._g_epi_r
             if self.w_ig_j > 0.0 and ig_j is not None:
-                shift_i += self.w_ig_j * float(ig_j[COOP] - ig_j[DEFECT])
+                self._g_epi_j = self.w_ig_j * float(ig_j[COOP] - ig_j[DEFECT])
+                shift_i += self._g_epi_j
 
         term = (self.qrtd.terminal_value
                 if (self.qrtd is not None and self.qrtd.n_obs > 0) else None)
@@ -564,7 +572,11 @@ class HalloRegAgent(EmpathicAgent):
         "expected_reward", "baseline_reward", "pessimism", "social_distance",
         "shift_used", "shift_oracle", "qrtd_n", "value",
         "lam_sp", "allo_phi", "lam_l0", "fitness",
-        "lambda_setpoint")
+        "lambda_setpoint",
+        # v3.9.5: Z-tilde advantages behind lambda* (A^Z, B^Z of s_t)
+        "anchor_A", "anchor_B",
+        # v3.9.6: -G_social components before beta_g
+        "g_prag", "g_epi_r", "g_epi_j")
 
     def __init__(self, w_cd: float = 0.5, lam_gain: float = 0.05,
                  lam_min: float = 0.0, lam_max: float = 0.80,
@@ -593,6 +605,9 @@ class HalloRegAgent(EmpathicAgent):
                  w_ig_j: float = 5.0,
                  r_surv_fixed: Optional[float] = None,
                  alpha_kappa: float = 0.0,
+                 anchor_b_min: float = 0.05,
+                 lam_fixed: Optional[float] = None,
+                 value_policy: str = "state",
                  seed_history: bool = True,
                  history_coop_mean: float = 0.55,
                  history_coop_sd: float = 0.18,
@@ -663,6 +678,36 @@ class HalloRegAgent(EmpathicAgent):
             self.inversion.es_provider = self._tom_mirror_es
         self.alpha_kappa = float(alpha_kappa)
         self.core_affect.sp_disposition = float(sp_disposition)
+        # Degeneracy guard on B^Z (|B| below -> lambda* = 0.5). Z~
+        # advantages live on the per-round mean-return scale and are
+        # policy-attenuated (measured B^Z ~ 0.1-0.4 vs TFT), so the
+        # historical R-hat guard of 0.25 (B = T - S = 5 nominally) would
+        # switch the anchor off almost always. 0.05 is a provisional
+        # design choice, not a fitted value.
+        self.anchor_b_min = float(anchor_b_min)
+        self._anchor_A = float("nan")
+        self._anchor_B = float("nan")
+        # Policy weight used in V(s_t) = q_c*Z~(s_t,C) + (1-q_c)*Z~(s_t,D):
+        #   "state" : q_c re-evaluated at s_t with lambda_{t-1}
+        #             (default since v3.9.6; option B of the E-3 review)
+        #   "last"  : q_c of the previous decision, taken at s_{t-1}
+        #             (v3.2-v3.9.5; kept for ablation — set the kwarg
+        #             directly, e.g. HalloRegAgent(value_policy="last"))
+        # Measured v3.9.6 (800R, 8 seeds, 7 dyad scenarios + 3 H1A
+        # switches): no difference beyond seed noise — at beta_eff=120
+        # both q_c are saturated except in the 1-2 rounds around a
+        # relationship transition. The early lambda spike is unchanged
+        # (it stems from the R-hat/Z-tilde initialisation scale
+        # mismatch in phi, not from the q_c lag).
+        if value_policy not in ("last", "state"):
+            raise ValueError(f"value_policy must be 'last' or 'state'")
+        self.value_policy = str(value_policy)
+        self._qc_value = float("nan")
+        # Counterfactual: hold lambda at a constant (regulation off,
+        # lambda written directly, no Empathy clipping). None = regulated.
+        self.lam_fixed = None if lam_fixed is None else float(lam_fixed)
+        if self.lam_fixed is not None:
+            self.regulate = False
         self.reward_model = RewardModel(lr=max(qrtd_lr * 2, 0.02))
         self.qrtd = QuantileTD(gamma=qrtd_gamma, lr=qrtd_lr,
                                seed=(kwargs.get("seed", 0) or 0) + 5171)
@@ -1001,6 +1046,22 @@ class HalloRegAgent(EmpathicAgent):
                 # (allostatic), not reactive (homeostatic) regulation.
                 qc = float(self._last_qc)
                 rv = self.reward_model.payoff_vector("self")
+                if (self.value_policy == "state" and self.qrtd is not None
+                        and self.qrtd.n_obs > 3):
+                    # v3.9.6 (default): re-evaluate the cooperation
+                    # probability **at s_t** with the previous lambda
+                    # (pragmatic term only), instead of carrying the
+                    # previous round's q_c computed at s_{t-1}. Using
+                    # lambda_{t-1} breaks the q_c -> lambda -> phi ->
+                    # V -> q_c loop without a state mismatch.
+                    _as = (self.qrtd.value(observed_state, COOP, "self")
+                           - self.qrtd.value(observed_state, DEFECT, "self"))
+                    _ao = (self.qrtd.value(observed_state, COOP, "other")
+                           - self.qrtd.value(observed_state, DEFECT, "other"))
+                    _z = (self.alpha_bias + self.beta_g * self.w_u
+                          * float(empathy_shift_z(self.lam, _as, _ao)))
+                    qc = float(1.0 / (1.0 + np.exp(-_z)))
+                self._qc_value = qc
                 if (self.qrtd is not None
                         and self.qrtd.n_obs > 3):
                     # **Z-tilde based E_t** (v3.2) — long-run value
@@ -1033,25 +1094,37 @@ class HalloRegAgent(EmpathicAgent):
                     phi_a = (e_t - r_surv) / (top - r_surv)
                     self._allo_phi = float(phi_a)
                     _ph = float(np.clip(phi_a, 0.0, 1.0))
-                    # Current context from the opponent's viewpoint:
-                    # f = my last action signal, g = their last (pC order).
-                    _fme = (0.0 if not self.opp_actions
-                            else 1.0 - 2.0 * float(self.opp_actions[-1]))
-                    _gme = (0.0 if self.my_last is None
-                            else 1.0 - 2.0 * float(self.my_last))
-                    try:
-                        _pj = float(self.inversion.predict_coop(_gme, _fme))
-                    except Exception:
-                        _pj = 0.5
-                    # Model-derived switch anchor (see class doc block).
-                    _ms = self.reward_model.payoff_vector("self")
-                    _mo = self.reward_model.payoff_vector("other")
-                    _do = (_pj * (_ms[0] - _ms[2])
-                           + (1.0 - _pj) * (_ms[1] - _ms[3]))
-                    _dp = (_pj * (_mo[0] - _mo[2])
-                           + (1.0 - _pj) * (_mo[1] - _mo[3]))
+                    # **Analytic switch point from the generalised
+                    # empathy shift (v3.9.4; arch. doc §3.3.4)**
+                    #   es^Z(lambda, s) = A^Z(s) + lambda * B^Z(s)
+                    #   A^Z(s) = Z~_self(s_t, C) - Z~_self(s_t, D)
+                    #   B^Z(s) = [Z~_other(s_t, C) - Z~_other(s_t, D)] - A^Z
+                    #   lambda*(s) = (ln2/beta_eff - A^Z) / B^Z,
+                    #   beta_eff = beta_g * w_u
+                    # These are the same quantities that build the action
+                    # logit, so lambda* is exactly the lambda at which the
+                    # pragmatic term alone yields q_c = 2/3.
+                    # [R-hat anchor retired in v3.9.4] The former one-step
+                    # anchor A = E_{a_j}[R_s(C,a_j) - R_s(D,a_j)] lived on a
+                    # different valuation than the logit (R-hat + ToM p_j
+                    # vs Z~), so "switch point" was not a property of the
+                    # policy actually used. Measured consequence of the
+                    # change (800R, 5 opponents, noise .05): lambda level
+                    # drops by 0.2-0.3 vs reciprocators (A^Z >= 0 under an
+                    # established cooperative policy -> lambda* clips to
+                    # ~0), behaviour (CC, DD, payoff, recovery time)
+                    # unchanged within seed noise.
+                    if self.qrtd is not None and self.qrtd.n_obs > 3:
+                        _do = float(self.qrtd.value(observed_state, COOP, "self")
+                                    - self.qrtd.value(observed_state, DEFECT, "self"))
+                        _dp = float(self.qrtd.value(observed_state, COOP, "other")
+                                    - self.qrtd.value(observed_state, DEFECT, "other"))
+                    else:
+                        _do, _dp = 0.0, 0.0        # -> degenerate guard below
                     _den = _dp - _do
-                    if abs(_den) > 0.25:
+                    self._anchor_A = float(_do)
+                    self._anchor_B = float(_den)
+                    if abs(_den) > self.anchor_b_min:
                         _l0 = -_do / _den + (np.log(2.0)
                                              / (self.beta_g * self.w_u
                                                 * _den))
@@ -1063,7 +1136,10 @@ class HalloRegAgent(EmpathicAgent):
             self.lam = lam_allo
             self.empathy.lam = self.lam
         else:
-            self.lam = self.empathy.lam      # regulation off (ablation)
+            # regulation off (ablation)
+            self.lam = (self.lam_fixed if self.lam_fixed is not None
+                        else self.empathy.lam)
+            self.empathy.lam = self.lam
         self.social_efe.lam = self.lam
 
         return {"valence": affect["valence"], "arousal": affect["arousal"],
@@ -1072,6 +1148,8 @@ class HalloRegAgent(EmpathicAgent):
                 "fitness": affect.get("fitness", float("nan")),
                 "allo_phi": float(getattr(self, "_allo_phi", float("nan"))),
                 "lam_l0": float(getattr(self, "_lam_l0", float("nan"))),
+                "anchor_A": float(getattr(self, "_anchor_A", float("nan"))),
+                "anchor_B": float(getattr(self, "_anchor_B", float("nan"))),
                 "rpe": affect["rpe"], "surprise": affect["surprise"],
                 "expected_reward": self.core_affect.expected_reward(),
                 "baseline_reward": affect["r_base"],
@@ -1080,6 +1158,9 @@ class HalloRegAgent(EmpathicAgent):
                 # analytic value are logged, so naive-mode learning can
                 # be audited post hoc.
                 "shift_used": getattr(self, "_shift_used", float("nan")),
+                "g_prag": getattr(self, "_g_prag", float("nan")),
+                "g_epi_r": getattr(self, "_g_epi_r", float("nan")),
+                "g_epi_j": getattr(self, "_g_epi_j", float("nan")),
                 "shift_oracle": getattr(self, "_shift_oracle", float("nan")),
                 "value": affect["value"],
                 "qrtd_n": float(self.qrtd.n_obs
@@ -1097,6 +1178,7 @@ class HalloRegAgent(EmpathicAgent):
                     "lam_sp": float("nan"), "fitness": float("nan"),
                     "allo_phi": float("nan"),
                     "lam_l0": float("nan"),
+                    "anchor_A": float("nan"), "anchor_B": float("nan"),
                     "lambda_ctx": 0.0, "rpe": 0.0, "surprise": 0.0,
                     "expected_reward": self.core_affect.expected_reward(),
                     "baseline_reward":
@@ -1107,6 +1189,9 @@ class HalloRegAgent(EmpathicAgent):
                         self._identity),
                     "lambda_setpoint": self.self_model.lambda_setpoint(),
                     "shift_used": getattr(self, "_shift_used", float("nan")),
+                "g_prag": getattr(self, "_g_prag", float("nan")),
+                "g_epi_r": getattr(self, "_g_epi_r", float("nan")),
+                "g_epi_j": getattr(self, "_g_epi_j", float("nan")),
                     "shift_oracle": getattr(self, "_shift_oracle",
                                             float("nan")),
                     "value": float("nan"),

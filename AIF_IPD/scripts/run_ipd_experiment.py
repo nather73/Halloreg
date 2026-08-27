@@ -18,6 +18,8 @@ Hypotheses under test
   H1A   does it track changing intent and recover lambda
   H2    does it protect its own payoff against exploiters
   H2A   can it tell an exploiter from a noisy TFT
+  H2B   what does regulated lambda add over lambda fixed at 0 or 1
+        (onset of cooperation / withdrawal from an exploiter)
   H3    in a stationary mixed population, does it out-earn the fixed
         strategies
   H3A   under the same conditions, does it contribute more to
@@ -61,7 +63,8 @@ import numpy as np
 
 from AIF_IPD.core.logging_utils import get_logger
 from AIF_IPD.experiments import arch_validation, h1_intent, h1a_tracking
-from AIF_IPD.experiments import h2_protection, h3_h4_population
+from AIF_IPD.experiments import h2_protection, h2b_counterfactual
+from AIF_IPD.experiments import h3_h4_population
 from AIF_IPD.experiments import h5_evolution, h6_recovery
 from AIF_IPD.experiments.common import Config, Registry, save_json
 from AIF_IPD.ipd.sim import resolve_jobs
@@ -69,7 +72,7 @@ from AIF_IPD.ipd.sim import resolve_jobs
 LOGGER = get_logger("HalloReg.run")
 
 #: Runnable experiment names (order = default execution order)
-ALL_EXPERIMENTS = ["ARCH", "H1", "H1A", "H2", "H3", "H4", "H5", "H6"]
+ALL_EXPERIMENTS = ["ARCH", "H1", "H1A", "H2", "H2B", "H3", "H4", "H5", "H6"]
 
 #: User-facing aliases (H3A/H4A are tested inside the same
 #: experiments as H3/H4)
@@ -280,6 +283,8 @@ def main(argv=None) -> int:
             h1a_tracking.run(cfg, reg)
         elif name == "H2":
             h2_protection.run(cfg, reg)
+        elif name == "H2B":
+            h2b_counterfactual.run(cfg, reg)
         elif name in ("H3", "H4"):
             # H3 and H4 share the composition space and the type-pair
             # matrices, so they run together.

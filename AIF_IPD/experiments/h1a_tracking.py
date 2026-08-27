@@ -155,18 +155,33 @@ def run_tracking(cfg: Config, reg: Registry) -> dict:
 
     corr_by_scenario: Dict[str, np.ndarray] = {}
     traces: Dict[str, np.ndarray] = {}
+    # v3.9.7: seed bands of the regulator's own lambda and of the
+    # inferred partner lambda, per scenario. The full (seeds x rounds)
+    # arrays are too large for the results file, so only the mean and
+    # the 25/75 percentiles are stored — enough for the paper figure,
+    # which is rendered from the experiment results.
+    lam_bands: Dict[str, Dict[str, Dict[str, list]]] = {}
     for si, sc in enumerate(scenarios):
         truth = _phase_signal(sc, cfg.rounds)
         rs = np.full(cfg.seeds, np.nan)
         tr = np.zeros((cfg.seeds, cfg.rounds))
+        lam = np.zeros((cfg.seeds, cfg.rounds))
+        lam_j = np.zeros((cfg.seeds, cfg.rounds))
         for sd in range(cfg.seeds):
-            pc = np.asarray(res[registry[(si, sd)]]["agent_log"]["pred_coop"],
-                            dtype=float)
+            log = res[registry[(si, sd)]]["agent_log"]
+            pc = np.asarray(log["pred_coop"], dtype=float)
             tr[sd] = pc
+            lam[sd] = np.asarray(log["lam"], dtype=float)
+            lam_j[sd] = np.asarray(log["E_lambda_j"], dtype=float)
             if pc.std() > 0 and truth.std() > 0:
                 rs[sd] = float(np.corrcoef(pc, truth)[0, 1])
         corr_by_scenario[sc] = rs
         traces[sc] = tr
+        lam_bands[sc] = {
+            k: {"mean": np.nanmean(v, axis=0).tolist(),
+                "lo": np.nanpercentile(v, 25, axis=0).tolist(),
+                "hi": np.nanpercentile(v, 75, axis=0).tolist()}
+            for k, v in (("lam", lam), ("lam_j", lam_j))}
 
     all_r = np.concatenate([corr_by_scenario[s] for s in scenarios])
     t = one_sample_perm(all_r, 0.0, alternative="greater")
@@ -189,7 +204,7 @@ def run_tracking(cfg: Config, reg: Registry) -> dict:
     return {"scenarios": scenarios,
             "corr": {s: corr_by_scenario[s] for s in scenarios},
             "mean_corr": float(_safe_mean(all_r)),
-            "traces": traces,
+            "traces": traces, "lam_bands": lam_bands,
             "truth": {s: _phase_signal(s, cfg.rounds) for s in scenarios},
             "switch_rounds": switch_rounds(cfg.rounds)}
 
