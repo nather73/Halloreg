@@ -4,6 +4,28 @@ core.empathy
 
 **Empathy — the legacy integrator of the empathy weight lambda.**
 
+.. warning::
+
+   **`Empathy.step` is unreachable.** Grep the package: the object is
+   constructed in `HalloRegAgent.__init__`, `reset()` is called on a
+   partner switch and `.lam` is assigned, but `step()` has no call
+   sites — not in the agents, not in the experiments, not in the
+   tests. HalloRegAgent replaced this integrator with the allostatic
+   direct mapping in `agent._regulate`, and EmpathicAgent (fixed
+   lambda) never drove it either.
+
+   Everything below the line documents that retired v2 design, not
+   behaviour the model currently exhibits. In particular the two-
+   channel form
+
+       lambda_t = lambda_{t-1} + eta*[(1 - w_cd)*lambda_aff
+                                      + w_cd*lambda_ctx]
+
+   is not what runs: lambda_ctx is hard-zeroed everywhere in the
+   package, and lambda_aff does not reach lambda at all (see
+   ARCH check V7 and the architecture document S2.5). Only
+   `empathy_shift_z` at the bottom of this module is live.
+
 (Retained for the EmpathicAgent baseline; HalloRegAgent replaced this
 integrator with the allostatic direct mapping in agent._regulate and
 keeps this object only as the lambda carrier.)

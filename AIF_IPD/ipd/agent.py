@@ -20,17 +20,32 @@ Active-inference IPD agents.
 
 [Per-round information flow of HalloRegAgent]
 
-    SelfModel ──(id, theta)────────────▶ OpponentInversion ──┐
-        │                                                     │ λ_ctx = f(α̂, λ̂_j)
-        ├──(id, expected reward dist)──▶ CoreAffect ──────────┤ λ_aff = V × A
-        │                                     ▲               │
-        └──(baseline expected-reward dist = setpoint)─┘        ▼
-                                                          Empathy
-                                                              │ λ_t = λ_{t−1}
-                                                              │      + (1−w)λ_aff
-                                                              │      + w·λ_ctx
-                                                              ▼
-                                                    RecursiveSocialEFE → action
+    SelfModel ──(id, theta)──────▶ OpponentInversion ──┐ p_j(s), IG_θ
+        │                                               │
+        ├──(id, value dist, Z snapshot)──▶ QuantileTD ──┤ Z̃(s,a)
+        │                                               ▼
+        │                                   allostatic mapping (_regulate)
+        │                                        λ = clip(λ*(s) + φ(s) − ½)
+        │                                               │
+        └──(baseline value dist)                        ▼
+                                          RecursiveSocialEFE → action
+
+        CoreAffect ──(valence, arousal, λ_aff)──▶ [logged only]
+
+    **CoreAffect is not currently wired into the lambda path.** This
+    matches the architecture document §2.5 ("CoreAffect is not yet
+    linked with other components"): valence, arousal and λ_aff are
+    computed every round and recorded for analysis, but no term of
+    them enters the lambda update in `_regulate`. ARCH check V7
+    asserts the decoupling directly — running a dyad with the affect
+    outputs pinned to zero must leave the lambda trajectory
+    bit-identical — so the situation cannot drift out of sync with the
+    document again.
+
+    The `Empathy` integrator is retired for the same reason: since the
+    allostatic direct mapping replaced it, `Empathy.step` has no call
+    sites anywhere in the package and the object survives only as the
+    carrier of `.lam`.
 
     The updated (theta, dist) and (expected reward dist) are committed
     back into SelfModel: SelfModel does no inference — it **only

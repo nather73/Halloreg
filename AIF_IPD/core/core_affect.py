@@ -4,6 +4,29 @@ core.core_affect
 
 **CoreAffect — two-dimensional core affect: valence x arousal.**
 
+.. note::
+
+   **This module is a read-out, not a controller (yet).** Matching the
+   architecture document S2.5 — "CoreAffect is not yet linked with
+   other components" — valence, arousal and lambda_aff are computed
+   every round and written to the agent log, but none of them enters
+   the lambda update: `agent._regulate` derives lambda from the
+   analytic switch point lam*(s_t) and the allostatic surplus phi(s_t)
+   alone. ARCH check V7 asserts this by ablation and will start
+   failing the day the coupling is added.
+
+   Two consequences for reading the derivations below. The closing
+   sentence of the arousal section ("since lambda_aff = valence *
+   arousal, only unpredicted events move lambda") describes the
+   intended design, not current behaviour. And the valence formula
+   given here — the population rank of the current partner's median
+   against remembered others — is the *retired* definition; the
+   valence actually logged is the between-state occupancy percentile
+   computed inline in `agent._regulate` and passed in as
+   `state_valence`. ARCH V5b/V5c currently fail on it, and the
+   architecture document S3.4 already notes that the definition needs
+   revising.
+
 Premise: primary reward acquisition serves homeostasis over the
 internal model, and **the expected-reward distribution stands in as
 the generative model of interoception**. CoreAffect reduces the

@@ -37,6 +37,16 @@ V6  **Conditional divergence of lambda** — does lambda fall against
     exploiters and rise with cooperators? Without this the regulator
     has no directionality.
 
+V7  **CoreAffect decoupling** — is the affect channel currently
+    *outside* the lambda path? The architecture document (S2.5) states
+    that CoreAffect is not yet linked to the other components: valence
+    and arousal are computed and logged every round, but no term of
+    them reaches `_regulate`'s lambda update. V7 asserts that
+    explicitly by re-running each dyad with every CoreAffect output
+    pinned to zero and requiring the lambda trajectory to be
+    unchanged. The check therefore **fails as soon as CoreAffect is
+    wired in**, which is exactly when it should be revisited.
+
 Every item is a **deterministic** check or a directional test, not a
 statistical hypothesis, so nothing is registered in the
 confirmatory/exploratory registry; results are reported in a separate
@@ -80,6 +90,39 @@ def _spearman(x: np.ndarray, y: np.ndarray) -> float:
     if len(x) < 3 or np.std(x) == 0 or np.std(y) == 0:
         return np.nan
     return float(np.corrcoef(rank(x), rank(y))[0, 1])
+
+
+def _mute_core_affect(agent):
+    """
+    **V7 ablation** — pin every CoreAffect output of an already-built
+    agent to zero.
+
+    Wraps the bound `CoreAffect.step` rather than swapping the object,
+    so the construction-time state (`sp_disposition`, `sp_i0`, the
+    SelfModel reference) is preserved and only the returned affect
+    signals are neutralised. Everything downstream of the affect
+    channel therefore sees a constant, while the QRTD / R-hat /
+    OpponentInversion path is untouched: any difference in the lambda
+    trajectory can only come from CoreAffect.
+
+    Note that CoreAffect.step also commits the partner's value
+    distribution and cooperation count into SelfModel; those side
+    effects are deliberately left intact, so the ablation isolates the
+    *signals* rather than disabling the module.
+    """
+    inner = agent.core_affect.step
+
+    def muted(*args, **kwargs):
+        out = inner(*args, **kwargs)
+        for key in ("valence", "arousal", "lambda_aff", "rpe", "surprise",
+                    "fitness", "lam_sp", "tau_hat"):
+            if key in out:
+                out[key] = 0.0
+        agent.core_affect.last = out
+        return dict(out)
+
+    agent.core_affect.step = muted
+    return agent
 
 
 def run(cfg: Config) -> dict:
@@ -343,23 +386,40 @@ def run(cfg: Config) -> dict:
                              for k in PROBE_TYPES),
     })
 
-    # ============================== V7. The single driver of lambda
-    # lambda_ctx was removed in v1.5.0, so the lambda trajectory must
-    # coincide exactly with the affective channel (V4 checks this
-    # round by round). Here the terminal gap confirms that the
-    # conditional divergence was produced **by affect alone**.
-    lam_allc7 = float(np.mean(lam_traces["allc"][:, -1]))
-    lam_alld7 = float(np.mean(lam_traces["alld"][:, -1]))
+    # ============================== V7. CoreAffect decoupling
+    # [replaces the former "lambda diverges under purely affective
+    # drive"] That check read `lam_traces` — the same array as V6 —
+    # and therefore reported V6's numbers under a claim about affect.
+    # It could not test the claim: since the allostatic direct mapping
+    # replaced the Empathy integrator, lambda is a function of
+    # lam*(s_t) and phi(s_t) only, and no CoreAffect output enters it.
+    # The architecture document says so (S2.5); the suite now says so
+    # too, as a falsifiable invariant rather than an assertion in a
+    # comment.
+    dec_gap = 0.0
+    dec_rows = []
+    for _kind in ("allc", "tft", "alld"):
+        _traj = {}
+        for _muted in (False, True):
+            _ag = HalloRegAgent(seed=8801, **cfg.halloreg_kwargs())
+            if _muted:
+                _mute_core_affect(_ag)
+            run_dyad(_ag, make_opponent(_kind, seed=8802), cfg.rounds,
+                     partner_id_a=1, partner_id_b=999)
+            _traj[_muted] = np.asarray(_ag.log["lam"], dtype=float)
+        _d = float(np.max(np.abs(_traj[False] - _traj[True])))
+        dec_gap = max(dec_gap, _d)
+        dec_rows.append(f"{PROBE_LABEL[_kind]}={_d:.1e}")
     checks.append({
-        # Purely affective drive moves lambda little per round, so
-        # divergence needs time; the threshold is relaxed at smoke
-        # scale (measured gap 0.50 at 120R).
         "id": "V7",
-        "name": "lambda diverges under purely affective drive",
-        "passed": bool(lam_allc7 - lam_alld7
-                       > (0.2 if cfg.rounds >= 80 else 0.1)),
-        "detail": f"λ_final: ALLC={lam_allc7:.3f} vs ALLD={lam_alld7:.3f} "
-                  f"(gap {lam_allc7 - lam_alld7:.3f})",
+        "name": "CoreAffect is decoupled from the lambda path "
+                "(valence/arousal are logged, not used)",
+        "passed": bool(dec_gap == 0.0),
+        "detail": "max |lambda - lambda(affect pinned to 0)|: "
+                  + " | ".join(dec_rows)
+                  + "  -- non-zero means CoreAffect now feeds lambda; "
+                    "update the architecture document (S2.5) and this "
+                    "check together",
     })
 
     # ========================= V8. Distance-weighted setpoint
