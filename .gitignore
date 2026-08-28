@@ -14,3 +14,5 @@ Thumbs.db
 results/
 __pycache__/
 *.pyc
+
+.vscode/
