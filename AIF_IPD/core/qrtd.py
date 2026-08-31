@@ -215,18 +215,12 @@ class QuantileTD:
             arr.values = np.broadcast_to(
                 base, arr.values.shape[:-1] + (arr.n,)).copy()
 
-    def init_values(self, r_min: float, r_max: float) -> None:
-        """
-        Start Z at the **centre of the value support** so experience
-        can move it either way (a bottom start saturates valence and
-        turns every observation into "better than expected").
-        """
-        v_lo, v_hi = self.value_support(r_min, r_max)
-        mid, half = 0.5 * (v_lo + v_hi), 0.5 * (v_hi - v_lo)
-        for arr in (self.z_self, self.z_other):
-            arr.values = np.broadcast_to(
-                mid + half * (arr.taus - 0.5),
-                (N_STATES, N_ACTIONS, arr.n)).copy()
+    # [init_values / value_support removed] Neither had callers: the
+    # agent initialises Z through reinit() with the flat support
+    # midpoint (v3.7.3). Both were also still on the pre-v2.7.0
+    # un-normalised scale, returning r/(1-gamma) -- about 10x too large
+    # for Z-tilde at gamma=0.9 -- so reviving either would have
+    # silently mis-scaled Z.
 
     # ============================================================ Update
     def update(self, s: int, a_i: int, r_self: float, r_other: float,
@@ -357,15 +351,6 @@ class QuantileTD:
             v += pa * ((1.0 - lam) * self.value(s, a, "self")
                        + lam * self.value(s, a, "other"))
         return float(v)
-
-    def value_support(self, r_min: float, r_max: float) -> Tuple[float, float]:
-        """
-        The **structural value support** [r_min/(1-g), r_max/(1-g)] —
-        derived from the payoff structure, so it does not drift with
-        experience; used to initialise SelfModel's global reference.
-        """
-        d = max(1.0 - self.gamma, 1e-6)
-        return float(r_min / d), float(r_max / d)
 
     def shift(self, s: int, lam: float) -> float:
         """

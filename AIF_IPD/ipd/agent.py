@@ -327,9 +327,8 @@ class EmpathicAgent:
 
         # Opponent coop rate p_j (s(lambda, p) argument of my
         # likelihood) and my coop rate p_i (for their likelihood).
-        p_other = (float(np.mean(self.opp_actions == 0)) if False
-                   else (float(np.mean([1.0 - a for a in self.opp_actions]))
-                         if self.opp_actions else 0.5))
+        p_other = (float(np.mean([1.0 - a for a in self.opp_actions]))
+                   if self.opp_actions else 0.5)
         p_self = (float(np.mean([1.0 - a for a in self.my_actions]))
                   if self.my_actions else 0.5)
 
