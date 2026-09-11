@@ -354,21 +354,13 @@ class SelfModel:
         med = float(ent.value_dist[len(ent.value_dist) // 2])
         return float(2.0 * vector_cdf(ref, self.taus, med) - 1.0)
 
-    def social_valence(self, identity: Optional[int]) -> float:
-        """
-        valence = 2 * F-hat_ref(median(Q_current)) - 1: the rank of
-        the current partner's **median** within the others' reference
-        distribution; neutral 0 without a reference or a current
-        distribution.
-        """
-        ent = self.memory.get(identity) if identity is not None else None
-        if ent is None or ent.value_dist is None:
-            return 0.0
-        ref = self.population_reference(exclude=identity)
-        if ref is None:
-            return 0.0
-        med = float(ent.value_dist[len(ent.value_dist) // 2])
-        return float(2.0 * vector_cdf(ref, self.taus, med) - 1.0)
+    # [social_valence removed] It was byte-identical to social_fitness
+    # above, despite the v1.8.0 docstring describing the two as the
+    # separated between-relationship and between-state comparisons. The
+    # separation did happen, but the between-state half landed inline
+    # in agent._regulate as `_st_val` (the occupancy-weighted state
+    # percentile), so this copy answered no question of its own and had
+    # no callers outside the tests.
 
     def reference_median(self, exclude: Optional[int] = None) -> float:
         ref = self.population_reference(exclude=exclude)

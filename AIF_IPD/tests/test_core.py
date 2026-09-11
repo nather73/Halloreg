@@ -170,14 +170,17 @@ def test_self_model() -> None:
           1.0 < c0 < 3.5 and sp0 > 0.05, f"({c0:.2f}, {sp0:.2f})")
     lo = (ref_med - 3.0) + 0.0 * (taus - 0.5)     # a relationship below the reference
     hi = (ref_med + 3.0) + 0.0 * (taus - 0.5)     # a relationship above the reference
+    # Repointed from the removed social_valence duplicate onto
+    # social_fitness, which is the copy the model actually calls
+    # (CoreAffect.step / lambda_sp_compensatory).
     sm3.update_partner_value(500, lo)
-    check("bad relationship -> valence < 0", sm3.social_valence(500) < -0.3,
-          f"v={sm3.social_valence(500):+.3f}")
+    check("bad relationship -> fitness < 0", sm3.social_fitness(500) < -0.3,
+          f"phi={sm3.social_fitness(500):+.3f}")
     sm3.update_partner_value(501, hi)
-    check("good relationship -> valence > 0", sm3.social_valence(501) > 0.3,
-          f"v={sm3.social_valence(501):+.3f}")
+    check("good relationship -> fitness > 0", sm3.social_fitness(501) > 0.3,
+          f"phi={sm3.social_fitness(501):+.3f}")
     check("the reference excludes the current partner",
-          abs(sm3.social_valence(500)
+          abs(sm3.social_fitness(500)
               - (2 * __import__("AIF_IPD.core.distributional",
                                 fromlist=["vector_cdf"]).vector_cdf(
                     sm3.population_reference(exclude=500), taus,

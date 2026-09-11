@@ -97,16 +97,13 @@ class CoreAffect:
     """
 
     def __init__(self, self_model: SelfModel, payoffs: np.ndarray,
-                 kl_scale: float = 0.05, sigma_floor: float = 0.5,
-                 obs_weight: float = 1.0, arousal_floor: float = 0.05):
+                 kl_scale: float = 0.05, arousal_floor: float = 0.05):
         self.self_model = self_model
         self.payoffs = np.asarray(payoffs, dtype=float).copy()
         self.kl_scale = float(kl_scale)
         self.arousal_floor = float(arousal_floor)
         self.sp_disposition = 0.50   # m — magnitude of the dispositional part
         self.sp_i0 = 0.0             # I0 — target intercept
-        self.sigma_floor = float(sigma_floor)   # signature compat (unused)
-        self.obs_weight = float(obs_weight)     # signature compat (unused)
         self.self_model.set_payoff_scale(self.payoffs)
         self.identity: Optional[int] = None
         self.last = {"valence": 0.0, "arousal": 0.0, "lambda_aff": 0.0,
@@ -198,7 +195,6 @@ class CoreAffect:
             "lambda_aff": float(lambda_aff), "rpe": float(rpe),
             "surprise": surprise, "tau_hat": float((valence + 1.0) / 2.0),
             "r_base": self.self_model.reference_median(exclude=self.identity),
-            "r_mean": self.self_model.reference_median(exclude=self.identity),
             "r_obs": r_obs, "value": my_med,
             "fitness": float(fitness), "lam_sp": lam_sp,
             "pessimism": 0.0,

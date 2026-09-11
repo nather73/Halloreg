@@ -84,7 +84,7 @@ def set_payoffs(ci: float, strict: bool = False) -> tuple:
     Updates the globals in place (slice assignment) so existing
     references stay live. Returns the updated (R, T, S, P).
     """
-    global R, P
+    global R
     ci = float(ci)
     R_new = P + ci * (T - S)
     if strict and not (T > R_new > P > S):
